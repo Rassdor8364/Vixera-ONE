@@ -28,6 +28,25 @@ pnpm db:verify
 the seed, and `scripts/sql/verify.sql`. Set `DATABASE_URL` to run the same against
 an existing database.
 
+## Local (real PostgREST, no Docker)
+
+```bash
+pnpm test:live          # starts the stack, runs the store suite against it, fails loudly if it cannot
+pnpm db:live            # just start it; prints VIXERA_LIVE_URL / VIXERA_LIVE_JWT_SECRET
+pnpm db:live:down
+```
+
+`scripts/live-stack.sh` starts a throwaway PostgreSQL, applies the migrations and
+seed, and serves them through a real PostgREST (plus a small proxy so
+`supabase-js` can address `/rest/v1`). It is what proves the Supabase store
+against the real API surface: PostgREST's `db-max-rows` cap, `numeric` as JSON
+number, `on conflict` targets, RPC signatures, trigger-raised errors and RLS.
+`VIXERA_REST_MAX_ROWS=5 pnpm db:live` is a useful stress: every read must still
+return the whole set.
+
+Only `postgrest` (a single static binary) is required beyond PostgreSQL; put it
+on `PATH` or at `/tmp/vixera-live-stack/postgrest`.
+
 ## Edge Functions
 
 | Function | Auth | Purpose |

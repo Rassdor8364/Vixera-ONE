@@ -66,7 +66,9 @@ Dependency rule (enforced by package `dependencies` and reviewed in tests):
 
 * `domain` depends on nothing (no React, no Tauri, no Supabase).
 * `sync` depends on `domain` (+ `@supabase/supabase-js` in one adapter file).
-* `connectors/*` depend on `domain` only. They never import UI, sync or Tauri.
+* `connectors/*` depend on `domain` only, except `screen-context`, which also depends on
+  `praxion` because the Praxion client is one implementation of the adapter. None of them
+  import UI, sync or Tauri.
 * `command` depends on `domain` and the `SpineReader` interface from `sync`; `intelligence`
   depends on `domain` only.
 * `apps/desktop/src` (UI) depends on everything above through interfaces; it never calls
