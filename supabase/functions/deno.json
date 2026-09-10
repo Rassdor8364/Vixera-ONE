@@ -1,0 +1,16 @@
+{
+  "imports": {
+    "@vixera/domain": "../../packages/domain/src/index.ts",
+    "@vixera/sync": "../../packages/sync/src/index.ts",
+    "@vixera/connector-google": "../../packages/connectors/google/src/index.ts",
+    "@vixera/connector-microsoft": "../../packages/connectors/microsoft/src/index.ts",
+    "@vixera/connector-bank": "../../packages/connectors/bank/src/index.ts",
+    "@vixera/praxion": "../../packages/connectors/praxion/src/index.ts",
+    "@vixera/intelligence": "../../packages/intelligence/src/index.ts",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.116.0"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.window", "dom", "dom.iterable"]
+  }
+}

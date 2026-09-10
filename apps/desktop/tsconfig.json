@@ -1,22 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "composite": true,
-    "rootDir": "src",
-    "tsBuildInfoFile": ".tsbuildinfo",
     "jsx": "react-jsx",
-    "types": ["node", "vite/client"]
+    "types": [
+      "node",
+      "vite/client"
+    ]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "references": [
-    { "path": "../../packages/domain" },
-    { "path": "../../packages/sync" },
-    { "path": "../../packages/command" },
-    { "path": "../../packages/intelligence" },
-    { "path": "../../packages/connectors/praxion" },
-    { "path": "../../packages/connectors/screen-context" },
-    { "path": "../../packages/connectors/google" },
-    { "path": "../../packages/connectors/microsoft" },
-    { "path": "../../packages/connectors/bank" }
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
   ]
 }

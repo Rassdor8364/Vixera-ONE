@@ -10,7 +10,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b tsconfig.json",
+    "typecheck": "pnpm -r --workspace-concurrency=2 run typecheck",
     "build:desktop": "pnpm --filter @vixera/desktop build",
     "dev:desktop": "pnpm --filter @vixera/desktop tauri dev",
     "tauri": "pnpm --filter @vixera/desktop tauri",
