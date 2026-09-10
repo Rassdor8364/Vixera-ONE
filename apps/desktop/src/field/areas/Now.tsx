@@ -202,7 +202,9 @@ function HandoffRow({ handoff, description }: { handoff: Parameters<typeof accep
               void run(async () => {
                 const result = await acceptHandoff({ deviceId: spine.device.deviceId, praxion: spine.runtime.praxion, storage: spine.runtime.storage, reader: spine.reader, dispatch: spine.runtime.dispatch }, handoff);
                 spine.refresh();
-                setOpened(result.opened ? `opened with ${result.opened.openedWith}` : "accepted");
+                // The context has arrived either way; say plainly when the
+                // artifact itself could not be opened on this device.
+                setOpened(result.opened ? `opened with ${result.opened.openedWith}` : result.openError ? `context here · ${result.openError}` : "accepted");
                 if (handoff.focus) field.focus(handoff.focus);
               })
             }

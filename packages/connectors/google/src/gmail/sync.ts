@@ -123,7 +123,18 @@ async function* backfill(
     url.searchParams.set("q", `newer_than:${options.backfillDays}d`);
     url.searchParams.set("maxResults", String(LIST_PAGE_SIZE));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const list = await client.getJson<GmailMessageList>(url);
+    let list;
+    try {
+      list = await client.getJson<GmailMessageList>(url);
+    } catch (error) {
+      // Gmail rejects a stale page token with 400. That token came out of OUR
+      // checkpoint, so say so in the code the engine understands: it clears the
+      // checkpoint and restarts the backfill once, instead of failing forever.
+      if (pageToken && error instanceof ConnectorError && /HTTP 400|API error 400/.test(error.message)) {
+        throw new ConnectorError("checkpoint_invalid", `Gmail rejected the stored page token (${error.message})`, false, { cause: error });
+      }
+      throw error;
+    }
     const refs = list.body?.messages ?? [];
     const { messages } = await fetchMessages(ctx, client, options, refs.map((r) => r.id));
     const nextToken = list.body?.nextPageToken ?? null;

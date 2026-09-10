@@ -181,3 +181,31 @@ describe("planHistory", () => {
     expect([...deleted]).toEqual(["x"]);
   });
 });
+
+describe("a stored Gmail page token that Gmail later rejects", () => {
+  it("is reported as checkpoint_invalid, so the engine can clear it and restart", async () => {
+    const fake = createFakeFetch([
+      {
+        match: /\/users\/me\/messages\?/,
+        reply: ({ call }) =>
+          call.url.searchParams.get("pageToken")
+            ? { status: 400, json: { error: { code: 400, message: "Invalid pageToken" } } }
+            : { json: { messages: [] } },
+      },
+      { match: `${GMAIL_API}/profile`, reply: { json: profile } },
+    ]);
+    const ctx = makeContext(fake.fetch);
+    const resume = { historyId: "1", backfill: { pageToken: "stale-token", since: "2026-08-10T00:00:00Z" } };
+
+    const error = await collect(syncMail(ctx, resume, options)).then(
+      () => null,
+      (e: unknown) => e as { code?: string; message?: string },
+    );
+    expect(error?.code).toBe("checkpoint_invalid");
+    expect(error?.message).toContain("page token");
+
+    // With the checkpoint cleared (what the engine does next) the backfill runs.
+    const pages = await collect(syncMail(ctx, null, options));
+    expect(pages.length).toBeGreaterThan(0);
+  });
+});

@@ -6,7 +6,7 @@
  * viewer (see open-document.ts). Praxion never syncs; Vixera carries the
  * artifact reference, location, thread and conclusions.
  */
-import { type ActionPayloads, type Device, type Document, type EntityRef, type Handoff, type PraxionLocation } from "@vixera/domain";
+import { type ActionPayloads, type Device, type Document, type EntityRef, type Handoff, type PraxionLocation, type ScreenContextRegistry } from "@vixera/domain";
 import type { SpineReader } from "@vixera/sync";
 import { buildEnvelope, dispatchOrThrow, type ActionDispatcher } from "./actions.ts";
 import { openDocument, type OpenDocumentDeps, type OpenDocumentResult } from "./open-document.ts";
@@ -57,6 +57,8 @@ export interface AcceptResult {
   readonly handoff: Handoff;
   readonly document: Document | null;
   readonly opened: OpenDocumentResult | null;
+  /** Set when the context arrived but this device could not open the artifact. */
+  readonly openError: string | null;
 }
 
 /** Server action first (durable, idempotent per handoff+device), then reconstruct locally. */
@@ -66,14 +68,23 @@ export async function acceptHandoff(deps: HandoffDeps, handoff: Handoff): Promis
   const documentId = handoff.documentId ?? (handoff.focus?.type === "document" ? handoff.focus.id : null);
   const document = documentId ? await deps.reader.getDocument(documentId) : null;
   let opened: OpenDocumentResult | null = null;
+  let openError: string | null = null;
   if (document) {
     const withArtifact: Document =
       handoff.artifactStoragePath && document.location.kind !== "storage"
         ? { ...document, location: { kind: "storage", bucket: "artifacts", path: handoff.artifactStoragePath } }
         : document;
-    opened = await openDocument(deps, withArtifact, handoff.praxionLocation);
+    // Opening is best effort: the accept above is durable and the context has
+    // already moved to this device. A document this device cannot open (a
+    // path on the other machine, no Praxion, no artifact in Storage) must not
+    // look like a failed handoff.
+    try {
+      opened = await openDocument(deps, withArtifact, handoff.praxionLocation);
+    } catch (error) {
+      openError = error instanceof Error ? error.message : String(error);
+    }
   }
-  return { handoff, document, opened };
+  return { handoff, document, opened, openError };
 }
 
 export interface CreateHandoffInput {
@@ -102,15 +113,43 @@ export function handoffPayload(sourceDeviceId: string, input: CreateHandoffInput
   };
 }
 
-export async function createHandoff(deps: Pick<HandoffDeps, "deviceId" | "dispatch" | "reader">, input: CreateHandoffInput): Promise<void> {
+export interface CreateHandoffDeps extends Pick<HandoffDeps, "deviceId" | "dispatch" | "reader"> {
+  /** Where "what is on screen" comes from (seam 4). Praxion is one implementation. */
+  readonly screenContext?: ScreenContextRegistry;
+}
+
+/**
+ * Page state travels with the context, but only when it is provably about the
+ * document being handed off: the screen context's document must be the same
+ * Praxion document. Vixera never asks Praxion directly — it goes through the
+ * ScreenContextAdapter seam, so an explicit capture could supply it too.
+ */
+async function locationForHandoff(deps: CreateHandoffDeps, document: Document | null): Promise<PraxionLocation | null> {
+  if (!deps.screenContext || !document) return null;
+  const context = await deps.screenContext.current().catch(() => null);
+  if (!context?.location || !context.document) return null;
+  // Praxion ids are per installation, so a path match is the fallback — but when
+  // both sides name a Praxion document and the ids differ, that is a different
+  // document and its page number must not travel.
+  if (document.praxionDocumentId !== null && context.document.praxionDocumentId !== null) {
+    return context.document.praxionDocumentId === document.praxionDocumentId ? context.location : null;
+  }
+  const samePath = document.location.kind === "device_path" && context.document.externalRef === document.location.path;
+  return samePath ? context.location : null;
+}
+
+export async function createHandoff(deps: CreateHandoffDeps, input: CreateHandoffInput): Promise<void> {
   const payload = handoffPayload(deps.deviceId, input);
-  // When the document only exists in Storage, carry the artifact reference so the receiver can fetch bytes.
   if (payload.documentId) {
     const doc = await deps.reader.getDocument(payload.documentId).catch(() => null);
-    if (doc?.location.kind === "storage") {
-      await dispatchOrThrow(deps.dispatch, buildEnvelope("handoff.create", { ...payload, artifactStoragePath: doc.location.path }, { actorDeviceId: deps.deviceId }));
-      return;
-    }
+    const praxionLocation = payload.praxionLocation ?? (await locationForHandoff(deps, doc));
+    // When the document only exists in Storage, carry the artifact reference so the receiver can fetch bytes.
+    const artifactStoragePath = doc?.location.kind === "storage" ? doc.location.path : null;
+    await dispatchOrThrow(
+      deps.dispatch,
+      buildEnvelope("handoff.create", { ...payload, artifactStoragePath, praxionLocation }, { actorDeviceId: deps.deviceId }),
+    );
+    return;
   }
   await dispatchOrThrow(deps.dispatch, buildEnvelope("handoff.create", payload, { actorDeviceId: deps.deviceId }));
 }

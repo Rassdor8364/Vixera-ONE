@@ -23,6 +23,12 @@ describe("routing", () => {
     expect(areaForEntity("money_transaction")).toBe("money");
     expect(areaForEntity("document")).toBe("files");
     expect(areaForEntity("context_event")).toBe("now");
+    // Mail is context inside People (there is no mail area); the People area
+    // resolves a focused message to its sender.
+    expect(areaForEntity("mail_message")).toBe("people");
+    expect(areaForEntity("time_event")).toBe("time");
+    expect(areaForEntity("ingest_item")).toBe("files");
+    expect(areaForEntity("handoff")).toBe("now");
   });
 
   it("turns result items into focus locations", () => {

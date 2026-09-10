@@ -43,6 +43,7 @@ case "${1:-up}" in
     PGRST_DB_URI="postgres://vixera_authenticator:authenticator@127.0.0.1:$PGPORT/vixera_live" \
     PGRST_DB_SCHEMAS="public" PGRST_DB_ANON_ROLE="anon" PGRST_JWT_SECRET="$JWT_SECRET" \
     PGRST_SERVER_PORT="$RESTPORT" PGRST_DB_POOL=4 PGRST_LOG_LEVEL=error \
+    PGRST_DB_MAX_ROWS="${VIXERA_REST_MAX_ROWS:-1000}" \
       nohup "$POSTGREST" > "$STATE/postgrest.log" 2>&1 &
     echo $! > "$STATE/postgrest.pid"
     for _ in $(seq 1 40); do

@@ -23,7 +23,8 @@ import { createHttpServices, type FieldServices } from "../data/services.ts";
 import { createSupabaseArtifactStorage, type ArtifactStorage } from "../data/storage.ts";
 import { getDeviceIdentity, type DeviceIdentity } from "../platform/device.ts";
 import { functionsBaseUrl, type AppConfig, type AppMode } from "./config.ts";
-import { createDevWorld, type DevWorld } from "./dev-fixtures.ts";
+// Type-only: the fixture world must never be linked into a production build.
+import type { DevWorld } from "./dev-fixtures.ts";
 import { installDevIdentity, installSessionIdentity, type SessionCurrentUserProvider } from "./identity.ts";
 
 export interface AppShell {
@@ -71,7 +72,7 @@ export async function createShell(config: AppConfig, options: ShellOptions = {})
   const { registry, explicit } = createFieldScreenContext(praxion);
   if (config.mode === "dev-fixtures") {
     installDevIdentity(config.devUserId);
-    const devWorld = options.devWorld ?? (await createDevWorld(config.devUserId));
+    const devWorld = options.devWorld ?? (await (await import("./dev-fixtures.ts")).createDevWorld(config.devUserId));
     return { config, mode: "dev-fixtures", supabase: null, session: null, device, praxion, screenContext: registry, explicitCapture: explicit, devWorld };
   }
   const supabase = options.supabase ?? (await import("./supabase.ts")).createFieldSupabaseClient(config.supabaseUrl, config.supabaseAnonKey);

@@ -111,6 +111,26 @@ export function useThread(id: string | null): QueryState<ThreadDetail | null> {
   );
 }
 
+/**
+ * The person a mail message came from. NOW and Quiet focus the message itself
+ * (`mail.received` events are about a `mail_message`), and mail lives inside
+ * People, so opening such a row resolves to its sender.
+ */
+export function usePersonForMail(mailId: string | null): QueryState<string | null> {
+  return useSpineQuery(
+    async (reader) => {
+      if (!mailId) return null;
+      const message = await reader.getMailMessage(mailId);
+      if (!message) return null;
+      if (message.from?.personId) return message.from.personId as string;
+      // Fall back to the graph: the linker relates a message to its people.
+      const neighbors = await reader.neighbors({ type: "mail_message", id: mailId }, { type: "person" });
+      return neighbors[0]?.ref.id ?? null;
+    },
+    [mailId],
+  );
+}
+
 export function usePeople(search: string): QueryState<Person[]> {
   return useSpineQuery((reader) => reader.listPeople({ search: search.trim() || undefined, limit: 200 } as Parameters<SpineReader["listPeople"]>[0]), [search]);
 }

@@ -23,10 +23,15 @@ import { FunctionError, type FunctionsClient } from "./functions.ts";
 
 export type ActionDispatcher = (envelope: ActionEnvelope) => Promise<ActionOutcome>;
 
-/** Actions whose key is derived from the subject: repeating them is a replay, not a second execution. */
+/**
+ * Actions whose key is derived from the subject: repeating them is a replay,
+ * not a second execution. Only TERMINAL transitions belong here. `quiet` does
+ * not: Quiet can send an item back with `context_event.attend`, so a second
+ * "Later" on the same event is a real second execution, and a subject-derived
+ * key would silently replay the first outcome and leave the item in NOW.
+ */
 const SUBJECT_KEYED: Partial<Record<ActionType, (payload: never) => string>> = {
   "context_event.dismiss": (p: ActionPayloads["context_event.dismiss"]) => p.contextEventId,
-  "context_event.quiet": (p: ActionPayloads["context_event.quiet"]) => p.contextEventId,
   "context_event.snooze": (p: ActionPayloads["context_event.snooze"]) => `${p.contextEventId}:${p.until}`,
   "handoff.accept": (p: ActionPayloads["handoff.accept"]) => `${p.handoffId}:${p.deviceId}`,
 };

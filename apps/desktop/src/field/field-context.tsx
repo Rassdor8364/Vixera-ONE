@@ -8,7 +8,7 @@ import type { ActionEnvelope, ActionOutcome, Document, EntityRef } from "@vixera
 import type { PraxionAvailability } from "@vixera/praxion";
 import { useSpine } from "../data/spine-provider.tsx";
 import { usePraxionAvailability } from "../data/praxion.ts";
-import { openDocument, type OpenDocumentResult } from "../data/open-document.ts";
+import { openDocument, requestArtifactAction, type ArtifactAction, type ArtifactActionResult, type OpenDocumentResult } from "../data/open-document.ts";
 import { createHandoff, type CreateHandoffInput } from "../data/handoff.ts";
 import { focusEntity, HOME, type FieldArea, type FieldLocation } from "./routing.ts";
 
@@ -21,6 +21,8 @@ export interface FieldApi {
   readonly praxion: PraxionAvailability;
   readonly praxionReady: boolean;
   readonly openDoc: (doc: Document) => Promise<OpenDocumentResult>;
+  /** Asks Praxion for an artifact action. Vixera never performs it itself. */
+  readonly artifactAction: (doc: Document, action: ArtifactAction) => Promise<ArtifactActionResult>;
   readonly handoff: (input: CreateHandoffInput) => Promise<void>;
   readonly narrow: boolean;
 }
@@ -33,6 +35,11 @@ export function FieldApiProvider({ children, initial = HOME, narrow }: { childre
   const praxion = usePraxionAvailability(spine.runtime.praxion);
   const go = useCallback((area: FieldArea) => setLocation((l) => (l.area === area ? l : { area, focus: null })), []);
   const focus = useCallback((ref: EntityRef | null) => setLocation((l) => (ref ? focusEntity(l, ref) : { area: l.area, focus: null })), []);
+  const artifactAction = useCallback(
+    (doc: Document, action: ArtifactAction) =>
+      requestArtifactAction({ deviceId: spine.device.deviceId, praxion: spine.runtime.praxion, storage: spine.runtime.storage }, doc, action),
+    [spine.device.deviceId, spine.runtime],
+  );
   const openDoc = useCallback(
     (doc: Document) => openDocument({ deviceId: spine.device.deviceId, praxion: spine.runtime.praxion, storage: spine.runtime.storage }, doc),
     [spine.device.deviceId, spine.runtime],
@@ -40,7 +47,7 @@ export function FieldApiProvider({ children, initial = HOME, narrow }: { childre
   const handoff = useCallback(
     async (input: CreateHandoffInput) => {
       await createHandoff(
-        { deviceId: spine.device.deviceId, dispatch: spine.runtime.dispatch, reader: spine.reader },
+        { deviceId: spine.device.deviceId, dispatch: spine.runtime.dispatch, reader: spine.reader, screenContext: spine.runtime.screenContext },
         { ...input, commandHistory: input.commandHistory ?? spine.runtime.command.history.toArray() },
       );
       spine.refresh();
@@ -48,8 +55,8 @@ export function FieldApiProvider({ children, initial = HOME, narrow }: { childre
     [spine],
   );
   const value = useMemo<FieldApi>(
-    () => ({ location, go, focus, setLocation, act: spine.act, praxion, praxionReady: praxion.state === "available", openDoc, handoff, narrow }),
-    [location, go, focus, spine.act, praxion, openDoc, handoff, narrow],
+    () => ({ location, go, focus, setLocation, act: spine.act, praxion, praxionReady: praxion.state === "available", openDoc, artifactAction, handoff, narrow }),
+    [location, go, focus, spine.act, praxion, openDoc, artifactAction, handoff, narrow],
   );
   return <FieldContext.Provider value={value}>{children}</FieldContext.Provider>;
 }

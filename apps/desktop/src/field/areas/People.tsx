@@ -1,6 +1,6 @@
 /** People — normalized across sources; identities, documents, mail, events, money via the graph. */
 import { useState } from "react";
-import { usePeople, usePerson } from "../../data/hooks.ts";
+import { usePeople, usePerson, usePersonForMail } from "../../data/hooks.ts";
 import { useField } from "../field-context.tsx";
 import { formatDate, formatMoney, formatTime, relativeTime } from "../format.ts";
 import { AttachToThread } from "../components/AttachToThread.tsx";
@@ -11,8 +11,14 @@ export function PeopleArea() {
   const field = useField();
   const [search, setSearch] = useState("");
   const people = usePeople(search);
-  const focusedId = field.location.focus?.type === "person" ? field.location.focus.id : null;
+  const focus = field.location.focus;
+  // A focused mail message resolves to its sender: mail is context inside
+  // People, not an area of its own (there is no mail client in Vixera).
+  const focusedMailId = focus?.type === "mail_message" ? focus.id : null;
+  const senderId = usePersonForMail(focusedMailId);
+  const focusedId = focus?.type === "person" ? focus.id : senderId.data;
   const detail = usePerson(focusedId);
+  const resolvingMail = focusedMailId !== null && senderId.loading;
   const visible = (people.data ?? []).filter((p) => p.mergedIntoId === null);
   return (
     <div className={`two-col${focusedId ? " two-col--detail" : ""}`}>
@@ -29,7 +35,9 @@ export function PeopleArea() {
       <div>
         {focusedId && detail.data && <PersonDetail data={detail.data} />}
         {focusedId && !detail.data && !detail.loading && <Empty>That person is gone.</Empty>}
-        {!focusedId && <Empty>Pick a person to see what connects to them.</Empty>}
+        {!focusedId && resolvingMail && <Empty>Finding who that came from…</Empty>}
+        {!focusedId && !resolvingMail && focusedMailId && <Empty>That message has no person attached to it yet.</Empty>}
+        {!focusedId && !focusedMailId && <Empty>Pick a person to see what connects to them.</Empty>}
       </div>
     </div>
   );

@@ -90,7 +90,7 @@ export async function runSync(deps: SyncDeps, options: SyncRunOptions = {}): Pro
         continue;
       }
       try {
-        outcomes.push(await engine.runCapability(current, capability));
+        outcomes.push(await engine.runCapability(current, capability, deadline));
       } catch (err) {
         // runCapability isolates failures itself; this is the last line of defence.
         log("sync: capability run failed unexpectedly", { connectorAccountId: current.id, capability, error: errorMessage(err) });

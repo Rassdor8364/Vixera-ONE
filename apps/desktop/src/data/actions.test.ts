@@ -9,9 +9,19 @@ describe("idempotency keys", () => {
     const b = idempotencyKeyFor("context_event.dismiss", { contextEventId: "ev-1" });
     expect(a).toBe(b);
     expect(a).toBe(notificationIdempotencyKey("context_event.dismiss", "ev-1"));
-    expect(idempotencyKeyFor("context_event.quiet", { contextEventId: "ev-1" })).not.toBe(a);
     expect(idempotencyKeyFor("handoff.accept", { handoffId: "h1", deviceId: "d1" })).toBe("handoff.accept:h1:d1");
     expect(idempotencyKeyFor("context_event.snooze", { contextEventId: "ev-1", until: "2026-09-11T00:00:00Z" })).toContain("2026-09-11");
+  });
+
+  it("gives Later a fresh key each time, so an item that came back from Quiet can be quieted again", () => {
+    // context_event.attend can move an item out of Quiet, so quiet is a repeatable
+    // transition: a subject-derived key would replay the first outcome and leave
+    // the item sitting in NOW.
+    const first = idempotencyKeyFor("context_event.quiet", { contextEventId: "ev-1" });
+    const second = idempotencyKeyFor("context_event.quiet", { contextEventId: "ev-1" });
+    expect(first).not.toBe(second);
+    expect(isUuid(first)).toBe(true);
+    expect(isUuid(idempotencyKeyFor("context_event.attend", { contextEventId: "ev-1" }))).toBe(true);
   });
 
   it("uses a fresh uuid for user-initiated actions", () => {
@@ -23,8 +33,8 @@ describe("idempotency keys", () => {
   });
 
   it("builds an ActionEnvelope with the actor device", () => {
-    const env = buildEnvelope("context_event.quiet", { contextEventId: "ev-9" }, { actorDeviceId: "dev-1" });
-    expect(env).toEqual({ actionType: "context_event.quiet", idempotencyKey: "context_event.quiet:ev-9", payload: { contextEventId: "ev-9" }, actorDeviceId: "dev-1" });
+    const env = buildEnvelope("context_event.dismiss", { contextEventId: "ev-9" }, { actorDeviceId: "dev-1" });
+    expect(env).toEqual({ actionType: "context_event.dismiss", idempotencyKey: "context_event.dismiss:ev-9", payload: { contextEventId: "ev-9" }, actorDeviceId: "dev-1" });
   });
 });
 

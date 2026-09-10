@@ -251,6 +251,21 @@ export function runSpineStoreConformance(label: string, create: ConformanceFacto
       expect(await store.listContextEvents({ kindPrefix: "mail." })).toHaveLength(0);
     });
 
+    it("returns the whole context graph, past any server row cap", async () => {
+      const { store } = await create();
+      const thread = await store.createThread({ title: "Big", kind: null, status: "active", summary: null, metadata: {} });
+      const people = [];
+      for (let i = 0; i < 30; i++) {
+        people.push(await store.upsertPerson({ displayName: `Person ${i}`, primaryEmail: null, organization: null, notes: null, metadata: {} }));
+      }
+      for (const p of people) await store.relate({ from: ref("thread", thread.id), kind: "has_person", to: ref("person", p.id) });
+      const all = await store.listRelationships({ limit: 5000 });
+      expect(all).toHaveLength(30);
+      // the last edge written is present, not just the oldest page
+      const last = people[people.length - 1]!;
+      expect(all.some((r) => r.to.id === last.id)).toBe(true);
+    });
+
     it("action requests are idempotent by key", async () => {
       const { store } = await create();
       const key = `context_event.dismiss:${newId()}`;

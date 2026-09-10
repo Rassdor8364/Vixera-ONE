@@ -233,3 +233,48 @@ describe("ContextLinker bank", () => {
     expect(await store.listMoneyTransactions()).toHaveLength(3);
   });
 });
+
+describe("a rescheduled event does not leave a stale NOW row", () => {
+  it("dismisses the superseded context event and keeps the new one", async () => {
+    const { store, linker, account } = await setup();
+    const base = {
+      externalCalendarId: "primary",
+      externalId: "evt-1",
+      title: "Northwind kickoff",
+      description: null,
+      startsAt: "2026-09-10T15:00:00Z",
+      endsAt: "2026-09-10T15:45:00Z",
+      allDay: false,
+      timezone: "UTC",
+      location: null,
+      status: "confirmed" as const,
+      organizer: null,
+      participants: [],
+      externalLink: null,
+    };
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    const first = await store.listContextEvents({ kindPrefix: "time.event." });
+    expect(first).toHaveLength(1);
+    expect(first[0]?.attention).toBe("needs_attention");
+
+    // Re-syncing the same event changes nothing.
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    expect(await store.listContextEvents({ kindPrefix: "time.event." })).toHaveLength(1);
+    expect((await store.listContextEvents({ kindPrefix: "time.event." }))[0]?.attention).toBe("needs_attention");
+
+    // Moving it creates a new event and retires the old one.
+    await linker.applyCalendarBatch(account, {
+      events: [{ ...base, startsAt: "2026-09-10T16:00:00Z", endsAt: "2026-09-10T16:45:00Z" }],
+      deleted: [],
+    });
+    const after = await store.listContextEvents({ kindPrefix: "time.event." });
+    expect(after).toHaveLength(2);
+    const live = after.filter((e) => e.attention !== "dismissed");
+    expect(live).toHaveLength(1);
+    expect(live[0]?.dueAt).toBe("2026-09-10T16:00:00Z");
+    expect(live[0]?.kind).toBe("time.event.changed");
+    const retired = after.find((e) => e.attention === "dismissed");
+    expect(retired?.dueAt).toBe("2026-09-10T15:00:00Z");
+    expect(retired?.metadata["supersededBy"]).toBe(live[0]?.dedupeKey);
+  });
+});

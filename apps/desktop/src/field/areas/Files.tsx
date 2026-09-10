@@ -149,10 +149,18 @@ function DocumentRow({ doc, focused }: { doc: Document; focused: boolean }) {
           </Action>
           <AttachToThread entity={{ type: "document", id: doc.id }} />
           <ContinueOn focus={{ type: "document", id: doc.id }} documentId={doc.id} />
-          <Action disabled={!field.praxionReady || !doc.praxionDocumentId} {...(praxionReason ? { title: praxionReason } : {})}>
+          <Action
+            disabled={busy || !field.praxionReady}
+            {...(praxionReason ? { title: praxionReason } : {})}
+            onClick={() => void run(async () => setOpened(describeArtifactAction("Compare", await field.artifactAction(doc, "compare"))))}
+          >
             Compare
           </Action>
-          <Action disabled={!field.praxionReady || !doc.praxionDocumentId} {...(praxionReason ? { title: praxionReason } : {})}>
+          <Action
+            disabled={busy || !field.praxionReady}
+            {...(praxionReason ? { title: praxionReason } : {})}
+            onClick={() => void run(async () => setOpened(describeArtifactAction("Annotate", await field.artifactAction(doc, "annotate"))))}
+          >
             Annotate
           </Action>
           {praxionReason && <span className="faint small">{praxionReason}</span>}
@@ -161,4 +169,11 @@ function DocumentRow({ doc, focused }: { doc: Document; focused: boolean }) {
       }
     />
   );
+}
+
+/** One line of feedback for an artifact action Praxion answered. */
+export function describeArtifactAction(label: string, result: { supported: boolean; accepted: boolean; message: string | null }): string {
+  if (!result.supported) return result.message ?? `Praxion does not offer ${label.toLowerCase()}`;
+  if (!result.accepted) return result.message ?? `${label} was declined`;
+  return result.message ?? `${label} opened in Praxion`;
 }

@@ -17,7 +17,7 @@ import type { SpineStore } from "../store/spine-store.ts";
 import { ContextLinker } from "../linker/context-linker.ts";
 import { SyncEngine, redactCredential } from "./sync-engine.ts";
 import { MockConnector, briefWorldFixtures, NORTHWIND_KICKOFF_EVENT_ID } from "../testing/mock-connector.ts";
-import { expiredCredential, fakeCredential, fixedClock, MOCK_SELF_ADDRESS, seedMockAccount, tickingClock } from "../testing/fixtures.ts";
+import { expiredCredential, fakeCredential, fixedClock, MOCK_NOW, MOCK_SELF_ADDRESS, mockAccountInput, seedMockAccount, tickingClock } from "../testing/fixtures.ts";
 
 interface World {
   store: InMemorySpineStore;
@@ -379,5 +379,56 @@ describe("SyncEngine report shape", () => {
     expect(Date.parse(report.finishedAt)).toBeGreaterThanOrEqual(Date.parse(report.startedAt));
     const fresh: ConnectorAccount | null = await w.store.getConnectorAccount(account.id);
     expect(fresh?.status).toBe("active");
+  });
+});
+
+describe("wall-clock budget", () => {
+  it("stops at a checkpoint instead of paging on, and resumes from there", async () => {
+    const store = new InMemorySpineStore(DEV_USER_ID, { now: tickingClock() });
+    const account = await store.createConnectorAccount(mockAccountInput({ capabilities: ["mail"] }));
+    const credentials = new InMemoryCredentialStore();
+    await credentials.put(account.credentialRef!, fakeCredential());
+
+    // Three pages, each with its own checkpoint. The clock advances one minute
+    // per read, so the deadline is already past after the first page.
+    let cursor = 0;
+    const pages = [
+      { batch: { messages: [], deleted: [] }, checkpoint: { page: 1 }, done: false },
+      { batch: { messages: [], deleted: [] }, checkpoint: { page: 2 }, done: false },
+      { batch: { messages: [], deleted: [] }, checkpoint: { page: 3 }, done: true },
+    ];
+    const connector = {
+      provider: "mock" as const,
+      capabilities: ["mail"] as const,
+      discoverAccount: () => Promise.resolve({ externalAccountId: "x", label: "x", address: null, capabilities: ["mail"] as const }),
+      async *syncMail(_ctx: unknown, checkpoint: { page?: number } | null) {
+        const from = checkpoint?.page ?? 0;
+        for (let i = from; i < pages.length; i++) {
+          cursor = i + 1;
+          yield pages[i]!;
+        }
+      },
+    };
+    const clock = tickingClock(MOCK_NOW, 60_000);
+    const engine = new SyncEngine({
+      store,
+      registry: new ConnectorRegistry().register(connector as never),
+      credentials,
+      linker: new ContextLinker(store, { now: clock, selfAddresses: [] }),
+      now: clock,
+    });
+
+    const first = await engine.runCapability(account, "mail", MOCK_NOW.getTime() + 1);
+    expect(first.status).toBe("ok");
+    expect(first.reason).toContain("time budget");
+    expect(first.pages).toBe(1);
+    expect((await store.getSyncState(account.id, "mail"))?.checkpoint).toEqual({ page: 1 });
+
+    // Without a deadline the next run finishes from the stored checkpoint.
+    const second = await engine.runCapability(account, "mail");
+    expect(second.status).toBe("ok");
+    expect(second.reason).toBeNull();
+    expect((await store.getSyncState(account.id, "mail"))?.checkpoint).toEqual({ page: 3 });
+    expect(cursor).toBe(3);
   });
 });

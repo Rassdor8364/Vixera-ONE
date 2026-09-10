@@ -621,9 +621,32 @@ export class SupabaseSpineStore implements SpineStore {
   // -------------------------------------------------------------------------
   // Relationships
   // -------------------------------------------------------------------------
+  /**
+   * Paged on purpose. PostgREST caps every response at `db-max-rows` (this
+   * project sets 1000, which is also the hosted default) and answers 200 with a
+   * short body — a single `.range(0, limit - 1)` would hand NOW a silently
+   * truncated context graph. The offset advances by the rows actually returned
+   * and stops on a short page, which is correct for any server cap. `id` breaks
+   * ties: `created_at` alone is not a total order, so rows sharing a timestamp
+   * could be skipped or repeated across pages.
+   */
   async listRelationships(query: Page = {}): Promise<Relationship[]> {
-    const q = paged(this.select("relationships").order("created_at", { ascending: true }), query);
-    return (await this.rows<RelationshipRow>(q, "relationships")).map(relationshipFromRow);
+    const want = query.limit ?? Number.POSITIVE_INFINITY;
+    const out: RelationshipRow[] = [];
+    let offset = query.offset ?? 0;
+    while (out.length < want) {
+      const size = Math.min(CHUNK, want - out.length);
+      const page = await this.rows<RelationshipRow>(
+        this.select("relationships").order("created_at", { ascending: true }).order("id", { ascending: true }).range(offset, offset + size - 1),
+        "relationships",
+      );
+      out.push(...page);
+      // Stop only when a page comes back EMPTY. A short page means the server
+      // capped the response (db-max-rows), not that the data ran out.
+      if (page.length === 0) break;
+      offset += page.length;
+    }
+    return out.map(relationshipFromRow);
   }
 
   async neighbors(node: EntityRef, query: NeighborsQuery = {}): Promise<NeighborRow[]> {

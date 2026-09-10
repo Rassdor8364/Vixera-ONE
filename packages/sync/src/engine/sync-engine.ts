@@ -155,7 +155,14 @@ export class SyncEngine {
     return outcomes;
   }
 
-  async runCapability(account: ConnectorAccount, capability: ConnectorCapability): Promise<SyncOutcome> {
+  /**
+   * `deadlineAt` bounds the run in wall clock. The loop only breaks
+   * IMMEDIATELY AFTER a checkpoint was persisted, so the stopping point is
+   * always a durable resume point and never mid-page. A source that never
+   * yields an intermediate checkpoint (Graph delta, which only produces one at
+   * the end) simply runs to completion — the budget cannot make it lose work.
+   */
+  async runCapability(account: ConnectorAccount, capability: ConnectorCapability, deadlineAt?: number): Promise<SyncOutcome> {
     const started = this.now();
     const counts = emptyCounts();
     let pages = 0;
@@ -227,6 +234,7 @@ export class SyncEngine {
     // --- pages ------------------------------------------------------------
     let checkpoint: Checkpoint | null = state?.checkpoint ?? null;
     let retriedCheckpoint = false;
+    let outOfTime = false;
     for (;;) {
       try {
         for await (const page of source(liveCtx, checkpoint)) {
@@ -234,12 +242,19 @@ export class SyncEngine {
           if (page.fullResync) this.log("sync: full resync page", { connectorAccountId: account.id, capability });
           // Apply FIRST, then move the checkpoint: a crash in between replays an idempotent page.
           addCounts(counts, await this.applyPage(account, capability, page));
+          let resumable = false;
           if (page.checkpoint !== null && page.checkpoint !== undefined) {
             checkpoint = page.checkpoint;
             await this.store.upsertSyncState(account.id, capability, { checkpoint });
             checkpointAdvanced = true;
+            resumable = true;
           }
           if (page.done) break;
+          if (resumable && deadlineAt !== undefined && this.now().getTime() >= deadlineAt) {
+            outOfTime = true;
+            this.log("sync: budget reached, stopping at a checkpoint", { connectorAccountId: account.id, capability, pages });
+            break;
+          }
         }
         break;
       } catch (err) {
@@ -262,7 +277,12 @@ export class SyncEngine {
       consecutiveFailures: 0,
     });
     if (account.status === "error") await this.store.updateConnectorAccount(account.id, { status: "active", lastError: null });
-    return this.outcome(account, capability, "ok", started, { pages, counts, checkpointAdvanced });
+    return this.outcome(account, capability, "ok", started, {
+      pages,
+      counts,
+      checkpointAdvanced,
+      ...(outOfTime ? { reason: "stopped at a checkpoint: time budget exhausted" } : {}),
+    });
   }
 
   // -------------------------------------------------------------------------

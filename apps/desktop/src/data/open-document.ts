@@ -2,7 +2,7 @@
  * Opening a document on this device: Praxion when it is present, the OS
  * viewer when it is not. Praxion's absence disables only Praxion features.
  */
-import type { Document, PraxionLocation } from "@vixera/domain";
+import type { Document, JsonObject, PraxionLocation } from "@vixera/domain";
 import type { PraxionConnector } from "@vixera/praxion";
 import { appCacheDir, join } from "@tauri-apps/api/path";
 import { exists, mkdir, writeFile } from "@tauri-apps/plugin-fs";
@@ -21,6 +21,47 @@ export type OpenedWith = "praxion" | "system" | "browser";
 export interface OpenDocumentResult {
   readonly openedWith: OpenedWith;
   readonly detail: string | null;
+  /**
+   * Praxion's own id for the artifact, learned from the open call. Praxion ids
+   * are per installation, so this is a session fact — never persisted onto the
+   * document row, and the only way a Praxion action can name the artifact.
+   */
+  readonly praxionDocumentId?: string | null;
+}
+
+/** Artifact actions Praxion owns. Vixera asks; Praxion decides and performs. */
+export type ArtifactAction = "compare" | "annotate" | "sign" | "goto";
+
+export interface ArtifactActionResult {
+  readonly supported: boolean;
+  readonly accepted: boolean;
+  readonly message: string | null;
+}
+
+/**
+ * Requests an artifact action from Praxion. Vixera implements none of it: it
+ * opens the document (which yields Praxion's id) and hands the request over.
+ */
+export async function requestArtifactAction(
+  deps: OpenDocumentDeps,
+  doc: Document,
+  action: ArtifactAction,
+  params: JsonObject = {},
+): Promise<ArtifactActionResult> {
+  const availability = await deps.praxion.availability();
+  if (availability.state !== "available") {
+    return { supported: false, accepted: false, message: "Praxion is not running on this device" };
+  }
+  if (!(await deps.praxion.supports(`action:${action}` as never))) {
+    return { supported: false, accepted: false, message: `Praxion does not offer ${action}` };
+  }
+  const opened = await openDocument(deps, doc);
+  const documentId = opened.praxionDocumentId ?? doc.praxionDocumentId;
+  if (!documentId) {
+    return { supported: false, accepted: false, message: "Praxion could not identify this document" };
+  }
+  const response = await deps.praxion.requestAction({ action, documentId, params });
+  return { supported: response.supported, accepted: response.accepted, message: response.message };
 }
 
 /** Local path of the document on this device, if the spine knows one. */
@@ -35,13 +76,13 @@ export async function openDocument(deps: OpenDocumentDeps, doc: Document, locati
 
   if (praxionReady) {
     if (doc.praxionDocumentId) {
-      await deps.praxion.openDocument({ documentId: doc.praxionDocumentId, ...(location ? { location } : {}), focus: true });
-      return { openedWith: "praxion", detail: null };
+      const response = await deps.praxion.openDocument({ documentId: doc.praxionDocumentId, ...(location ? { location } : {}), focus: true });
+      return { openedWith: "praxion", detail: null, praxionDocumentId: response.document.id };
     }
     const path = localPath ?? (doc.location.kind === "storage" ? await cacheFromStorage(deps.storage, doc) : null);
     if (path) {
-      await deps.praxion.openDocument({ path, ...(location ? { location } : {}), focus: true });
-      return { openedWith: "praxion", detail: null };
+      const response = await deps.praxion.openDocument({ path, ...(location ? { location } : {}), focus: true });
+      return { openedWith: "praxion", detail: null, praxionDocumentId: response.document.id };
     }
   }
 

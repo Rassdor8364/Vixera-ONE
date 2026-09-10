@@ -13,6 +13,7 @@ import {
   type NormalizedMailMessage,
   type NormalizedMoneyTransaction,
   type NormalizedTimeEvent,
+  type ContextEvent,
   type Person,
   type RelationshipInput,
 } from "@vixera/domain";
@@ -256,6 +257,8 @@ export class ContextLinker {
       b.counts.updated += result.updated;
       const rowsByKey = new Map(result.rows.map((r) => [`${r.externalCalendarId} ${r.externalId}`, r]));
       const events: ContextEventInput[] = [];
+      /** dedupe key of this pass's event → the prior events it may supersede. */
+      const superseded = new Map<string, ContextEvent[]>();
 
       for (let i = 0; i < batch.events.length; i++) {
         const e = batch.events[i] as NormalizedTimeEvent;
@@ -269,7 +272,11 @@ export class ContextLinker {
         const version = timeEventVersion(e);
         const dedupeKey = timeDedupeKey(account.id, e.externalCalendarId, e.externalId, version);
         // First sight = no context event about this row yet. Same version ⇒ dedupe, nothing new.
-        const prior = await this.store.listContextEvents({ subject: eventRef, kindPrefix: "time.event.", limit: 1 });
+        // Every prior event about this row, so the superseded ones can be
+        // retired below: a rescheduled meeting must not leave its old NOW item
+        // (with the old start time as dueAt) sitting in "needs me".
+        const prior = await this.store.listContextEvents({ subject: eventRef, kindPrefix: "time.event." });
+        superseded.set(dedupeKey, prior);
         events.push({
           kind: timeEventKind(e, prior.length === 0),
           subject: eventRef,
@@ -293,6 +300,16 @@ export class ContextLinker {
       }
       const ev = await this.store.upsertContextEvents(events);
       b.counts.contextEvents += ev.inserted;
+
+      // Retire the versions this pass replaced. An unchanged re-sync is a no-op
+      // because the current key is already among the priors.
+      for (const [dedupeKey, prior] of superseded) {
+        if (prior.some((p) => p.dedupeKey === dedupeKey)) continue;
+        for (const stale of prior) {
+          if (stale.attention === "dismissed") continue;
+          await this.store.setContextEventAttention(stale.id, "dismissed", { supersededBy: dedupeKey });
+        }
+      }
     }
 
     if (batch.deleted.length) {
