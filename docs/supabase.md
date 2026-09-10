@@ -89,22 +89,54 @@ For scheduled sync also create the two Vault secrets described in
 
 ## Deployment
 
+### The project
+
+| | |
+| --- | --- |
+| Project | `Vixera-ONE`, region `us-east-1`, Postgres 17 |
+| Ref | `uhdlacchajiblhmgasjg` |
+| API | `https://uhdlacchajiblhmgasjg.supabase.co` |
+
+**Schema: deployed.** All eight migrations are applied. Verified on the live
+database: 18 tables, none without `user_id`, none without RLS, 19 policies, 20
+enums, 15 `vx_*` functions, 33 triggers, the private `artifacts` bucket, seven
+tables in the realtime publication, and the `vixera-connector-sync` cron job.
+Two throwaway users proved isolation end to end: each saw only its own rows,
+neither could plant a row for the other or reference the other's parents through
+a foreign key, dangling graph edges and polymorphic subjects were refused, and a
+client could not write `credential_ref`, a sync checkpoint or an
+`action_requests` row, nor call the credential vault.
+
+**Functions: not deployed yet.** They need a Supabase access token, which this
+repository deliberately does not hold.
+
 ```bash
-supabase link --project-ref <ref>
+SUPABASE_ACCESS_TOKEN=sbp_...  scripts/deploy-functions.sh uhdlacchajiblhmgasjg
+```
+
+The script bundles each function (the workspace packages live outside
+`supabase/functions`, so the CLI cannot follow those imports on its own),
+leaves `@supabase/supabase-js` as an npm specifier for the Edge Runtime, and
+deploys with the same JWT gates as `config.toml`. The bundles have been built
+and run locally: a bundled function boots, answers an unauthenticated `POST`
+with `401 {"error":{"code":"unauthorized"}}`, and a CORS preflight with `204`.
+
+### Schema changes after this point
+
+```bash
+supabase link --project-ref uhdlacchajiblhmgasjg
 supabase db push                   # migrations only; seed.sql is never pushed
-supabase functions deploy action-dispatch connector-link connector-sync ingest-process
 ```
 
 The dev identity does not exist in a deployed project; create the real user through
 Supabase Auth and sign in from the app. `currentUser()` then resolves from the
 session (see `current-user.md`).
 
-First-deploy smoke test (nothing in this repository has yet run against a live
-project): link one account and confirm the `connector_accounts` row appears in
-the Field; `POST connector-sync` with the user JWT and read the report; `POST
-action-dispatch` twice with the same idempotency key and confirm `replayed:
-true`; `GET connector-link/callback?state=bad` and confirm the "Not connected"
-page.
+First-deploy smoke test, once the functions are up: link one account and confirm
+the `connector_accounts` row appears in the Field; `POST connector-sync` with the
+user JWT and read the report; `POST action-dispatch` twice with the same
+idempotency key and confirm `replayed: true`; `GET
+connector-link/callback?state=bad` and confirm the "Not connected" page.
 
 ## Storage
 

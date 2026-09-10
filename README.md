@@ -91,6 +91,19 @@ Needs the `postgrest` binary on `PATH` (or at `/tmp/vixera-live-stack/postgrest`
 This is what proves the Supabase store against the real API: row caps, `numeric`
 as JSON number, conflict targets, RPC signatures and RLS. See `docs/supabase.md`.
 
+### Deploying
+
+The `Vixera-ONE` Supabase project (`uhdlacchajiblhmgasjg`) already has the full
+schema: eight migrations applied and the invariants verified on the live
+database. Edge Functions still need a token:
+
+```bash
+SUPABASE_ACCESS_TOKEN=sbp_...  scripts/deploy-functions.sh uhdlacchajiblhmgasjg
+```
+
+See `docs/supabase.md` for what is deployed, what was verified, and the provider
+secrets a connector needs before it can sync.
+
 ### Local Supabase (Docker)
 
 ```bash
