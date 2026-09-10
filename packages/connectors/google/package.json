@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/connector-google",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gmail + Google Calendar connector (OAuth2, incremental sync, normalization).",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*" },
+  "devDependencies": {}
+}

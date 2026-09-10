@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Vixera One",
+  "version": "0.1.0",
+  "identifier": "ai.vixera.one",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "field",
+        "title": "Vixera One",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 880,
+        "minHeight": 600,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#080807",
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: asset: http://asset.localhost",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost https://*.supabase.co wss://*.supabase.co http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*"
+      },
+      "assetProtocol": { "enable": true, "scope": ["$APPDATA/**", "$APPCACHE/**", "$TEMP/**"] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Vixera AI",
+    "copyright": "Vixera AI",
+    "category": "Productivity",
+    "shortDescription": "Vixera One — the intelligence layer beside your operating system.",
+    "longDescription": "Vixera One connects mail, calendar, money, documents, people and threads into one context so you can work from context instead of switching between applications.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser", "languages": ["English"] }
+    },
+    "android": { "minSdkVersion": 26 }
+  }
+}

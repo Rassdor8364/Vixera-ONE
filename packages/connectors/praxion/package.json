@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/praxion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned Praxion local connector contract, HTTP client over a swappable transport, mock server.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*" },
+  "devDependencies": {}
+}

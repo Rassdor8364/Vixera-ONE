@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Model provider abstraction. Vixera is the intelligence layer; providers are adapters.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*" },
+  "devDependencies": {}
+}

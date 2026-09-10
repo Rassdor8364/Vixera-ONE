@@ -1,0 +1,14 @@
+{
+  "name": "@vixera/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vixera One domain model: entities, context graph, currentUser(), NOW engine. Depends on nothing.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+target/
+apps/desktop/src-tauri/gen/schemas/
+apps/desktop/src-tauri/gen/android/app/build/
+apps/desktop/src-tauri/gen/android/.gradle/
+apps/desktop/src-tauri/gen/android/build/
+apps/desktop/src-tauri/gen/android/local.properties
+apps/desktop/src-tauri/gen/android/key.properties
+*.keystore
+*.jks
+
+# secrets and local environment (never commit)
+.env
+.env.*
+!.env.example
+supabase/.env
+supabase/.temp/
+supabase/.branches/
+
+# test / tooling
+coverage/
+*.log
+.vitest/
+.tsbuildinfo
+*.tsbuildinfo
+
+# editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

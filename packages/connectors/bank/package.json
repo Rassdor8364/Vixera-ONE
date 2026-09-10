@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/connector-bank",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only bank connector: BankProvider adapter interface, Plaid adapter, mock provider.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*" },
+  "devDependencies": {}
+}

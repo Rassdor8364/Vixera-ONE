@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SpineStore, SyncEngine and ContextLinker: the sync spine over Supabase (and in-memory for tests).",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*", "@supabase/supabase-js": "~2.116.0" },
+  "devDependencies": {}
+}

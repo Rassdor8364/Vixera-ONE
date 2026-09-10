@@ -1,0 +1,32 @@
+{
+  "name": "vixera-one",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Vixera One \u2014 the intelligence layer beside the operating system. Everything connects.",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b tsconfig.json",
+    "build:desktop": "pnpm --filter @vixera/desktop build",
+    "dev:desktop": "pnpm --filter @vixera/desktop tauri dev",
+    "tauri": "pnpm --filter @vixera/desktop tauri",
+    "praxion:mock": "node --experimental-strip-types packages/connectors/praxion/scripts/mock-server.ts",
+    "db:verify": "bash scripts/verify-migrations.sh",
+    "functions:check": "bash scripts/check-functions.sh",
+    "check": "pnpm typecheck && pnpm test && cargo check --workspace"
+  },
+  "devDependencies": {
+    "@types/node": "~22.20.2",
+    "typescript": "~5.9.3",
+    "vitest": "~3.2.7"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

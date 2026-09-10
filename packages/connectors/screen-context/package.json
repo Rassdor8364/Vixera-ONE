@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/screen-context",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ScreenContextAdapter implementations: Praxion structured content, explicit capture.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*", "@vixera/praxion": "workspace:*" },
+  "devDependencies": {}
+}

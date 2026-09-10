@@ -1,0 +1,11 @@
+{
+  "name": "@vixera/command",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One Command: intent routing interface, rule-based router, executor over SpineReader.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@vixera/domain": "workspace:*", "@vixera/sync": "workspace:*" },
+  "devDependencies": {}
+}
