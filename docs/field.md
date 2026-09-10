@@ -69,7 +69,9 @@ visible but disabled with the reason ("Needs Praxion on this device" or
 "contract version is incompatible").
 
 **Quiet** (`areas/Quiet.tsx`) — context events with `attention = quiet`
-(60 days) with Dismiss, followed by Sources: connected accounts with sync
+(60 days), each with "Needs attention" (`context_event.attend`, which also
+clears a snooze) and Dismiss (`context_event.dismiss`), followed by Sources:
+connected accounts with sync
 state, last success and error, Sync now, Disconnect, and the Connect
 buttons (`areas/Connectors.tsx`).
 
@@ -179,7 +181,7 @@ Same code, same areas, phone layout. What differs (`platform/tauri.ts`
   browser. Compare / Annotate stay disabled.
 * Handoffs work in both directions ("Continue on <phone>", and accepting on
   the phone).
-* The sign-out button is hidden at phone width (see gaps).
+* The sign-out button sits in the context line at every width.
 
 No accessibility service, no overlay, no screen reading, no background
 capture: the user hands Vixera an object explicitly.
@@ -203,19 +205,15 @@ capture: the user hands Vixera an object explicitly.
 
 ## Known gaps (Phase 1)
 
-* Quiet is read-only plus Dismiss: there is no action type to move a quiet
-  event back to needs-attention (`context_event.snooze` only quiets until a
-  date). Needs a new `ActionType` in `@vixera/domain` and a handler.
 * Notification click-to-front is not wired (the notification plugin exposes
   no click handler from the WebView).
-* `capabilities/default.json` grants `fs` read only, so `cacheFromStorage`
-  always falls back to the signed-URL path on desktop; adding
-  `fs:allow-mkdir`, `fs:allow-write-file`, `fs:allow-exists` scoped to
-  `$APPCACHE/**` (and `opener:allow-open-path`) enables local opening of
-  Storage artifacts.
-* No sign-out affordance at phone width.
 * `NeedsMeWatcher` and the NOW area both call `useNow()`, so the NOW queries
   run twice per refresh while NOW is open.
-* `bootstrap/supabase.ts` builds the client with `createClient` directly
-  because `createSpineClient` (`@vixera/sync`) has no `storageKey` option and
-  the keychain adapter only accepts Vixera-namespaced keys.
+* `bootstrap/supabase.ts` builds the client with `createClient` directly.
+  `createSpineClient` now takes `storageKey`, so this can be switched over.
+
+Closed since the first draft: Quiet can move an item back to the attention
+stream (`context_event.attend`), the desktop and Android capabilities allow
+writing into `$APPCACHE/**` and opening a path (so a Storage artifact opens
+locally rather than only through a signed URL), and sign out is reachable at
+phone width.

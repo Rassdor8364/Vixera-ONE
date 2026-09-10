@@ -278,17 +278,19 @@ async function processIngestLocally(store: SpineStore, p: ActionPayloads["ingest
   const subject = document ? ref("document", document.id) : ref("ingest_item", item.id);
   await store.upsertContextEvents([
     {
-      kind: `ingest.${normalized.kind}`,
+      // Same kind and importance as the server pipeline (supabase/functions/_shared/ingest.ts),
+      // so dev mode and production produce comparable NOW items.
+      kind: "ingest.received",
       subject,
       title: normalized.title ?? "Shared to Vixera",
       summary: normalized.textContent ? normalized.textContent.slice(0, 140) : normalized.url,
       occurredAt: now().toISOString(),
-      importance: 55,
+      importance: 40,
       dueAt: null,
       attention: "needs_attention",
       connectorAccountId: null,
       dedupeKey: `ingest:${item.id}`,
-      metadata: { source: normalized.source },
+      metadata: { source: normalized.source, kind: normalized.kind },
     },
   ]);
   await store.updateIngestItem(item.id, { status: "processed", documentId: (document?.id ?? null) as never, processedAt: now().toISOString() });

@@ -193,17 +193,19 @@ clients, payment execution, multi-user onboarding, Praxion accounts, model marke
 
 Each line of the brief's definition of done, where it is realized, and what is only
 partially realized. Verified on 2026-09-10 in a Linux container: `pnpm typecheck` clean,
-`pnpm test` 457 tests / 51 files, `pnpm functions:check` 41 Deno tests, `pnpm db:verify`
-all assertions, `cargo check --workspace`, `cargo test -p vixera-platform` 15 tests.
+`pnpm test` (468 vitest tests / 52 files), `pnpm functions:check` (42 Deno tests),
+`pnpm db:verify` (all assertions), `pnpm test:live` (the store conformance suite plus the
+security assertions against a real PostgreSQL + PostgREST), `cargo check --workspace`
+(also for `aarch64-linux-android`), `cargo test -p vixera-platform` (15 tests).
 
 | Definition of done | Realized in | Status |
 | --- | --- | --- |
-| Supabase/Postgres spine exists | `supabase/migrations/20260910000100_spine.sql` … `000700`, `supabase/config.toml`, `seed.sql`; `scripts/verify-migrations.sh` + `scripts/sql/verify.sql` | Done. Migrations verified against throwaway PostgreSQL; **not yet applied to a live Supabase project** in this environment |
+| Supabase/Postgres spine exists | `supabase/migrations/20260910000100_spine.sql` … `000700`, `supabase/config.toml`, `seed.sql`; `scripts/verify-migrations.sh` + `scripts/sql/verify.sql`, `scripts/live-stack.sh` | Done. Migrations verified against throwaway PostgreSQL, and the schema serves a real PostgREST with RLS, cross-user FK and credential-privilege assertions; **not yet applied to a live Supabase project** in this environment |
 | All rows use `user_id` | every table in `000100_spine.sql`; asserted by `verify.sql` §1; `SupabaseSpineStore` filters and sets it | Done |
 | `currentUser()` central | `packages/domain/src/identity/current-user.ts`; Field `apps/desktop/src/bootstrap/identity.ts`; Edge Functions `supabase/functions/_shared/auth.ts` (per request) | Done |
 | Multi-account connector accounts | `connector_accounts` natural key `(user, provider, external_account_id)`, `ConnectorRegistry`, stateless connectors, `persistLinkedAccount` (`_shared/link.ts`) | Done |
 | Credentials behind a secure abstraction | `CredentialStore` (domain) → `VaultCredentialStore` (`_shared/credentials.ts`, RPCs in `000300`); devices: `crates/vixera-platform/src/credentials.rs`, `apps/desktop/src/platform/credentials.ts`, Kotlin `SharePlugin` secure store | Done. Vault RPCs exercised against a plaintext stand-in in `db:verify`, not against Supabase Vault itself |
-| Mail, calendar and bank READ feed normalized context | `packages/connectors/google`, `microsoft`, `bank`; `packages/sync/src/linker`; `_shared/sync.ts`; `connector-sync` + `pg_cron` (`000500`) | Done in code with fixture-based tests. **Not exercised against live Google / Microsoft / Plaid APIs**; `SupabaseSpineStore` is tested with a recording fake, not a live PostgREST |
+| Mail, calendar and bank READ feed normalized context | `packages/connectors/google`, `microsoft`, `bank`; `packages/sync/src/linker`; `_shared/sync.ts`; `connector-sync` + `pg_cron` (`000500`) | Done in code with fixture-based tests. **Not exercised against live Google / Microsoft / Plaid APIs.** `SupabaseSpineStore` now runs the shared store conformance suite against a real PostgREST (`scripts/live-stack.sh`, `pnpm test:live`) |
 | People / threads / documents / money / time relate | `relationships` table + triggers (`000100`, `000600`), `packages/domain/src/graph`, linker edges, `thread.attach`, `person.merge` | Done |
 | Windows app launches as an installed Tauri app | `apps/desktop/src-tauri` (`tauri.conf.json`, NSIS/MSI bundle config), `docs/build-windows.md` | Code and config present; `cargo check` passes on Linux. **Windows installer build not run in this environment** |
 | Field reads real spine data | `apps/desktop/src/bootstrap/runtime.ts` (`SupabaseSpineStore` reader), `data/hooks.ts`, Realtime (`data/realtime.ts`) | Done in code; end-to-end against a live project pending the first deploy |
@@ -215,8 +217,10 @@ all assertions, `cargo check --workspace`, `cargo test -p vixera-platform` 15 te
 | Notification actions are server actions | `action-dispatch`, `_shared/actions.ts`, `action_requests`, `apps/desktop/src/data/actions.ts`; notifications carry no client-side actions | Done |
 
 Partially realized or open, beyond the table: disconnect does not revoke the grant at the
-provider; Plaid requires Hosted Link; Quiet has no "needs attention" action; desktop `fs`
-capability is read-only so Storage artifacts open via signed URL rather than a cached file;
-`createSpineClient` lacks a `storageKey` option so the Field builds its Supabase client
-directly. Details in `docs/field.md` (Known gaps) and `docs/connectors.md` (Deliberately
-not implemented).
+provider; Plaid requires Hosted Link; notification click-to-front is unwired. Details in
+`docs/field.md` (Known gaps) and `docs/connectors.md` (Deliberately not implemented).
+
+What is deliberately absent is listed in the brief's "do not build" section and is absent:
+no overlay over foreign windows, no Android accessibility or assist reading, no OCR, no
+Explorer shell extension, no macOS/iOS/iPadOS client, no payment execution, no Praxion
+account, no model marketplace.

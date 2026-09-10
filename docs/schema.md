@@ -98,8 +98,9 @@ and `put` with an explicit ref refuses a ref that belongs to another account.
 
 Bucket `artifacts` (private): objects live under `<user_id>/…`; policies allow only
 the owner. Realtime publication includes `context_events`, `handoffs`, `threads`,
-`ingest_items`, `connector_sync_states`, `action_requests` (RLS applies to
-subscriptions).
+`ingest_items`, `connector_sync_states`, `action_requests` and
+`connector_accounts` (RLS applies to subscriptions; the Field waits on
+`connector_accounts` for a link finished in the system browser).
 
 ## Scheduled sync
 
