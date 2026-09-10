@@ -11,6 +11,12 @@ apps/desktop/src-tauri/gen/android/.gradle/
 apps/desktop/src-tauri/gen/android/build/
 apps/desktop/src-tauri/gen/android/local.properties
 apps/desktop/src-tauri/gen/android/key.properties
+# Gradle / Kotlin scratch inside the generated Android project
+**/.kotlin/
+**/.cxx/
+apps/desktop/src-tauri/gen/android/**/build/
+apps/desktop/src-tauri/gen/android/app/src/main/jniLibs/
+apps/desktop/src-tauri/gen/android/app/src/main/java/**/generated/
 *.keystore
 *.jks
 
