@@ -7,3 +7,16 @@
 }
 -keep class ai.vixera.one.share.ShareInbox { *; }
 -keep class ai.vixera.one.share.ShareInbox$* { *; }
+
+# androidx.security-crypto (EncryptedSharedPreferences) pulls in Google Tink,
+# which references compile-time-only annotations that are not on the runtime
+# classpath. Without these, R8 fails the release build with "Missing class
+# javax.annotation.Nullable ... and 86 other contexts".
+-dontwarn javax.annotation.**
+-dontwarn javax.annotation.concurrent.**
+-dontwarn com.google.errorprone.annotations.**
+
+# Tink resolves its key managers reflectively, so its classes must survive
+# minification or secure_get / secure_set fail at runtime rather than at build.
+-keep class com.google.crypto.tink.** { *; }
+-keep class androidx.security.crypto.** { *; }
