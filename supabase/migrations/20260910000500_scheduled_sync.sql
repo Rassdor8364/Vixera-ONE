@@ -31,7 +31,10 @@ begin
     url := v_url || '/connector-sync',
     headers := jsonb_build_object('Content-Type', 'application/json', 'X-Vixera-Sync-Secret', v_secret),
     body := jsonb_build_object('mode', 'scheduled'),
-    timeout_milliseconds := 60000
+    -- longer than the function's own wall-clock budget so pg_net does not give
+    -- up on a run that is still making progress (checkpoints are per page, so a
+    -- timeout loses nothing, but the log is clearer this way)
+    timeout_milliseconds := 150000
   );
 end;
 $$;

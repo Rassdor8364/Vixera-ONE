@@ -375,6 +375,14 @@ export function isoFromDb(value: string | null): string | null {
  * numeric → domain decimal string. Postgres pads to the column scale
  * ("12400.0000"); the domain keeps the shortest exact form ("12400", "-2400.5").
  */
+/**
+ * The canonical form of a decimal string: no leading `+`, no trailing zeros,
+ * no `-0`. Connectors write "12400.00", `numeric(20,4)` reads back "12400.0000";
+ * both canonicalize to "12400", so the two stores agree. Applied on write and
+ * on read.
+ */
+export const canonicalDecimal = decimalFromDb;
+
 export function decimalFromDb(value: string | number): string;
 export function decimalFromDb(value: string | number | null): string | null;
 export function decimalFromDb(value: string | number | null): string | null {
@@ -679,8 +687,8 @@ export function moneyAccountToRow(userId: UserId, connectorAccountId: string, a:
     official_name: a.officialName,
     type: a.type,
     currency: a.currency,
-    balance_current: a.balanceCurrent,
-    balance_available: a.balanceAvailable,
+    balance_current: a.balanceCurrent === null ? null : canonicalDecimal(a.balanceCurrent),
+    balance_available: a.balanceAvailable === null ? null : canonicalDecimal(a.balanceAvailable),
     balance_as_of: a.balanceAsOf,
     mask: a.mask,
     metadata: a.metadata ?? {},
@@ -717,7 +725,7 @@ export function moneyTransactionToRow(userId: UserId, connectorAccountId: string
     connector_account_id: connectorAccountId,
     money_account_id: moneyAccountId,
     external_id: t.externalId,
-    amount: t.amount,
+    amount: canonicalDecimal(t.amount),
     currency: t.currency,
     description: t.description,
     merchant_name: t.merchantName,

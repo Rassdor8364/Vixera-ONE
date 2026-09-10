@@ -209,8 +209,28 @@ export class SupabaseSpineStore implements SpineStore {
     return row;
   }
 
+  /**
+   * PostgREST serves `numeric` as a JSON number, and JSON.parse turns
+   * 18250.4000 into the double 18250.4 — the scale (and, for large values, the
+   * precision) is gone before any of our code sees it. Money columns are
+   * therefore always selected cast to text; the conformance suite fails if this
+   * regresses. Small bounded numerics (confidence 0..1) are safe as numbers.
+   */
+  private static readonly SELECT_LISTS: Record<string, string> = {
+    money_accounts:
+      "id,user_id,connector_account_id,external_id,name,official_name,type,currency," +
+      "balance_current::text,balance_available::text,balance_as_of,mask,metadata,created_at,updated_at",
+    money_transactions:
+      "id,user_id,connector_account_id,money_account_id,external_id,amount::text,currency,description," +
+      "merchant_name,posted_on,authorized_at,pending,category,counterparty_person_id,metadata,created_at,updated_at",
+  };
+
+  private selectList(table: string): string {
+    return SupabaseSpineStore.SELECT_LISTS[table] ?? "*";
+  }
+
   private select(table: string): SelectBuilder {
-    return this.from(table).select("*").eq("user_id", this.userId);
+    return this.from(table).select(this.selectList(table)).eq("user_id", this.userId);
   }
 
   // -------------------------------------------------------------------------
@@ -344,9 +364,10 @@ export class SupabaseSpineStore implements SpineStore {
     let q = this.select("documents").contains("source_ref", sourceRef);
     q = connectorAccountId === null ? q.is("connector_account_id", null) : q.eq("connector_account_id", connectorAccountId);
     const rows = await this.rows<DocumentRow>(q.limit(10), "document by source ref");
-    // `contains` is superset matching; keep exact equality semantics.
+    // `contains` is superset matching; the contract is exact equality (a partial
+    // ref must not match), so filter the candidates down. Conformance-tested.
     const wanted = JSON.stringify(sortKeys(sourceRef));
-    const hit = rows.find((r) => JSON.stringify(sortKeys(r.source_ref)) === wanted) ?? rows[0];
+    const hit = rows.find((r) => JSON.stringify(sortKeys(r.source_ref)) === wanted);
     return hit ? documentFromRow(hit) : null;
   }
 

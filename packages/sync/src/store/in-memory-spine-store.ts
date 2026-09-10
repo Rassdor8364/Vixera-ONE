@@ -72,6 +72,7 @@ import {
   type TransactionsQuery,
   type UpsertResult,
 } from "./spine-store.ts";
+import { canonicalDecimal } from "./rows.ts";
 
 /**
  * In-memory SpineStore for ONE user. Used by tests, dev fixtures and as the
@@ -426,8 +427,8 @@ export class InMemorySpineStore implements SpineStore {
         officialName: a.officialName,
         type: a.type,
         currency: a.currency,
-        balanceCurrent: a.balanceCurrent,
-        balanceAvailable: a.balanceAvailable,
+        balanceCurrent: a.balanceCurrent === null ? null : canonicalDecimal(a.balanceCurrent),
+        balanceAvailable: a.balanceAvailable === null ? null : canonicalDecimal(a.balanceAvailable),
         balanceAsOf: a.balanceAsOf,
         mask: a.mask,
         metadata: a.metadata ?? {},
@@ -466,7 +467,7 @@ export class InMemorySpineStore implements SpineStore {
         connectorAccountId: connectorAccountId as MoneyTransaction["connectorAccountId"],
         moneyAccountId: account.id,
         externalId: t.externalId,
-        amount: t.amount,
+        amount: canonicalDecimal(t.amount),
         currency: t.currency,
         description: t.description,
         merchantName: t.merchantName,

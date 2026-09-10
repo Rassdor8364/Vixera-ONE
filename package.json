@@ -17,7 +17,10 @@
     "praxion:mock": "node --experimental-strip-types packages/connectors/praxion/scripts/mock-server.ts",
     "db:verify": "bash scripts/verify-migrations.sh",
     "functions:check": "bash scripts/check-functions.sh",
-    "check": "pnpm typecheck && pnpm test && cargo check --workspace"
+    "check": "pnpm typecheck && pnpm test && cargo check --workspace",
+    "db:live": "bash scripts/live-stack.sh up",
+    "db:live:down": "bash scripts/live-stack.sh down",
+    "test:live": "bash -c 'eval \"$(bash scripts/live-stack.sh up | sed \"s/^/export /\")\" && pnpm --filter @vixera/sync test'"
   },
   "devDependencies": {
     "@types/node": "~22.20.2",

@@ -57,3 +57,29 @@ packages. Deno resolves workspace packages through `supabase/functions/deno.json
 ## ADR-010 · The dev identity is a fixed UUID, never an email or machine name
 `DEV_USER_ID = 00000000-0000-4000-8000-000000000001`, seeded into `auth.users`
 locally. `currentUser()` is the only place identity is resolved.
+
+## ADR-011 · Edge Functions resolve identity per request, never per process
+One isolate serves many users, so `setCurrentUserProvider()` is never called in a
+function. `authenticate()` verifies the Bearer token with Supabase Auth and the
+user id is threaded into a `SupabaseSpineStore` bound to it; the service role is
+only ever used through such a store. The OAuth callback, which has no session,
+carries the user id in an HMAC-signed, expiring state token.
+
+## ADR-012 · The Field mutates context only through `action-dispatch`
+Every durable context change from a device is an `ActionEnvelope` with an
+idempotency key. The two client-side writes that remain are the artifact upload
+to Storage (bytes, not context) and the device's own `devices` row (identity, not
+context). Dev-fixture mode keeps the same envelope contract over an in-memory
+dispatcher so the Field code has one write path.
+
+## ADR-013 · Linking runs in the system browser against server-held secrets
+OAuth consent and Plaid Hosted Link open in the system browser; the code / public
+token exchange happens in `connector-link` with client secrets from the function
+environment, and the Field only waits for the `connector_accounts` row (Realtime
+or polling). No WebView-embedded OAuth, no provider SDK in the app, no token on
+a device. Consequence: Plaid Hosted Link must be enabled for the Plaid client.
+
+## ADR-014 · Dev-fixture mode is the only place with demo data
+`VITE_VIXERA_DEV_FIXTURES=true` swaps in `InMemorySpineStore` + `MockConnector`
+(the brief's Eric / Priya / Northwind world) behind a dynamic import. Production
+has no demo rows and shows a useful empty state until a connector is linked.

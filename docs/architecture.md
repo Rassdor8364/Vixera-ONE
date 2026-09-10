@@ -12,7 +12,8 @@ Companion documents live beside it in `docs/`:
 | Database schema | [`schema.md`](./schema.md) |
 | Connector contract | [`connectors.md`](./connectors.md) |
 | Praxion local contract | [`praxion-contract.md`](./praxion-contract.md) |
-| Sync flow | [`sync.md`](./sync.md) |
+| Sync flow, ingestion, handoff, server actions | [`sync.md`](./sync.md) |
+| The Field (areas, One Command, dev fixtures, Android) | [`field.md`](./field.md) |
 | currentUser strategy | [`current-user.md`](./current-user.md) |
 | Credential storage | [`credentials.md`](./credentials.md) |
 | Screen-context adapters | [`screen-context.md`](./screen-context.md) |
@@ -66,7 +67,8 @@ Dependency rule (enforced by package `dependencies` and reviewed in tests):
 * `domain` depends on nothing (no React, no Tauri, no Supabase).
 * `sync` depends on `domain` (+ `@supabase/supabase-js` in one adapter file).
 * `connectors/*` depend on `domain` only. They never import UI, sync or Tauri.
-* `command`, `intelligence` depend on `domain` and the `SpineReader` interface from `sync`.
+* `command` depends on `domain` and the `SpineReader` interface from `sync`; `intelligence`
+  depends on `domain` only.
 * `apps/desktop/src` (UI) depends on everything above through interfaces; it never calls
   a provider API directly.
 * `apps/desktop/src-tauri` (Rust) knows nothing about the domain model; it exposes
@@ -186,3 +188,35 @@ Field, Android companion foundation (share/capture → ingest), server actions, 
 Deferred on purpose: floating overlays over arbitrary apps, Android accessibility/assist
 screen reading, OCR pipelines, Explorer shell extension, tray workflows, macOS/iOS/iPadOS
 clients, payment execution, multi-user onboarding, Praxion accounts, model marketplace.
+
+## 11. Phase 1 status
+
+Each line of the brief's definition of done, where it is realized, and what is only
+partially realized. Verified on 2026-09-10 in a Linux container: `pnpm typecheck` clean,
+`pnpm test` 457 tests / 51 files, `pnpm functions:check` 41 Deno tests, `pnpm db:verify`
+all assertions, `cargo check --workspace`, `cargo test -p vixera-platform` 15 tests.
+
+| Definition of done | Realized in | Status |
+| --- | --- | --- |
+| Supabase/Postgres spine exists | `supabase/migrations/20260910000100_spine.sql` … `000700`, `supabase/config.toml`, `seed.sql`; `scripts/verify-migrations.sh` + `scripts/sql/verify.sql` | Done. Migrations verified against throwaway PostgreSQL; **not yet applied to a live Supabase project** in this environment |
+| All rows use `user_id` | every table in `000100_spine.sql`; asserted by `verify.sql` §1; `SupabaseSpineStore` filters and sets it | Done |
+| `currentUser()` central | `packages/domain/src/identity/current-user.ts`; Field `apps/desktop/src/bootstrap/identity.ts`; Edge Functions `supabase/functions/_shared/auth.ts` (per request) | Done |
+| Multi-account connector accounts | `connector_accounts` natural key `(user, provider, external_account_id)`, `ConnectorRegistry`, stateless connectors, `persistLinkedAccount` (`_shared/link.ts`) | Done |
+| Credentials behind a secure abstraction | `CredentialStore` (domain) → `VaultCredentialStore` (`_shared/credentials.ts`, RPCs in `000300`); devices: `crates/vixera-platform/src/credentials.rs`, `apps/desktop/src/platform/credentials.ts`, Kotlin `SharePlugin` secure store | Done. Vault RPCs exercised against a plaintext stand-in in `db:verify`, not against Supabase Vault itself |
+| Mail, calendar and bank READ feed normalized context | `packages/connectors/google`, `microsoft`, `bank`; `packages/sync/src/linker`; `_shared/sync.ts`; `connector-sync` + `pg_cron` (`000500`) | Done in code with fixture-based tests. **Not exercised against live Google / Microsoft / Plaid APIs**; `SupabaseSpineStore` is tested with a recording fake, not a live PostgREST |
+| People / threads / documents / money / time relate | `relationships` table + triggers (`000100`, `000600`), `packages/domain/src/graph`, linker edges, `thread.attach`, `person.merge` | Done |
+| Windows app launches as an installed Tauri app | `apps/desktop/src-tauri` (`tauri.conf.json`, NSIS/MSI bundle config), `docs/build-windows.md` | Code and config present; `cargo check` passes on Linux. **Windows installer build not run in this environment** |
+| Field reads real spine data | `apps/desktop/src/bootstrap/runtime.ts` (`SupabaseSpineStore` reader), `data/hooks.ts`, Realtime (`data/realtime.ts`) | Done in code; end-to-end against a live project pending the first deploy |
+| NOW / Threads / People / Time / Money / Files / Quiet have initial surfaces | `apps/desktop/src/field/areas/*.tsx`, `docs/field.md` | Done |
+| One Command answers basic queries | `packages/command` (grammar, router, executor), `field/command/OneCommandBar.tsx`; tests in `router.test.ts`, `executor.test.ts`, `one-command.test.ts` | Done for the brief's examples; rule-based only |
+| Praxion detected via versioned contract, used if present, absent is fine | `packages/connectors/praxion`, `apps/desktop/src/platform/praxion-transport.ts`, `data/praxion.ts`, `data/open-document.ts`; mock server | Done; degradation tested with the in-memory fake, no real Praxion build exists yet |
+| Android builds with share/capture → ingestion | `plugins/tauri-plugin-vixera-share` (Kotlin + Rust), `apps/desktop/src/field/companion/*`, `data/ingest.ts`, `_shared/ingest.ts`, `capabilities/mobile.json` | Code present; share-intake logic unit-tested. **APK build (`pnpm tauri android build`) not run in this environment**; the Kotlin plugin has not been compiled here |
+| Vixera-owned handoff architecture | `handoffs` table, `handoff.create` / `handoff.accept` handlers, `apps/desktop/src/data/handoff.ts`, `ContinueOn` | Done; `delivered` / `cancelled` states exist but nothing sets them |
+| Notification actions are server actions | `action-dispatch`, `_shared/actions.ts`, `action_requests`, `apps/desktop/src/data/actions.ts`; notifications carry no client-side actions | Done |
+
+Partially realized or open, beyond the table: disconnect does not revoke the grant at the
+provider; Plaid requires Hosted Link; Quiet has no "needs attention" action; desktop `fs`
+capability is read-only so Storage artifacts open via signed URL rather than a cached file;
+`createSpineClient` lacks a `storageKey` option so the Field builds its Supabase client
+directly. Details in `docs/field.md` (Known gaps) and `docs/connectors.md` (Deliberately
+not implemented).

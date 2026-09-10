@@ -25,6 +25,11 @@ pnpm dev:desktop             # = pnpm --filter @vixera/desktop tauri dev  (Vite 
 pnpm tauri build             # release build + installers
 ```
 
+`pnpm dev:desktop` needs a `.env` with `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY` (a local `supabase start` or a project), or
+`VITE_VIXERA_DEV_FIXTURES=true` for the in-memory world without a backend
+(`docs/field.md`).
+
 `pnpm tauri build` writes to `target/release/bundle/`:
 
 * `nsis/Vixera One_0.1.0_x64-setup.exe` — per-user NSIS installer (`installMode: currentUser`, no admin prompt)

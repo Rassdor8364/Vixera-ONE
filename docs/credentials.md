@@ -80,7 +80,10 @@ The adapter refuses any key outside the Vixera namespace (`supabase.session`
 and the `supabase.session-*` siblings supabase-js derives from `storageKey`,
 `device.key`, `connector.<accountId>`), so no library can turn the keychain
 into a general cache. In a browser it falls back to memory —
-never `localStorage`.
+never `localStorage`. The Field builds this client in
+`apps/desktop/src/bootstrap/supabase.ts` with `createClient` directly, because
+`createSpineClient` (`@vixera/sync`) has no `storageKey` option and the
+supabase-js default key would be refused by the adapter.
 
 ## Forbidden
 
@@ -97,8 +100,8 @@ never `localStorage`.
 | Situation | Action |
 | --- | --- |
 | Provider refresh (normal operation) | `connector-sync` refreshes tokens and calls `vx_credential_put(account, new_secret, existing_ref)`; the ref is unchanged |
-| User disconnects an account | `vx_connector_account_disconnect(account_id)` (service role, via `connector-link`) — Vault row deleted, account `disconnected`, sync states disabled; also revoke at the provider (Google/Microsoft token revocation endpoint, Plaid `/item/remove`) |
-| Provider revokes / token invalid | sync state records the error and status `error`; the Field offers "reconnect", which is a fresh `connector-link` → new `credential_ref` |
+| User disconnects an account | `vx_connector_account_disconnect(account_id)` (service role, via `connector-link` step `disconnect`) — Vault row deleted, account `disconnected`, sync states disabled. Revocation at the provider (Google/Microsoft token revocation endpoint, Plaid `/item/remove`) is **not** performed in Phase 1; revoke manually in the provider's account settings if needed |
+| Provider revokes / token invalid | the engine sets the account `needs_reauth` with `last_error` and skips it; the user connects the same provider again from the Field (Quiet → Sources), which re-links the existing account row: `vx_credential_put` replaces the secret, the account becomes `active`, checkpoints are kept |
 | Rotate `VIXERA_SYNC_SECRET` | `supabase secrets set VIXERA_SYNC_SECRET=...` then update the Vault secret `vixera_sync_secret` used by `pg_cron` |
 | Rotate provider client secret | `supabase secrets set ...`; existing refresh tokens keep working for Google/Microsoft; Plaid needs no re-link |
 | Sign out a device | `credential_delete("supabase.session")` (Field "sign out"); the refresh token is also revoked server-side by `supabase.auth.signOut()` |

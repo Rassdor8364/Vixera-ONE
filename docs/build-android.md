@@ -121,11 +121,16 @@ Re-apply this edit whenever you delete and regenerate `gen/android`.
    item when it parses as http(s), else `text`; `EXTRA_SUBJECT` becomes `title`.
 3. Items are queued in `ShareInbox` and the plugin emits the `share` event.
 4. The Field calls `getPendingShares()` on start-up and subscribes with
-   `onShare()` (`apps/desktop/src/platform/share.ts`), reads file bytes with
+   `onShare()` (`apps/desktop/src/platform/share.ts`;
+   `field/companion/useShareIntake.ts`), reads file bytes with
    `readFileBytes(item.path)` (fs plugin; the cache dir is inside the
    `$APPCACHE/**` scope of `capabilities/mobile.json`), hashes with `hashFile`,
-   runs the ingestion pipeline, then `clearPendingShares()` which deletes the
-   cached copies.
+   uploads to Storage and dispatches `ingest.submit` per item
+   (`drainShares` in `field/companion/share-intake.ts`). It then re-reads the
+   queue for shares that arrived meanwhile and calls `clearPendingShares()`
+   (which deletes the cached copies) only once every item was dispatched; a
+   batch with failures leaves the queue untouched so it is retried on the next
+   launch.
 
 The cache lives under the app's private cache directory
 (`/data/data/ai.vixera.one/cache/vixera-shares/`); Android may purge it under
