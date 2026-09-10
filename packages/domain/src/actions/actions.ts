@@ -10,6 +10,7 @@ export const ACTION_TYPES = [
   "context_event.dismiss",
   "context_event.quiet",
   "context_event.snooze",
+  "context_event.attend",
   "thread.attach",
   "thread.create",
   "handoff.create",
@@ -24,6 +25,8 @@ export interface ActionPayloads {
   "context_event.dismiss": { contextEventId: string };
   "context_event.quiet": { contextEventId: string };
   "context_event.snooze": { contextEventId: string; until: string };
+  /** Moves a quiet item back into the attention stream (clears any snooze). */
+  "context_event.attend": { contextEventId: string };
   "thread.attach": { threadId: string; entityType: string; entityId: string };
   "thread.create": { title: string; kind?: string; attach?: { entityType: string; entityId: string }[] };
   "handoff.create": {

@@ -296,3 +296,23 @@ Deno.test("person.merge moves relationships to the survivor and marks the merged
   const again = await dispatchAction(store, envelope("person.merge", { survivorId: survivor.id, mergedId: merged.id }, "merge-2"), ctx);
   assert.equal(again.result!.alreadyMerged, true);
 });
+
+Deno.test("context_event.attend brings a quiet item back and clears its snooze", async () => {
+  const { store, ctx, clock } = world();
+  const subject = await store.createIngestItem({ deviceId: null, kind: "text", source: "share", title: "Note", textContent: "x", url: null, mimeType: null, sizeBytes: null, storagePath: null, status: "received", documentId: null, error: null, metadata: {}, processedAt: null });
+  const events = await store.upsertContextEvents([
+    { kind: "ingest.received", subject: ref("ingest_item", subject.id), title: "Note", summary: null, occurredAt: clock().toISOString(), importance: 80, dueAt: null, attention: "needs_attention", connectorAccountId: null, dedupeKey: "t:attend", metadata: {} },
+  ]);
+  const ev = events.rows[0]!;
+  const until = new Date(clock().getTime() + 3600_000).toISOString();
+  await dispatchAction(store, envelope("context_event.snooze", { contextEventId: ev.id, until }), ctx);
+  assert.equal((await store.getContextEvent(ev.id))?.attention, "quiet");
+
+  const outcome = await dispatchAction(store, envelope("context_event.attend", { contextEventId: ev.id }), ctx);
+  assert.equal(outcome.status, "done");
+  const attended = await store.getContextEvent(ev.id);
+  assert.equal(attended?.attention, "needs_attention");
+  assert.equal(attended?.metadata.snoozedUntil, null);
+  const now = deriveNow({ contextEvents: await store.listContextEvents(), timeEvents: [], moneyTransactions: [], threads: [], relationships: [], now: clock() });
+  assert.equal(now.needsMe.length, 1);
+});

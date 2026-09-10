@@ -1,7 +1,7 @@
 /**
  * Quiet — lower-priority context the user or the rules moved aside.
- * Read-only in Phase 1 apart from Dismiss (server action). Moving an item
- * back to "needs attention" has no action type yet (see notes).
+ * Two server actions: bring an item back into the attention stream
+ * (context_event.attend, which also clears a snooze) or dismiss it.
  */
 import { buildEnvelope } from "../../data/actions.ts";
 import { useQuiet } from "../../data/hooks.ts";
@@ -29,9 +29,14 @@ export function QuietArea() {
             side={relativeTime(e.occurredAt)}
             meta={e.summary}
             actions={
-              <Action disabled={busy} onClick={() => void run(() => field.act(buildEnvelope("context_event.dismiss", { contextEventId: e.id }, { actorDeviceId: device.deviceId })))}>
-                Dismiss
-              </Action>
+              <>
+                <Action disabled={busy} onClick={() => void run(() => field.act(buildEnvelope("context_event.attend", { contextEventId: e.id }, { actorDeviceId: device.deviceId })))}>
+                  Needs attention
+                </Action>
+                <Action disabled={busy} onClick={() => void run(() => field.act(buildEnvelope("context_event.dismiss", { contextEventId: e.id }, { actorDeviceId: device.deviceId })))}>
+                  Dismiss
+                </Action>
+              </>
             }
           />
         ))}

@@ -95,7 +95,7 @@ function FieldShell({ onSignOut }: { onSignOut?: (() => Promise<void>) | undefin
           <div className="context-line__marks">
             {stateMark}
             {field.praxionReady && <StateMark tone="muted">{praxionLabel(field.praxion)}</StateMark>}
-            {onSignOut && !field.narrow && (
+            {onSignOut && (
               <button type="button" className="action" onClick={() => void onSignOut()}>
                 Sign out
               </button>

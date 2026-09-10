@@ -168,6 +168,11 @@ async function executeDev(store: SpineStore, envelope: ActionEnvelope, now: () =
       const ev = await store.setContextEventAttention(p.contextEventId, "quiet", { snoozedUntil: p.until });
       return { contextEventId: ev.id, attention: ev.attention, until: p.until };
     }
+    case "context_event.attend": {
+      const p = envelope.payload as ActionPayloads["context_event.attend"];
+      const ev = await store.setContextEventAttention(p.contextEventId, "needs_attention", { snoozedUntil: null });
+      return { contextEventId: ev.id, attention: ev.attention };
+    }
     case "thread.attach": {
       const p = envelope.payload as ActionPayloads["thread.attach"];
       const edge = await store.relate({ from: ref("thread", p.threadId), kind: attachKindFor(p.entityType), to: ref(p.entityType as EntityType, p.entityId), source: "user" });

@@ -168,6 +168,7 @@ export function validatePayload<T extends ActionType>(actionType: T, p: Raw): Ac
   switch (actionType) {
     case "context_event.dismiss":
     case "context_event.quiet":
+    case "context_event.attend":
       return { contextEventId: uuidField(p, "contextEventId") } as ActionPayloads[T];
     case "context_event.snooze":
       return { contextEventId: uuidField(p, "contextEventId"), until: isoField(p, "until") } as ActionPayloads[T];
@@ -298,6 +299,9 @@ export const ACTION_HANDLERS: ActionHandlers = {
     const result = await setAttention(store, contextEventId, "quiet", { snoozedUntil: until });
     return { ...result, snoozedUntil: until };
   },
+
+  // Back into the attention stream; any snooze is cleared so NOW scores it again.
+  "context_event.attend": (store, { contextEventId }) => setAttention(store, contextEventId, "needs_attention", { snoozedUntil: null }),
 
   "thread.attach": async (store, { threadId, entityType, entityId }) => {
     if (!isEntityType(entityType)) throw new ActionError(`unknown entity type ${entityType}`);

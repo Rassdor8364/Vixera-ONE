@@ -18,6 +18,8 @@ export interface SpineClientOptions {
   readonly autoRefreshToken?: boolean;
   /** Custom session storage (platform keychain adapter). Only used when persisting. */
   readonly storage?: SessionStorageAdapter;
+  /** Key the session is stored under. Needed when the adapter only accepts namespaced keys. */
+  readonly storageKey?: string;
   /** Custom fetch (Tauri HTTP plugin, test stub). */
   readonly fetch?: typeof fetch;
   /** Extra headers on every request (e.g. an app identifier). */
@@ -43,6 +45,7 @@ export function createSpineClient(url: string, anonKey: string, options: SpineCl
     detectSessionInUrl: false,
   };
   if (options.storage) auth.storage = options.storage;
+  if (options.storageKey) auth.storageKey = options.storageKey;
   const clientOptions: SupabaseClientOptions<"public"> = { auth };
   if (options.fetch) clientOptions.global = { fetch: options.fetch, ...(options.headers ? { headers: { ...options.headers } } : {}) };
   else if (options.headers) clientOptions.global = { headers: { ...options.headers } };

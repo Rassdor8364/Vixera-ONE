@@ -62,6 +62,7 @@ describe("dev action dispatcher parity", () => {
       buildEnvelope("context_event.dismiss", { contextEventId: ev?.id ?? "" }),
       buildEnvelope("context_event.quiet", { contextEventId: ev?.id ?? "" }),
       buildEnvelope("context_event.snooze", { contextEventId: ev?.id ?? "", until: "2026-09-12T09:00:00Z" }),
+      buildEnvelope("context_event.attend", { contextEventId: ev?.id ?? "" }),
       buildEnvelope("thread.create", { title: "Northwind", attach: [{ entityType: "person", entityId: priya?.id ?? "" }] }),
       buildEnvelope("thread.attach", { threadId: (await store.listThreads())[0]?.id ?? "", entityType: "document", entityId: doc?.id ?? "" }),
       buildEnvelope("handoff.create", { sourceDeviceId: "win", targetDeviceId: "droid", focus: { type: "document", id: doc?.id ?? "" }, documentId: doc?.id ?? "" }),
@@ -73,6 +74,11 @@ describe("dev action dispatcher parity", () => {
       const o = await world.dispatch(e);
       expect(o.status, e.actionType).toBe("done");
     }
+    // attend is the inverse of quiet/snooze: the item is back in the attention stream.
+    const attended = await store.getContextEvent(ev?.id ?? "");
+    expect(attended?.attention).toBe("needs_attention");
+    expect(attended?.metadata["snoozedUntil"]).toBeNull();
+
     const [handoff] = await store.listHandoffs();
     const accept = await world.dispatch(buildEnvelope("handoff.accept", { handoffId: handoff?.id ?? "", deviceId: "droid" }));
     expect(accept.status).toBe("done");
