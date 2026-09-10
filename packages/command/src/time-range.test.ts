@@ -36,3 +36,16 @@ describe("time ranges", () => {
     expect(transactionRange(undefined, { now })).toBeNull();
   });
 });
+
+describe("next 7 days is a rolling window, not the calendar week", () => {
+  it("starts today and runs seven days", () => {
+    // A Thursday: the calendar week would start on Monday and end Sunday.
+    const context = { now: new Date("2026-09-10T15:00:00Z"), timezone: "UTC" };
+    const rolling = eventRange("next7", context);
+    expect(rolling.from).toBe("2026-09-10T00:00:00.000Z");
+    expect(rolling.to).toBe("2026-09-17T00:00:00.000Z");
+    const calendar = eventRange("week", context);
+    expect(calendar.from).toBe("2026-09-07T00:00:00.000Z");
+    expect(calendar.to).toBe("2026-09-14T00:00:00.000Z");
+  });
+});

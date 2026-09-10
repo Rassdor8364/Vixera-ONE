@@ -22,6 +22,12 @@ const URL = process.env.VIXERA_LIVE_URL;
 const SECRET = process.env.VIXERA_LIVE_JWT_SECRET;
 const live = Boolean(URL && SECRET);
 
+// `pnpm test:live` sets VIXERA_LIVE_REQUIRED so an accidentally skipped suite
+// cannot pass for a green run.
+if (!live && process.env.VIXERA_LIVE_REQUIRED === "1") {
+  throw new Error("VIXERA_LIVE_REQUIRED=1 but VIXERA_LIVE_URL / VIXERA_LIVE_JWT_SECRET are not set");
+}
+
 function jwt(claims: Record<string, unknown>): string {
   const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
   const head = enc({ alg: "HS256", typ: "JWT" });

@@ -3,6 +3,7 @@ import { ref } from "@vixera/domain";
 import { CommandExecutor, matchesKind, type CommandResult } from "./executor.ts";
 import type { CommandContext } from "./intent.ts";
 import { briefReader, briefWorld, BRIEF_NOW, person, document } from "./testing/brief-world.ts";
+import { FakeSpineReader } from "./testing/fake-spine-reader.ts";
 
 const ctx: CommandContext = { area: "now", focus: null, now: BRIEF_NOW };
 const world = briefWorld();
@@ -200,5 +201,24 @@ describe("CommandExecutor", () => {
     expect(matchesKind(photo, "pdf")).toBe(false);
     const tagged = document(10, "scan 0042", null, BRIEF_NOW.toISOString(), { metadata: { kind: "invoice" } });
     expect(matchesKind(tagged, "invoice")).toBe(true);
+  });
+});
+
+describe("thread transactions also reach rows linked through a person", () => {
+  it("finds a merchant-matched transaction with no document between it and the thread", async () => {
+    // The only path is thread → person (user attached) and person → transaction
+    // (the linker matched the merchant). Nothing links the thread to the row.
+    const w = briefWorld();
+    const reader = new FakeSpineReader({
+      people: [w.eric],
+      threads: [w.brand],
+      transactions: [w.ericPayment],
+      edges: [
+        { from: ref("thread", w.brand.id), kind: "has_person", to: ref("person", w.eric.id) },
+        { from: ref("money_transaction", w.ericPayment.id), kind: "has_person", to: ref("person", w.eric.id), confidence: 0.8 },
+      ],
+    });
+    const result = await new CommandExecutor(reader).execute({ type: "show_transactions", scope: { threadQuery: "brand" } }, ctx);
+    expect(ids(result)).toEqual([w.ericPayment.id]);
   });
 });

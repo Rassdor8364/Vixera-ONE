@@ -244,11 +244,17 @@ export class CommandExecutor {
 
   /** Direct `thread ↔ transaction` edges plus transactions two hops away through the thread's documents. */
   private async threadTransactions(thread: Thread): Promise<MoneyTransaction[]> {
+    // Three hops, because Phase 1 produces thread edges in three ways: the user
+    // attaches a transaction; a document of the thread relates to one; or the
+    // linker matched a merchant to a person the thread has.
     const threadRef = ref("thread", thread.id);
     const ids = new Set<string>();
     for (const n of await this.reader.neighbors(threadRef, { type: "money_transaction" })) ids.add(n.ref.id);
     for (const doc of await this.reader.neighbors(threadRef, { type: "document" })) {
       for (const n of await this.reader.neighbors(doc.ref, { type: "money_transaction" })) ids.add(n.ref.id);
+    }
+    for (const person of await this.reader.neighbors(threadRef, { type: "person" })) {
+      for (const n of await this.reader.neighbors(person.ref, { type: "money_transaction" })) ids.add(n.ref.id);
     }
     return this.loadTransactions(ids);
   }

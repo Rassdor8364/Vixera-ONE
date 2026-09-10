@@ -316,3 +316,33 @@ Deno.test("context_event.attend brings a quiet item back and clears its snooze",
   const now = deriveNow({ contextEvents: await store.listContextEvents(), timeEvents: [], moneyTransactions: [], threads: [], relationships: [], now: clock() });
   assert.equal(now.needsMe.length, 1);
 });
+
+Deno.test("a storage path outside the caller's own folder is refused", async () => {
+  const { store, ctx } = world();
+  const win = await device(store, "win");
+  const foreign = "00000000-0000-4000-8000-0000000000ff/ingest/stolen.pdf";
+
+  const ingest = await dispatchAction(
+    store,
+    envelope("ingest.submit", { kind: "file", source: "share", storagePath: foreign, deviceId: win.id }, "ingest:foreign"),
+    ctx,
+  );
+  assert.equal(ingest.status, "failed");
+  assert.ok((ingest.error ?? "").includes("own storage folder"));
+
+  const handoff = await dispatchAction(
+    store,
+    envelope("handoff.create", { sourceDeviceId: win.id, artifactStoragePath: foreign }, "handoff:foreign"),
+    ctx,
+  );
+  assert.equal(handoff.status, "failed");
+  assert.ok((handoff.error ?? "").includes("own storage folder"));
+
+  // The caller's own folder is accepted.
+  const ok = await dispatchAction(
+    store,
+    envelope("ingest.submit", { kind: "file", source: "share", storagePath: `${DEV_USER_ID}/ingest/mine.pdf`, deviceId: win.id }, "ingest:mine"),
+    ctx,
+  );
+  assert.equal(ok.status, "done");
+});

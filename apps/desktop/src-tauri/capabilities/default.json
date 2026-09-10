@@ -25,8 +25,6 @@
     "fs:allow-read-file",
     "fs:allow-stat",
     "fs:allow-exists",
-    "fs:allow-mkdir",
-    "fs:allow-write-file",
     {
       "identifier": "fs:scope",
       "allow": [
@@ -47,6 +45,34 @@
         },
         {
           "path": "$DESKTOP/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        {
+          "path": "$APPCACHE/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        {
+          "path": "$APPCACHE/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
         }
       ]
     },

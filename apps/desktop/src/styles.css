@@ -124,3 +124,7 @@ textarea.input { min-height: 96px; resize: vertical; }
 .amount--in { color: var(--accent); }
 .select { background: var(--ground-2); border: 1px solid var(--line); color: var(--text); padding: 6px 8px; border-radius: 2px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 6px 0 0; }
+
+/* A line of text that acts as a link (used for the on-screen document hint). */
+.link { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted; color: inherit; font: inherit; }
+.link:hover { color: var(--text); }

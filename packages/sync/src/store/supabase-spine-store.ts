@@ -233,11 +233,48 @@ export class SupabaseSpineStore implements SpineStore {
     return this.from(table).select(this.selectList(table)).eq("user_id", this.userId);
   }
 
+  /** Like `select`, but PostgREST also reports the exact total (needed by `pageAll`). */
+  private selectCounted(table: string): SelectBuilder {
+    return this.from(table).select(this.selectList(table), { count: "exact" }).eq("user_id", this.userId);
+  }
+
+  /**
+   * Reads a whole result set, paging under the caller's ordering. PostgREST
+   * caps every response at `db-max-rows` (this project sets 1000, the hosted
+   * default too) and answers 200 with a short body, so an unpaged read would
+   * silently truncate. The stop signal is PostgREST's exact count, because a
+   * short page means "server cap" just as often as "end of data"; without a
+   * count (a stub client) a short page ends the read. `build` must apply a
+   * total order (add `id` as the tiebreaker) or rows can be skipped.
+   */
+  private async pageAll<T>(build: (from: number, to: number) => SelectBuilder, query: Page, context: string): Promise<T[]> {
+    const want = query.limit ?? Number.POSITIVE_INFINITY;
+    const out: T[] = [];
+    let offset = query.offset ?? 0;
+    // PostgREST reports the true total in Content-Range, which is the only
+    // reliable end-of-data signal: a short page can equally mean "server cap".
+    let total: number | null = null;
+    while (out.length < want) {
+      const size = Math.min(CHUNK, want - out.length);
+      const result = (await build(offset, offset + size - 1)) as Result<T[]> & { count?: number | null };
+      if (result.error) throw mapError(result.error, context);
+      const page = result.data ?? [];
+      if (typeof result.count === "number") total = result.count;
+      out.push(...page);
+      if (page.length === 0) break;
+      offset += page.length;
+      if (total !== null && offset - (query.offset ?? 0) >= total) break;
+      // No count available (a stub client): a short page is the end.
+      if (total === null && page.length < size) break;
+    }
+    return out;
+  }
+
   // -------------------------------------------------------------------------
   // People
   // -------------------------------------------------------------------------
   async listPeople(query: PeopleQuery = {}): Promise<Person[]> {
-    let q = this.select("people");
+    let q = this.selectCounted("people");
     if (!query.includeMerged) q = q.is("merged_into_id", null);
     const search = query.search?.trim();
     if (search) {
@@ -251,8 +288,9 @@ export class SupabaseSpineStore implements SpineStore {
       if (ids.length) clauses.push(`id.in.(${ids.join(",")})`);
       q = q.or(clauses.join(","));
     }
-    q = paged(q.order("display_name", { ascending: true }), query);
-    return (await this.rows<PersonRow>(q, "people")).map(personFromRow);
+    const ordered = q.order("display_name", { ascending: true }).order("id", { ascending: true });
+    const rows = await this.pageAll<PersonRow>((from, to) => ordered.range(from, to), query, "people");
+    return rows.map(personFromRow);
   }
 
   async getPerson(id: string): Promise<Person | null> {
@@ -309,15 +347,16 @@ export class SupabaseSpineStore implements SpineStore {
   // Threads
   // -------------------------------------------------------------------------
   async listThreads(query: ThreadsQuery = {}): Promise<Thread[]> {
-    let q = this.select("threads");
+    let q = this.selectCounted("threads");
     if (query.status) q = q.eq("status", query.status);
     const search = query.search?.trim();
     if (search) {
       const p = orIlike(search);
       q = q.or(`title.ilike.${p},summary.ilike.${p}`);
     }
-    q = paged(q.order("updated_at", { ascending: false }), query);
-    return (await this.rows<ThreadRow>(q, "threads")).map(threadFromRow);
+    const ordered = q.order("updated_at", { ascending: false }).order("id", { ascending: true });
+    const rows = await this.pageAll<ThreadRow>((from, to) => ordered.range(from, to), query, "threads");
+    return rows.map(threadFromRow);
   }
 
   async getThread(id: string): Promise<Thread | null> {
@@ -631,22 +670,9 @@ export class SupabaseSpineStore implements SpineStore {
    * could be skipped or repeated across pages.
    */
   async listRelationships(query: Page = {}): Promise<Relationship[]> {
-    const want = query.limit ?? Number.POSITIVE_INFINITY;
-    const out: RelationshipRow[] = [];
-    let offset = query.offset ?? 0;
-    while (out.length < want) {
-      const size = Math.min(CHUNK, want - out.length);
-      const page = await this.rows<RelationshipRow>(
-        this.select("relationships").order("created_at", { ascending: true }).order("id", { ascending: true }).range(offset, offset + size - 1),
-        "relationships",
-      );
-      out.push(...page);
-      // Stop only when a page comes back EMPTY. A short page means the server
-      // capped the response (db-max-rows), not that the data ran out.
-      if (page.length === 0) break;
-      offset += page.length;
-    }
-    return out.map(relationshipFromRow);
+    const ordered = this.selectCounted("relationships").order("created_at", { ascending: true }).order("id", { ascending: true });
+    const rows = await this.pageAll<RelationshipRow>((from, to) => ordered.range(from, to), query, "relationships");
+    return rows.map(relationshipFromRow);
   }
 
   async neighbors(node: EntityRef, query: NeighborsQuery = {}): Promise<NeighborRow[]> {

@@ -261,6 +261,10 @@ export function runSpineStoreConformance(label: string, create: ConformanceFacto
       for (const p of people) await store.relate({ from: ref("thread", thread.id), kind: "has_person", to: ref("person", p.id) });
       const all = await store.listRelationships({ limit: 5000 });
       expect(all).toHaveLength(30);
+      // People and threads read the same way: the merchant index and One
+      // Command both list them unbounded.
+      expect(await store.listPeople()).toHaveLength(30);
+      expect(await store.listThreads()).toHaveLength(1);
       // the last edge written is present, not just the oldest page
       const last = people[people.length - 1]!;
       expect(all.some((r) => r.to.id === last.id)).toBe(true);

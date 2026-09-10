@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { NowItem } from "@vixera/domain";
 import { buildEnvelope } from "../../data/actions.ts";
 import { acceptHandoff, describeHandoff } from "../../data/handoff.ts";
-import { useConnectorAccounts, useHandoffs, useNow, useThreadIndex } from "../../data/hooks.ts";
+import { useConnectorAccounts, useHandoffs, useNow, useOnScreenDocument, useThreadIndex } from "../../data/hooks.ts";
 import { useScreenContext } from "../../data/screen-context.ts";
 import { useSpine } from "../../data/spine-provider.tsx";
 import { useBusy, useField } from "../field-context.tsx";
@@ -34,6 +34,8 @@ export function NowArea() {
   const handoffs = useHandoffs();
   const threads = useThreadIndex();
   const onScreen = useScreenContext(spine.runtime.screenContext, field.praxionReady);
+  // What the spine already knows about the document on screen, if anything.
+  const onScreenKnown = useOnScreenDocument(onScreen?.document?.praxionDocumentId ?? null, onScreen?.document?.externalRef ?? null);
   const lastLook = useRef<number | null>(readLastLook());
 
   useEffect(() => {
@@ -74,7 +76,20 @@ export function NowArea() {
             {onScreen.location?.page ? `Page ${onScreen.location.page}` : "Open in Praxion"}
             {onScreen.selection ? ` · “${onScreen.selection.slice(0, 80)}”` : ""}
           </div>
-          <div className="faint small">Vixera has no conclusion about this document yet.</div>
+          {onScreenKnown.loading && <div className="faint small">Checking what Vixera knows about it…</div>}
+          {!onScreenKnown.loading && onScreenKnown.data?.conclusions.length ? (
+            onScreenKnown.data.conclusions.slice(0, 2).map((c) => (
+              <div key={c.id} className="faint small">
+                {c.text}
+              </div>
+            ))
+          ) : !onScreenKnown.loading && onScreenKnown.data ? (
+            <button type="button" className="faint small link" onClick={() => field.focus({ type: "document", id: onScreenKnown.data!.document.id })}>
+              Vixera has this document in context, with no conclusion yet.
+            </button>
+          ) : !onScreenKnown.loading ? (
+            <div className="faint small">This document is not in Vixera's context yet.</div>
+          ) : null}
         </div>
       )}
 

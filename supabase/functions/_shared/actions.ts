@@ -64,6 +64,20 @@ export interface ActionContext {
 
 export type ActionHandler<T extends ActionType> = (store: SpineStore, payload: ActionPayloads[T], ctx: ActionContext) => Promise<JsonObject>;
 
+/**
+ * Storage objects live under `<user_id>/…` and the bucket's policies say only
+ * the owner may touch that folder. A client supplies these paths, so the server
+ * checks the prefix before persisting one: a row must never point at another
+ * user's object, even though reading it would also be refused.
+ */
+function assertOwnStoragePath(store: SpineStore, path: string | null | undefined, field: string): void {
+  if (!path) return;
+  const [owner, ...rest] = path.split("/");
+  if (owner !== store.userId || rest.length === 0 || rest.some((segment) => segment === "" || segment === "..")) {
+    throw new ActionError(`${field} must be a path inside your own storage folder`);
+  }
+}
+
 export type ActionHandlers = { readonly [T in ActionType]: ActionHandler<T> };
 
 /** Thrown by handlers for a business rule violation; recorded as `failed` with this message. */
@@ -328,6 +342,7 @@ export const ACTION_HANDLERS: ActionHandlers = {
     if (payload.targetDeviceId && !(await store.getDevice(payload.targetDeviceId))) throw new ActionError(`device ${payload.targetDeviceId} not found`);
     if (payload.threadId && !(await store.getThread(payload.threadId))) throw new ActionError(`thread ${payload.threadId} not found`);
     if (payload.documentId && !(await store.getDocument(payload.documentId))) throw new ActionError(`document ${payload.documentId} not found`);
+    assertOwnStoragePath(store, payload.artifactStoragePath, "artifactStoragePath");
     const focus = payload.focus && isEntityType(payload.focus.type) ? ref(payload.focus.type, payload.focus.id) : null;
     const expiresAt = new Date(now.getTime() + HANDOFF_TTL_MS).toISOString();
     const handoff = await store.createHandoff({
@@ -394,6 +409,7 @@ export const ACTION_HANDLERS: ActionHandlers = {
 
   "ingest.submit": async (store, payload, ctx) => {
     if (payload.deviceId && !(await store.getDevice(payload.deviceId))) throw new ActionError(`device ${payload.deviceId} not found`);
+    assertOwnStoragePath(store, payload.storagePath, "storagePath");
     const normalized = normalizeIngestInput({
       source: payload.source,
       deviceId: payload.deviceId ?? null,

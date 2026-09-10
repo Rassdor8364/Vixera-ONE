@@ -16,7 +16,7 @@ export function isFieldArea(value: string): value is FieldArea {
   return (FIELD_AREAS as readonly string[]).includes(value);
 }
 
-export type EventRange = "today" | "tomorrow" | "week" | { readonly from: string; readonly to: string };
+export type EventRange = "today" | "tomorrow" | "week" | "next7" | { readonly from: string; readonly to: string };
 export type DocumentKind = "invoice" | "contract" | "agreement" | "pdf" | "image" | "any";
 export type TransactionRange = "month" | "week" | "all";
 

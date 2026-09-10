@@ -20,7 +20,7 @@
     "check": "pnpm typecheck && pnpm test && cargo check --workspace",
     "db:live": "bash scripts/live-stack.sh up",
     "db:live:down": "bash scripts/live-stack.sh down",
-    "test:live": "bash -c 'eval \"$(bash scripts/live-stack.sh up | sed \"s/^/export /\")\" && pnpm --filter @vixera/sync test'"
+    "test:live": "bash scripts/test-live.sh"
   },
   "devDependencies": {
     "@types/node": "~22.20.2",

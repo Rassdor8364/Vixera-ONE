@@ -112,6 +112,26 @@ export function useThread(id: string | null): QueryState<ThreadDetail | null> {
 }
 
 /**
+ * What Vixera already knows about the document on screen: the spine row it
+ * matches (by Praxion id, then by path) and that row's conclusions. Returns
+ * null when nothing on screen matches a document Vixera has.
+ */
+export function useOnScreenDocument(praxionDocumentId: string | null, externalRef: string | null): QueryState<{ document: Document; conclusions: Conclusion[] } | null> {
+  return useSpineQuery(
+    async (reader) => {
+      if (!praxionDocumentId && !externalRef) return null;
+      const candidates = await reader.listDocuments({ limit: 200 });
+      const match =
+        (praxionDocumentId ? candidates.find((d) => d.praxionDocumentId === praxionDocumentId) : undefined) ??
+        (externalRef ? candidates.find((d) => d.location.kind === "device_path" && d.location.path === externalRef) : undefined);
+      if (!match) return null;
+      return { document: match, conclusions: await reader.listConclusions({ type: "document", id: match.id }) };
+    },
+    [praxionDocumentId, externalRef],
+  );
+}
+
+/**
  * The person a mail message came from. NOW and Quiet focus the message itself
  * (`mail.received` events are about a `mail_message`), and mail lives inside
  * People, so opening such a row resolves to its sender.

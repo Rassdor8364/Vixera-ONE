@@ -96,6 +96,8 @@ function intent(rule: string, value: Intent, confidence = 1): Parse {
 
 function eventsOf(word: string): EventRange {
   if (word.includes("tomorrow")) return "tomorrow";
+  // "next 7 days" is a rolling window from today, not the calendar week.
+  if (word.includes("7 days") || word.includes("seven days")) return "next7";
   if (word.includes("week")) return "week";
   return "today";
 }

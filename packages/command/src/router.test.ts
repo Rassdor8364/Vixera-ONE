@@ -111,3 +111,16 @@ describe("RuleBasedIntentRouter", () => {
     expect(world.brand.title).toBe("Brand");
   });
 });
+
+describe("event range phrases resolve to the range they name", () => {
+  it("distinguishes next 7 days from this week", async () => {
+    const router = new RuleBasedIntentRouter(briefReader());
+    const context: CommandContext = { area: "now", focus: null, now: new Date("2026-09-10T15:00:00Z"), timezone: "UTC" };
+    const seven = await router.route("show events for next 7 days", context);
+    expect(seven.intent).toEqual({ type: "show_events", range: "next7" });
+    const week = await router.route("show events for this week", context);
+    expect(week.intent).toEqual({ type: "show_events", range: "week" });
+    const today = await router.route("show today's events", context);
+    expect(today.intent).toEqual({ type: "show_events", range: "today" });
+  });
+});

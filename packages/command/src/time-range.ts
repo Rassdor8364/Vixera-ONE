@@ -31,6 +31,9 @@ export function eventRange(range: EventRange, context: Pick<CommandContext, "now
       const monday = addDays(today, -((dow + 6) % 7), tz);
       return { from: monday.toISOString(), to: addDays(monday, 7, tz).toISOString() };
     }
+    case "next7":
+      // Rolling window: today plus the next six days.
+      return { from: today.toISOString(), to: addDays(today, 7, tz).toISOString() };
   }
 }
 

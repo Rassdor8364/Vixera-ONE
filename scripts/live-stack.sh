@@ -25,6 +25,12 @@ case "${1:-up}" in
     fi
     "${RUN[@]}" "$PGBIN/pg_ctl" -D "$STATE/data" -o "-p $PGPORT -k $STATE -c listen_addresses=127.0.0.1" -l "$STATE/pg.log" start >/dev/null 2>&1 || true
     PSQL=("${RUN[@]}" psql -h 127.0.0.1 -p "$PGPORT" -U postgres -v ON_ERROR_STOP=1 -q)
+    # A stack left running from an earlier invocation still holds connections;
+    # stop its PostgREST and evict the rest so `up` is always repeatable.
+    [[ -f "$STATE/proxy.pid" ]] && kill "$(cat "$STATE/proxy.pid")" 2>/dev/null || true
+    [[ -f "$STATE/postgrest.pid" ]] && kill "$(cat "$STATE/postgrest.pid")" 2>/dev/null || true
+    rm -f "$STATE/postgrest.pid" "$STATE/proxy.pid"
+    "${PSQL[@]}" -d postgres -c "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'vixera_live'" >/dev/null 2>&1 || true
     "${PSQL[@]}" -d postgres -c "drop database if exists vixera_live" >/dev/null
     "${PSQL[@]}" -d postgres -c "create database vixera_live" >/dev/null
     DB=("${PSQL[@]}" -d vixera_live)
