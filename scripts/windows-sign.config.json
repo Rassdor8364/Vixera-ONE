@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": "bash scripts/windows-sign.sh %1"
+    }
+  }
+}

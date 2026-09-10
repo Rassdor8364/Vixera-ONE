@@ -32,8 +32,14 @@ build_windows() {
     cargo xwin --version >/dev/null 2>&1 || { echo "cargo-xwin missing (cargo install --locked cargo-xwin)"; exit 1; }
     extra=(--runner cargo-xwin --target x86_64-pc-windows-msvc)
   fi
-  ( cd "$APP" && pnpm tauri build "${extra[@]}" --bundles nsis )
+  # Authenticode-sign as Vixera AI when signing material is present; the
+  # overlay config is a no-op for the build when scripts/windows-sign.sh finds
+  # no certificate.
+  ( cd "$APP" && pnpm tauri build "${extra[@]}" --bundles nsis --config "$ROOT/scripts/windows-sign.config.json" )
   find "$ROOT/target" -path '*/nsis/*-setup.exe' -newermt '-2 hours' -exec cp -v {} "$OUT/" \;
+  command -v osslsigncode >/dev/null && for f in "$OUT"/*setup.exe; do
+    osslsigncode verify "$f" 2>/dev/null | grep -E 'Subject:|Timestamp time:' | head -2
+  done
 }
 
 build_android() {

@@ -41,3 +41,6 @@ coverage/
 !.vscode/extensions.json
 .DS_Store
 Thumbs.db
+
+# Code-signing material (certificates, keystores, passwords). Never committed.
+.signing/
