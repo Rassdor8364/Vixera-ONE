@@ -20,3 +20,10 @@
 # minification or secure_get / secure_set fail at runtime rather than at build.
 -keep class com.google.crypto.tink.** { *; }
 -keep class androidx.security.crypto.** { *; }
+
+# Keeping all of Tink (above) also keeps its optional KeysDownloader, which
+# fetches keysets over HTTP using the Google API client and Joda-Time. Vixera
+# never calls it — EncryptedSharedPreferences generates its key in the Android
+# Keystore — so those libraries are absent and R8 only needs to stop warning.
+-dontwarn com.google.api.client.**
+-dontwarn org.joda.time.**
