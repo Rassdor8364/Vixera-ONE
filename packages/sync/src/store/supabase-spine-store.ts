@@ -606,7 +606,7 @@ export class SupabaseSpineStore implements SpineStore {
   }
 
   async neighbors(node: EntityRef, query: NeighborsQuery = {}): Promise<NeighborRow[]> {
-    const rows = await this.rows<NeighborRpcRow>(this.client.rpc("vx_neighbors", { p_type: node.type, p_id: node.id }), "neighbors");
+    const rows = await this.rows<NeighborRpcRow>(this.client.rpc("vx_neighbors", { p_user_id: this.userId, p_type: node.type, p_id: node.id }), "neighbors");
     const direction = query.direction ?? "both";
     return rows
       .filter((r) => (direction === "both" || r.direction === direction) && (!query.kind || r.kind === query.kind))

@@ -70,8 +70,10 @@ import_map = "./functions/deno.json"
 verify_jwt = false
 import_map = "./functions/deno.json"
 
+# connector-link verifies JWTs itself: its OAuth callback (GET) is reached by the
+# system browser without a Vixera session; identity travels in the signed state.
 [functions.connector-link]
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/deno.json"
 
 [functions.ingest-process]

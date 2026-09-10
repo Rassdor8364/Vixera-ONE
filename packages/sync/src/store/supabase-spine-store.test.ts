@@ -232,7 +232,7 @@ describe("SupabaseSpineStore query shape", () => {
     expect(all).toHaveLength(2);
     expect(all[1]?.confidence).toBe(0.5);
     expect(calls[0]?.target).toBe("rpc:vx_neighbors");
-    expect(calls[0]?.ops[0]?.args[0]).toEqual({ p_type: "mail_message", p_id: node.id });
+    expect(calls[0]?.ops[0]?.args[0]).toEqual({ p_user_id: DEV_USER_ID, p_type: "mail_message", p_id: node.id });
     expect((await store.neighbors(node, { direction: "in" })).map((n) => n.relationshipId)).toEqual(["r2"]);
     expect((await store.neighbors(node, { kind: "has_person", type: "person" })).map((n) => n.ref)).toEqual([{ type: "person", id: "p1" }]);
     expect(await store.neighbors(node, { kind: "has_person", type: "document" })).toEqual([]);

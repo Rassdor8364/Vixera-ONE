@@ -85,7 +85,7 @@ begin
   v_first := public.vx_relate(v_uid, 'person', '00000000-0000-4000-8000-0000a1000002', 'relates_to', 'document', '00000000-0000-4000-8000-0000f1000002', 0.5, 'rule');
   v_second := public.vx_relate(v_uid, 'person', '00000000-0000-4000-8000-0000a1000002', 'relates_to', 'document', '00000000-0000-4000-8000-0000f1000002', 0.9, 'rule');
   if v_first <> v_second then raise exception 'vx_relate not idempotent'; end if;
-  select count(*) into n from public.vx_neighbors('thread', '00000000-0000-4000-8000-0000b1000001');
+  select count(*) into n from public.vx_neighbors(v_uid, 'thread', '00000000-0000-4000-8000-0000b1000001');
   if n < 2 then raise exception 'expected neighbors of Brand thread, got %', n; end if;
   -- Deleting the document removes its edges and events.
   delete from public.documents where id = '00000000-0000-4000-8000-0000f1000002';
