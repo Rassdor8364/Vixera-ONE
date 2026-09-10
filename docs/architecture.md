@@ -196,7 +196,8 @@ partially realized. Verified on 2026-09-10 in a Linux container: `pnpm typecheck
 `pnpm test` (468 vitest tests / 52 files), `pnpm functions:check` (42 Deno tests),
 `pnpm db:verify` (all assertions), `pnpm test:live` (the store conformance suite plus the
 security assertions against a real PostgreSQL + PostgREST), `cargo check --workspace`
-(also for `aarch64-linux-android`), `cargo test -p vixera-platform` (15 tests).
+(also for `aarch64-linux-android`), `cargo test -p vixera-platform` (15 tests), and
+`pnpm tauri android build --apk --target aarch64 --debug` (APK produced and inspected).
 
 | Definition of done | Realized in | Status |
 | --- | --- | --- |
@@ -212,7 +213,7 @@ security assertions against a real PostgreSQL + PostgREST), `cargo check --works
 | NOW / Threads / People / Time / Money / Files / Quiet have initial surfaces | `apps/desktop/src/field/areas/*.tsx`, `docs/field.md` | Done |
 | One Command answers basic queries | `packages/command` (grammar, router, executor), `field/command/OneCommandBar.tsx`; tests in `router.test.ts`, `executor.test.ts`, `one-command.test.ts` | Done for the brief's examples; rule-based only |
 | Praxion detected via versioned contract, used if present, absent is fine | `packages/connectors/praxion`, `apps/desktop/src/platform/praxion-transport.ts`, `data/praxion.ts`, `data/open-document.ts`; mock server | Done; degradation tested with the in-memory fake, no real Praxion build exists yet |
-| Android builds with share/capture → ingestion | `plugins/tauri-plugin-vixera-share` (Kotlin + Rust), `apps/desktop/src/field/companion/*`, `data/ingest.ts`, `_shared/ingest.ts`, `capabilities/mobile.json` | Code present; share-intake logic unit-tested. **APK build (`pnpm tauri android build`) not run in this environment**; the Kotlin plugin has not been compiled here |
+| Android builds with share/capture → ingestion | `plugins/tauri-plugin-vixera-share` (Kotlin + Rust), `apps/desktop/src-tauri/gen/android`, `apps/desktop/src/field/companion/*`, `data/ingest.ts`, `_shared/ingest.ts`, `capabilities/mobile.json` | Done. `pnpm tauri android build --apk --target aarch64 --debug` produces an APK containing `ai.vixera.one.share.SharePlugin` / `ShareInbox`, `EncryptedSharedPreferences`, `lib/arm64-v8a/libvixera_one_lib.so` and the `ACTION_SEND` / `ACTION_SEND_MULTIPLE` filters. **Not installed on a device here**, so the share journey itself is untested end to end |
 | Vixera-owned handoff architecture | `handoffs` table, `handoff.create` / `handoff.accept` handlers, `apps/desktop/src/data/handoff.ts`, `ContinueOn` | Done; `delivered` / `cancelled` states exist but nothing sets them |
 | Notification actions are server actions | `action-dispatch`, `_shared/actions.ts`, `action_requests`, `apps/desktop/src/data/actions.ts`; notifications carry no client-side actions | Done |
 

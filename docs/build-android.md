@@ -148,6 +148,34 @@ them as its `CredentialStore` on Android
 the Field uses the same `credential_*` commands on every platform.
 Uninstalling the app destroys the key and the preferences.
 
+## Verified build
+
+`pnpm tauri android build --apk --target aarch64 --debug` has been run against
+this tree. The resulting
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+contains `ai.vixera.one.share.SharePlugin` and `ShareInbox`, the
+`EncryptedSharedPreferences` secure store, `lib/arm64-v8a/libvixera_one_lib.so`,
+and the `ACTION_SEND` / `ACTION_SEND_MULTIPLE` filters with
+`launchMode="singleTask"`. Installing it on a device and sharing a PDF into it
+is the next check; that has not been done.
+
+If Gradle fails with `Received status code 429 from server: Too Many Requests`
+from `repo.maven.apache.org`, the network (not the project) is rate-limited.
+Point Maven Central at a mirror from `~/.gradle/init.gradle`, which leaves the
+repository untouched:
+
+```groovy
+def MIRROR = "https://maven-central.storage-download.googleapis.com/maven2"
+static void remap(org.gradle.api.artifacts.dsl.RepositoryHandler repos, String mirror) {
+    repos.withType(org.gradle.api.artifacts.repositories.MavenArtifactRepository).configureEach { repo ->
+        def url = repo.url.toString()
+        if (url.contains("repo.maven.apache.org") || url.contains("repo1.maven.org")) repo.url = mirror
+    }
+}
+settingsEvaluated { s -> remap(s.pluginManagement.repositories, MIRROR); remap(s.dependencyResolutionManagement.repositories, MIRROR) }
+allprojects { p -> remap(p.buildscript.repositories, MIRROR); remap(p.repositories, MIRROR) }
+```
+
 ## Signing
 
 Debug builds use the default debug keystore. For release APKs create a keystore
