@@ -78,6 +78,19 @@ DATABASE_URL=postgres://... pnpm db:verify   # same assertions against an existi
 `db:verify` needs local PostgreSQL binaries (`PGBIN` overrides the
 auto-detected `/usr/lib/postgresql/<v>/bin`) or `DATABASE_URL`; no Docker.
 
+### Real PostgREST without Docker
+
+```bash
+pnpm test:live                     # throwaway Postgres + PostgREST, then the store suite against it
+pnpm db:live                       # just start it (prints VIXERA_LIVE_URL / VIXERA_LIVE_JWT_SECRET)
+pnpm db:live:down
+VIXERA_REST_MAX_ROWS=5 pnpm db:live   # stress: every read must still return the whole set
+```
+
+Needs the `postgrest` binary on `PATH` (or at `/tmp/vixera-live-stack/postgrest`).
+This is what proves the Supabase store against the real API: row caps, `numeric`
+as JSON number, conflict targets, RPC signatures and RLS. See `docs/supabase.md`.
+
 ### Local Supabase (Docker)
 
 ```bash
