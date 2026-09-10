@@ -1,0 +1,19 @@
+[package]
+name = "tauri-plugin-vixera-share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Vixera One share/capture bridge: Android share-sheet intake and Keystore-backed secure storage (ai.vixera.one.share)."
+links = "tauri-plugin-vixera-share"
+exclude = ["/android/.tauri", "/android/build", "/android/.gradle"]
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

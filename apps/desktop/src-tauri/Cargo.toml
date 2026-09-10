@@ -22,8 +22,16 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-os = "2"
-vixera-platform = { path = "../../../crates/vixera-platform" }
+vixera-platform = { path = "../../../crates/vixera-platform", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
+# Desktop: OS keychain (Windows Credential Manager / macOS Keychain / Linux keyutils).
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+vixera-platform = { path = "../../../crates/vixera-platform", features = ["keyring"] }
+
+# Mobile: share-sheet intake + Android Keystore-backed secure storage through the Kotlin plugin.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-vixera-share = { path = "../../../plugins/tauri-plugin-vixera-share" }

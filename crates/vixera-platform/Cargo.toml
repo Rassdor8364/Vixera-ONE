@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Platform-neutral Rust for Vixera One: credential store trait, device identity, Praxion probe."
+description = "Platform-neutral Rust for Vixera One: credential store trait, device identity, file hashing, Praxion probe."
+
+[features]
+# Enabled by default so every desktop build gets the OS keychain. Android and iOS
+# builds have no keyring backend here; they use the Kotlin/Swift plugin store instead.
+default = ["keyring"]
+keyring = ["dep:keyring"]
 
 [dependencies]
 serde = { workspace = true }
@@ -14,3 +20,15 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

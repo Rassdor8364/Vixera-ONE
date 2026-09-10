@@ -1,0 +1,60 @@
+{
+  "accounts": [
+    {
+      "account_id": "fake-acct-checking",
+      "name": "Plaid Checking",
+      "official_name": "Plaid Gold Standard 0% Interest Checking",
+      "mask": "0000",
+      "type": "depository",
+      "subtype": "checking",
+      "balances": { "available": 100.5, "current": 110.25, "limit": null, "iso_currency_code": "USD", "unofficial_currency_code": null, "last_updated_datetime": "2026-09-10T05:00:00Z" }
+    },
+    {
+      "account_id": "fake-acct-savings",
+      "name": "Plaid Saving",
+      "official_name": "Plaid Silver Standard 0.1% Interest Saving",
+      "mask": "1111",
+      "type": "depository",
+      "subtype": "savings",
+      "balances": { "available": 200, "current": 210, "limit": null, "iso_currency_code": "USD", "unofficial_currency_code": null }
+    },
+    {
+      "account_id": "fake-acct-credit",
+      "name": "Plaid Credit Card",
+      "official_name": "Plaid Diamond 12.5% APR Interest Credit Card",
+      "mask": "3333",
+      "type": "credit",
+      "subtype": "credit card",
+      "balances": { "available": 4590, "current": 410, "limit": 5000, "iso_currency_code": "USD", "unofficial_currency_code": null }
+    },
+    {
+      "account_id": "fake-acct-loan",
+      "name": "Plaid Mortgage",
+      "official_name": null,
+      "mask": "8888",
+      "type": "loan",
+      "subtype": "mortgage",
+      "balances": { "available": null, "current": 56302.06, "limit": null, "iso_currency_code": "EUR", "unofficial_currency_code": null }
+    },
+    {
+      "account_id": "fake-acct-brokerage",
+      "name": "Plaid Brokerage",
+      "official_name": null,
+      "mask": "5555",
+      "type": "investment",
+      "subtype": "brokerage",
+      "balances": { "available": null, "current": 23631.9805, "limit": null, "iso_currency_code": null, "unofficial_currency_code": "BTC" }
+    },
+    {
+      "account_id": "fake-acct-cd",
+      "name": "Plaid CD",
+      "official_name": null,
+      "mask": "2222",
+      "type": "depository",
+      "subtype": "cd",
+      "balances": { "available": null, "current": 1000, "limit": null, "iso_currency_code": null, "unofficial_currency_code": null }
+    }
+  ],
+  "item": { "item_id": "fake-item-id-1", "institution_id": "ins_fake_1", "institution_name": "Example Bank" },
+  "request_id": "req-fake-accounts"
+}

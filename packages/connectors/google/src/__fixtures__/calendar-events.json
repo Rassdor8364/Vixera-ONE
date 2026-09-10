@@ -1,0 +1,82 @@
+{
+  "kind": "calendar#events",
+  "timeZone": "Europe/Stockholm",
+  "items": [
+    {
+      "id": "allday001",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=allday001",
+      "summary": "Brand offsite",
+      "start": {
+        "date": "2026-09-14"
+      },
+      "end": {
+        "date": "2026-09-16"
+      },
+      "etag": "\"1\""
+    },
+    {
+      "id": "timed001",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=timed001",
+      "summary": "Invoice review with Eric",
+      "description": "Go through #4800",
+      "location": "Studio, Stockholm",
+      "hangoutLink": "https://meet.example.com/abc",
+      "start": {
+        "dateTime": "2026-09-11T14:00:00+02:00",
+        "timeZone": "Europe/Stockholm"
+      },
+      "end": {
+        "dateTime": "2026-09-11T14:30:00+02:00",
+        "timeZone": "Europe/Stockholm"
+      },
+      "organizer": {
+        "email": "Eric.Lindqvist@example.com",
+        "displayName": "Eric Lindqvist"
+      },
+      "attendees": [
+        {
+          "email": "eric.lindqvist@example.com",
+          "displayName": "Eric Lindqvist",
+          "organizer": true,
+          "responseStatus": "accepted"
+        },
+        {
+          "email": "me@example.com",
+          "self": true,
+          "responseStatus": "needsAction"
+        },
+        {
+          "email": "jane.doe@example.com",
+          "displayName": "Jane Doe",
+          "optional": true,
+          "responseStatus": "tentative"
+        },
+        {
+          "email": "room-a@resource.calendar.google.com",
+          "displayName": "Room A",
+          "resource": true,
+          "responseStatus": "accepted"
+        }
+      ],
+      "recurringEventId": "timed001_parent",
+      "etag": "\"2\"",
+      "updated": "2026-09-09T08:00:00.000Z"
+    },
+    {
+      "id": "cancelled001",
+      "status": "cancelled"
+    },
+    {
+      "id": "untitled001",
+      "status": "tentative",
+      "summary": "   ",
+      "start": {
+        "dateTime": "2026-09-12T09:00:00Z"
+      },
+      "endTimeUnspecified": true
+    }
+  ],
+  "nextSyncToken": "fake-sync-token-primary-1"
+}

@@ -1,0 +1,60 @@
+{
+  "added": [
+    {
+      "transaction_id": "fake-txn-northwind",
+      "account_id": "fake-acct-checking",
+      "amount": -12400,
+      "iso_currency_code": "USD",
+      "unofficial_currency_code": null,
+      "date": "2026-09-08",
+      "authorized_date": "2026-09-08",
+      "authorized_datetime": "2026-09-08T09:12:00Z",
+      "datetime": "2026-09-08T09:12:00Z",
+      "name": "NORTHWIND CO INVOICE 2026-041",
+      "merchant_name": "Northwind Co.",
+      "pending": false,
+      "pending_transaction_id": null,
+      "payment_channel": "other",
+      "personal_finance_category": { "primary": "INCOME", "detailed": "INCOME_OTHER_INCOME", "confidence_level": "HIGH" }
+    },
+    {
+      "transaction_id": "fake-txn-lindqvist",
+      "account_id": "fake-acct-checking",
+      "amount": 2400,
+      "iso_currency_code": "USD",
+      "unofficial_currency_code": null,
+      "date": "2026-09-09",
+      "authorized_date": "2026-09-09",
+      "authorized_datetime": null,
+      "datetime": null,
+      "name": "LINDQVIST STUDIO",
+      "merchant_name": "Lindqvist Studio",
+      "pending": false,
+      "pending_transaction_id": null,
+      "payment_channel": "online",
+      "personal_finance_category": { "primary": "GENERAL_SERVICES", "detailed": "GENERAL_SERVICES_CONSULTING_AND_LEGAL", "confidence_level": "MEDIUM" }
+    },
+    {
+      "transaction_id": "fake-txn-coffee-pending",
+      "account_id": "fake-acct-credit",
+      "amount": 6.4,
+      "iso_currency_code": null,
+      "unofficial_currency_code": null,
+      "date": "2026-09-10",
+      "authorized_date": null,
+      "authorized_datetime": null,
+      "datetime": null,
+      "name": "KAFFE CENTRAL",
+      "merchant_name": "Kaffe Central",
+      "pending": true,
+      "pending_transaction_id": null,
+      "payment_channel": "in store",
+      "personal_finance_category": null
+    }
+  ],
+  "modified": [],
+  "removed": [],
+  "next_cursor": "fake-cursor-page-1",
+  "has_more": true,
+  "request_id": "req-fake-sync-1"
+}

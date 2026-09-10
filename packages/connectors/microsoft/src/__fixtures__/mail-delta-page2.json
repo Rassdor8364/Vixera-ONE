@@ -1,0 +1,23 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "value": [
+    {
+      "id": "AAMkAGfake-msg-3",
+      "conversationId": "AAQkAGfake-conv-2",
+      "subject": "Re: Lunch?",
+      "bodyPreview": "Sure.",
+      "body": { "contentType": "text", "content": "Sure." },
+      "from": { "emailAddress": { "name": "Me Example", "address": "me@example.com" } },
+      "toRecipients": [{ "emailAddress": { "name": "Anna Berg", "address": "anna@studio.example" } }],
+      "ccRecipients": [],
+      "sentDateTime": "2026-09-09T10:05:00Z",
+      "receivedDateTime": "2026-09-09T10:05:01Z",
+      "isRead": true,
+      "hasAttachments": false,
+      "categories": [],
+      "lastModifiedDateTime": "2026-09-09T10:05:01Z"
+    },
+    { "id": "AAMkAGfake-msg-gone", "@removed": { "reason": "deleted" } }
+  ],
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-2"
+}

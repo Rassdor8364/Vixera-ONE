@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/vixera-platform",
   "apps/desktop/src-tauri",
+  "plugins/tauri-plugin-vixera-share",
 ]
 
 [workspace.package]

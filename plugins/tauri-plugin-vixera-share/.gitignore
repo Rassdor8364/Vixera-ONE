@@ -1,0 +1,5 @@
+# Copied in by build.rs when targeting Android (Tauri's Android runtime sources).
+android/.tauri/
+android/build/
+android/.gradle/
+android/local.properties

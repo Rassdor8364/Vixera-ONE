@@ -2,8 +2,13 @@
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
   "description": "Capabilities of the Vixera One Android companion.",
-  "platforms": ["android"],
-  "windows": ["main", "field"],
+  "platforms": [
+    "android"
+  ],
+  "windows": [
+    "main",
+    "field"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -14,8 +19,32 @@
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-stat",
-    { "identifier": "fs:scope", "allow": [{ "path": "$APPDATA/**" }, { "path": "$APPCACHE/**" }, { "path": "$TEMP/**" }] },
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$APPCACHE/**"
+        },
+        {
+          "path": "$TEMP/**"
+        }
+      ]
+    },
     "http:default",
-    { "identifier": "http:default", "allow": [{ "url": "https://*.supabase.co" }, { "url": "http://10.0.2.2:*" }] }
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://*.supabase.co"
+        },
+        {
+          "url": "http://10.0.2.2:*"
+        }
+      ]
+    },
+    "vixera-share:default"
   ]
 }

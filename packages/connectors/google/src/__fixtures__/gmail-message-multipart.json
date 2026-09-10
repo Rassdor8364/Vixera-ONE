@@ -1,0 +1,122 @@
+{
+  "id": "18f2a1c3d4e5f607",
+  "threadId": "18f2a1c3d4e5f600",
+  "labelIds": [
+    "INBOX",
+    "UNREAD",
+    "IMPORTANT"
+  ],
+  "snippet": "Hi, Attached is the invoice for the Brand work: $4,800 due Friday. Thanks, Eric",
+  "historyId": "884211",
+  "internalDate": "1788876191000",
+  "sizeEstimate": 48211,
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "me@example.com"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<invoice-4800@mail.example.com>"
+      },
+      {
+        "name": "Date",
+        "value": "Tue, 8 Sep 2026 16:03:11 +0200 (CEST)"
+      },
+      {
+        "name": "From",
+        "value": "Eric Lindqvist <Eric.Lindqvist@Example.com>"
+      },
+      {
+        "name": "To",
+        "value": "\"Doe, Jane\" <jane.doe@example.com>, me@example.com"
+      },
+      {
+        "name": "Cc",
+        "value": "Accounts <accounts@example.org>"
+      },
+      {
+        "name": "Subject",
+        "value": "Invoice #4800 — Brand"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"000000000000abc\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"000000000000def\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0.0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 81,
+              "data": "SGksCgpBdHRhY2hlZCBpcyB0aGUgaW52b2ljZSBmb3IgdGhlIEJyYW5kIHdvcms6ICQ0LDgwMCBkdWUgRnJpZGF5LgoKVGhhbmtzLApFcmlj"
+            }
+          },
+          {
+            "partId": "0.1",
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 174,
+              "data": "PGh0bWw-PGhlYWQ-PHN0eWxlPnB7Y29sb3I6cmVkfTwvc3R5bGU-PC9oZWFkPjxib2R5PjxwPkhpLDwvcD48cD5BdHRhY2hlZCBpcyB0aGUgaW52b2ljZSBmb3IgdGhlIDxiPkJyYW5kPC9iPiB3b3JrOiAkNCw4MDAgZHVlIEZyaWRheS48L3A-PHA-VGhhbmtzLDxicj5FcmljPC9wPjwvYm9keT48L2h0bWw-"
+            }
+          }
+        ]
+      },
+      {
+        "partId": "1",
+        "mimeType": "application/pdf",
+        "filename": "invoice-4800.pdf",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf; name=\"invoice-4800.pdf\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"invoice-4800.pdf\""
+          }
+        ],
+        "body": {
+          "attachmentId": "ANGjdJ8fakeAttachmentId0001",
+          "size": 38122
+        }
+      }
+    ]
+  }
+}

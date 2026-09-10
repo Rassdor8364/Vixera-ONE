@@ -1,0 +1,8 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/messages('AAMkAGfake-msg-html')/attachments(id,name,contentType,size,isInline)",
+  "value": [
+    { "@odata.type": "#microsoft.graph.fileAttachment", "id": "att-invoice", "name": "invoice-4711.pdf", "contentType": "application/pdf", "size": 48213, "isInline": false },
+    { "@odata.type": "#microsoft.graph.fileAttachment", "id": "att-logo", "name": "logo.png", "contentType": "image/png", "size": 1200, "isInline": true },
+    { "@odata.type": "#microsoft.graph.itemAttachment", "id": "att-forwarded", "name": "FW: old thread", "contentType": null, "size": 900, "isInline": false }
+  ]
+}

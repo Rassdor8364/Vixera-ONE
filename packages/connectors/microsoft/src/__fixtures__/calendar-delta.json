@@ -1,0 +1,65 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "value": [
+    {
+      "id": "AAMkAGfake-evt-timed",
+      "subject": "Brand review",
+      "bodyPreview": "Walk through the invoice and the next steps.",
+      "start": { "dateTime": "2026-09-12T10:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-09-12T11:00:00.0000000", "timeZone": "UTC" },
+      "isAllDay": false,
+      "isCancelled": false,
+      "showAs": "busy",
+      "location": { "displayName": "Studio, room 2", "locationType": "default" },
+      "organizer": { "emailAddress": { "name": "Eric Lindqvist", "address": "eric.lindqvist@studio.example" } },
+      "attendees": [
+        { "type": "required", "status": { "response": "organizer", "time": "0001-01-01T00:00:00Z" }, "emailAddress": { "name": "Eric Lindqvist", "address": "eric.lindqvist@studio.example" } },
+        { "type": "required", "status": { "response": "accepted", "time": "2026-09-08T09:00:00Z" }, "emailAddress": { "name": "Me Example", "address": "Me@Example.com" } },
+        { "type": "optional", "status": { "response": "tentativelyAccepted", "time": "2026-09-08T09:30:00Z" }, "emailAddress": { "name": "Anna Berg", "address": "anna@studio.example" } },
+        { "type": "required", "status": { "response": "declined", "time": "2026-09-08T09:40:00Z" }, "emailAddress": { "name": "Bo Sand", "address": "bo@studio.example" } },
+        { "type": "required", "status": { "response": "none", "time": "0001-01-01T00:00:00Z" }, "emailAddress": { "name": "Cy Dunn", "address": "cy@studio.example" } },
+        { "type": "resource", "status": { "response": "accepted", "time": "2026-09-08T09:00:00Z" }, "emailAddress": { "name": "Room 2", "address": "room2@studio.example" } }
+      ],
+      "responseStatus": { "response": "accepted", "time": "2026-09-08T09:00:00Z" },
+      "webLink": "https://outlook.office365.com/owa/?itemid=AAMkAGfake-evt-timed&exvsurl=1&path=/calendar/item",
+      "lastModifiedDateTime": "2026-09-08T09:40:00Z",
+      "type": "singleInstance",
+      "originalStartTimeZone": "W. Europe Standard Time",
+      "onlineMeetingUrl": null
+    },
+    {
+      "id": "AAMkAGfake-evt-allday",
+      "subject": "Company holiday",
+      "bodyPreview": "",
+      "start": { "dateTime": "2026-09-14T00:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-09-15T00:00:00.0000000", "timeZone": "UTC" },
+      "isAllDay": true,
+      "isCancelled": false,
+      "showAs": "free",
+      "location": { "displayName": "" },
+      "organizer": { "emailAddress": { "name": "Me Example", "address": "me@example.com" } },
+      "attendees": [],
+      "responseStatus": { "response": "organizer" },
+      "webLink": "https://outlook.office365.com/owa/?itemid=AAMkAGfake-evt-allday",
+      "lastModifiedDateTime": "2026-09-01T12:00:00Z",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkAGfake-series-1"
+    },
+    {
+      "id": "AAMkAGfake-evt-cancelled",
+      "subject": "Canceled: Sync",
+      "bodyPreview": "",
+      "start": { "dateTime": "2026-09-13T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-09-13T09:30:00.0000000", "timeZone": "UTC" },
+      "isAllDay": false,
+      "isCancelled": true,
+      "showAs": "free",
+      "organizer": { "emailAddress": { "name": "Anna Berg", "address": "anna@studio.example" } },
+      "attendees": [],
+      "webLink": "https://outlook.office365.com/owa/?itemid=AAMkAGfake-evt-cancelled",
+      "type": "singleInstance"
+    },
+    { "id": "AAMkAGfake-evt-removed", "@removed": { "reason": "deleted" } }
+  ],
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=fake-cal-delta-1"
+}

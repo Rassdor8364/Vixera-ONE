@@ -1,0 +1,70 @@
+{
+  "id": "18f2a1c3d4e5f700",
+  "threadId": "18f2a1c3d4e5f700",
+  "labelIds": [
+    "INBOX",
+    "CATEGORY_UPDATES"
+  ],
+  "snippet": "Hello there, Your order &#39;A-1&#39; has shipped &amp; will arrive on Monday.",
+  "historyId": "884300",
+  "internalDate": "1788936000000",
+  "sizeEstimate": 9120,
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/related",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Date",
+        "value": "not a date"
+      },
+      {
+        "name": "From",
+        "value": "shop@example.net"
+      },
+      {
+        "name": "To",
+        "value": "me@example.com"
+      },
+      {
+        "name": "Subject",
+        "value": "Your order has shipped"
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "text/html",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/html; charset=\"ISO-8859-1\""
+          }
+        ],
+        "body": {
+          "size": 225,
+          "data": "PGh0bWw-PGJvZHk-PGRpdj5IZWxsbyZuYnNwO3RoZXJlLDwvZGl2PjxkaXY-WW91ciBvcmRlciAmIzM5O0EtMSYjMzk7IGhhcyBzaGlwcGVkICZhbXA7IHdpbGwgYXJyaXZlIG9uIDxzcGFuPk1vbmRheTwvc3Bhbj4uPC9kaXY-PGltZyBzcmM9ImNpZDpsb2dvIj48c2NyaXB0PmFsZXJ0KDEpPC9zY3JpcHQ-PHA-UmVnYXJkcyw8YnIvPlNob3AgJmx0O1RlYW0mZ3Q7PC9wPjwvYm9keT48L2h0bWw-"
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "image/png",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-ID",
+            "value": "<logo>"
+          }
+        ],
+        "body": {
+          "attachmentId": "ANGjdJ8inlineLogo",
+          "size": 2048
+        }
+      }
+    ]
+  }
+}

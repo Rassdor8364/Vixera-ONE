@@ -1,0 +1,22 @@
+{
+  "id": "AAMkAGfake-msg-html",
+  "conversationId": "AAQkAGfake-conv-1",
+  "subject": "  Invoice #4711 from Eric  ",
+  "bodyPreview": "Hi, attached is the invoice for the Brand work.",
+  "body": {
+    "contentType": "html",
+    "content": "<html><head><style>p{color:red}</style></head><body><div>Hi,</div><p>Attached is the invoice for the <b>Brand</b> work &ndash; due <span>tomorrow</span>.</p><p>Total: &euro;4,800</p><!-- tracking --><br/>Eric</body></html>"
+  },
+  "from": { "emailAddress": { "name": "Eric Lindqvist", "address": "Eric.Lindqvist@Studio.example" } },
+  "toRecipients": [
+    { "emailAddress": { "name": "me@example.com", "address": "me@example.com" } },
+    { "emailAddress": { "name": "Broken", "address": "not-an-address" } }
+  ],
+  "ccRecipients": [{ "emailAddress": { "name": "Anna Berg", "address": "anna@studio.example" } }],
+  "sentDateTime": "2026-09-09T08:15:00Z",
+  "receivedDateTime": "2026-09-09T08:15:07Z",
+  "isRead": false,
+  "hasAttachments": true,
+  "categories": ["Finance", " Brand "],
+  "lastModifiedDateTime": "2026-09-09T08:15:09Z"
+}

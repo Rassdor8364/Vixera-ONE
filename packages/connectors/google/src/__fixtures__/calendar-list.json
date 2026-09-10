@@ -1,0 +1,32 @@
+{
+  "kind": "calendar#calendarList",
+  "items": [
+    {
+      "id": "me@example.com",
+      "summary": "me@example.com",
+      "primary": true,
+      "selected": true,
+      "accessRole": "owner",
+      "timeZone": "Europe/Stockholm"
+    },
+    {
+      "id": "brand-team@group.calendar.google.com",
+      "summary": "Brand team",
+      "selected": true,
+      "accessRole": "reader",
+      "timeZone": "Europe/Stockholm"
+    },
+    {
+      "id": "rooms@example.com",
+      "summary": "Rooms",
+      "selected": true,
+      "accessRole": "freeBusyReader"
+    },
+    {
+      "id": "holidays@example.com",
+      "summary": "Holidays",
+      "selected": false,
+      "accessRole": "reader"
+    }
+  ]
+}

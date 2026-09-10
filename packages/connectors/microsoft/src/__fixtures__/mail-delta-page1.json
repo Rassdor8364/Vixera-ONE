@@ -1,0 +1,38 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "value": [
+    {
+      "id": "AAMkAGfake-msg-html",
+      "conversationId": "AAQkAGfake-conv-1",
+      "subject": "Invoice #4711 from Eric",
+      "bodyPreview": "Hi, attached is the invoice for the Brand work.",
+      "body": { "contentType": "html", "content": "<p>Hi, attached is the invoice for the <b>Brand</b> work.</p>" },
+      "from": { "emailAddress": { "name": "Eric Lindqvist", "address": "eric.lindqvist@studio.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me Example", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "sentDateTime": "2026-09-09T08:15:00Z",
+      "receivedDateTime": "2026-09-09T08:15:07Z",
+      "isRead": false,
+      "hasAttachments": true,
+      "categories": ["Finance"],
+      "lastModifiedDateTime": "2026-09-09T08:15:09Z"
+    },
+    {
+      "id": "AAMkAGfake-msg-text",
+      "conversationId": "AAQkAGfake-conv-2",
+      "subject": "Lunch?",
+      "bodyPreview": "Lunch tomorrow at 12?",
+      "body": { "contentType": "text", "content": "Lunch tomorrow at 12?\r\n\r\nAnna" },
+      "from": { "emailAddress": { "name": "Anna Berg", "address": "anna@studio.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me Example", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "sentDateTime": "2026-09-09T10:00:00Z",
+      "receivedDateTime": "2026-09-09T10:00:02Z",
+      "isRead": true,
+      "hasAttachments": false,
+      "categories": [],
+      "lastModifiedDateTime": "2026-09-09T10:00:02Z"
+    }
+  ],
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=fake-skip-1"
+}

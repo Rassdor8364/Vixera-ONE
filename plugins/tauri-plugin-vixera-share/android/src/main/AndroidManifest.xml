@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Library manifest for the Vixera One share plugin. It deliberately declares no
+  activity and no intent-filter: the ACTION_SEND / ACTION_SEND_MULTIPLE filters
+  belong on the app's MainActivity in
+  apps/desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml
+  (see docs/build-android.md). No permissions are required: shared content URIs
+  arrive with a temporary read grant from the sending app.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

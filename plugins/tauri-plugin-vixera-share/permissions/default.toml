@@ -1,0 +1,21 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Default permissions for the Vixera One share/capture plugin.
+
+#### Granted Permissions
+
+Lets the Field read and clear the queue of objects the user explicitly shared
+into Vixera, subscribe to the `share` event, and use the device secure store
+(Android Keystore-backed) for the Supabase session and device key.
+"""
+permissions = [
+  "allow-get-pending-shares",
+  "allow-clear-pending-shares",
+  "allow-secure-get",
+  "allow-secure-set",
+  "allow-secure-delete",
+  "allow-register-listener",
+  "allow-remove-listener",
+]

@@ -1,0 +1,11 @@
+{
+  "item": {
+    "item_id": "fake-item-id-1",
+    "institution_id": "ins_fake_1",
+    "institution_name": "Example Bank",
+    "available_products": ["balance"],
+    "billed_products": ["transactions"],
+    "error": null
+  },
+  "request_id": "req-fake-item"
+}
