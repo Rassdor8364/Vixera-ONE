@@ -2,15 +2,19 @@ import type { ConnectorAccountId, UserId } from "../ids.ts";
 import type { IsoDateTime, JsonObject, Timestamped, UserScoped } from "./common.ts";
 
 /** Provider identifiers. Adding a provider = adding a connector package, not touching the UI. */
-export type ProviderId = "google" | "microsoft" | "plaid" | "praxion" | "mock";
+export const PROVIDER_IDS = ["google", "microsoft", "plaid", "praxion", "mock"] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /** What a connector account can feed. One Google account feeds mail AND calendar. */
-export type ConnectorCapability = "mail" | "calendar" | "bank" | "document";
+export const CONNECTOR_CAPABILITIES = ["mail", "calendar", "bank", "document"] as const;
+export type ConnectorCapability = (typeof CONNECTOR_CAPABILITIES)[number];
 
-export type ConnectorAccountStatus = "active" | "paused" | "needs_reauth" | "error" | "disconnected";
+export const CONNECTOR_ACCOUNT_STATUSES = ["active", "paused", "needs_reauth", "error", "disconnected"] as const;
+export type ConnectorAccountStatus = (typeof CONNECTOR_ACCOUNT_STATUSES)[number];
 
 /** Where the credential for an account is kept. */
-export type CredentialLocation = "server_vault" | "device" | "none";
+export const CREDENTIAL_LOCATIONS = ["server_vault", "device", "none"] as const;
+export type CredentialLocation = (typeof CREDENTIAL_LOCATIONS)[number];
 
 /**
  * One user → many connector accounts, possibly several per provider
@@ -35,7 +39,8 @@ export interface ConnectorAccount extends UserScoped, Timestamped {
   readonly metadata: JsonObject;
 }
 
-export type SyncStatus = "idle" | "running" | "error";
+export const SYNC_STATUSES = ["idle", "running", "error"] as const;
+export type SyncStatus = (typeof SYNC_STATUSES)[number];
 
 /**
  * Independent sync state per (account, capability). A failed mail sync does

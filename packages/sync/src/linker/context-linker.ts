@@ -296,10 +296,16 @@ export class ContextLinker {
     }
 
     if (batch.deleted.length) {
-      b.counts.deleted += await this.store.deleteTimeEvents(
-        account.id,
-        batch.deleted.map((d) => d.externalId),
-      );
+      // Group by calendar: time_events are keyed by (account, calendar, event id).
+      const byCalendar = new Map<string | undefined, string[]>();
+      for (const d of batch.deleted) {
+        const list = byCalendar.get(d.externalCalendarId) ?? [];
+        list.push(d.externalId);
+        byCalendar.set(d.externalCalendarId, list);
+      }
+      for (const [calendarId, ids] of byCalendar) {
+        b.counts.deleted += await this.store.deleteTimeEvents(account.id, ids, calendarId);
+      }
     }
     this.log("calendar batch applied", account, b.counts);
     return b.counts;

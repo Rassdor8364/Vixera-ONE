@@ -1,7 +1,8 @@
 import type { ThreadId, UserId } from "../ids.ts";
 import type { JsonObject, Timestamped, UserScoped } from "./common.ts";
 
-export type ThreadStatus = "active" | "quiet" | "archived";
+export const THREAD_STATUSES = ["active", "quiet", "archived"] as const;
+export type ThreadStatus = (typeof THREAD_STATUSES)[number];
 
 /**
  * A Thread is something happening in the user's life or work: a brand project,

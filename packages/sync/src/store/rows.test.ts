@@ -66,7 +66,7 @@ describe("row mappers round-trip the brief world", () => {
       from_address: "eric@lindqvist.example",
       from_name: "Eric Lindqvist",
       from_person_id: PERSON,
-      to_addresses: [{ email: "me@example.com", name: null, person_id: null }],
+      to_addresses: [{ email: "me@example.com", name: null, personId: null }],
       is_unread: true,
       labels: ["INBOX"],
     });
@@ -108,10 +108,10 @@ describe("row mappers round-trip the brief world", () => {
     const write = { ...fx.calendar.events[0]!, participantPersonIds: [null, PERSON] };
     const insert = timeEventToRow(DEV_USER_ID, ACCOUNT, write);
     expect(insert.participants).toEqual([
-      { email: "me@example.com", name: null, response: "accepted", is_organizer: true, is_self: true, person_id: null },
-      { email: "priya@northwind.example", name: "Priya Natarajan", response: "accepted", is_organizer: false, is_self: false, person_id: PERSON },
+      { email: "me@example.com", name: null, response: "accepted", isOrganizer: true, isSelf: true, personId: null },
+      { email: "priya@northwind.example", name: "Priya Natarajan", response: "accepted", isOrganizer: false, isSelf: false, personId: PERSON },
     ]);
-    expect(insert.organizer?.person_id).toBeNull();
+    expect(insert.organizer?.personId).toBeNull();
     const row: TimeEventRow = { ...insert, id: ID, ...TS, starts_at: "2026-09-11T14:00:00+00:00", ends_at: "2026-09-11T15:00:00+00:00" };
     const e = timeEventFromRow(row);
     expect(e.startsAt).toBe("2026-09-11T14:00:00.000Z");

@@ -1,7 +1,8 @@
 import type { ConnectorAccountId, MoneyAccountId, MoneyTransactionId, PersonId, UserId } from "../ids.ts";
 import type { IsoDate, IsoDateTime, JsonObject, Timestamped, UserScoped } from "./common.ts";
 
-export type MoneyAccountType = "checking" | "savings" | "credit" | "loan" | "investment" | "other";
+export const MONEY_ACCOUNT_TYPES = ["checking", "savings", "credit", "loan", "investment", "other"] as const;
+export type MoneyAccountType = (typeof MONEY_ACCOUNT_TYPES)[number];
 
 export interface MoneyAccount extends UserScoped, Timestamped {
   readonly id: MoneyAccountId;

@@ -48,7 +48,8 @@ export const RELATIONSHIP_KINDS = [
 ] as const;
 export type RelationshipKind = (typeof RELATIONSHIP_KINDS)[number];
 
-export type RelationshipSource = "user" | "connector" | "rule" | "model";
+export const RELATIONSHIP_SOURCES = ["user", "connector", "rule", "model"] as const;
+export type RelationshipSource = (typeof RELATIONSHIP_SOURCES)[number];
 
 export interface EntityRef {
   readonly type: EntityType;
@@ -94,20 +95,6 @@ export interface RelationshipInput {
 export function edgeKey(e: Pick<Relationship, "from" | "kind" | "to">): string {
   return `${refKey(e.from)}|${e.kind}|${refKey(e.to)}`;
 }
-
-/**
- * Kinds that read naturally in reverse. `thread has_person eric` is the same
- * fact as `eric attached_to thread`; the graph API answers both directions.
- */
-export const INVERSE_KIND: Partial<Record<RelationshipKind, RelationshipKind>> = {
-  has_person: "attached_to",
-  has_time: "attached_to",
-  has_document: "attached_to",
-  has_money: "attached_to",
-  has_mail: "attached_to",
-  attached_to: "belongs_to",
-  belongs_to: "attached_to",
-};
 
 export function isEntityType(value: string): value is EntityType {
   return (ENTITY_TYPES as readonly string[]).includes(value);

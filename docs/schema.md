@@ -11,7 +11,16 @@ Postgres and asserts the invariants listed at the end.
 * Every table has RLS enabled and user-scoped policies (`user_id = auth.uid()`).
   The service role bypasses RLS and must scope its own queries.
 * Connector rows are keyed by natural keys so re-syncing is idempotent.
-* The graph is one typed edge table; polymorphic targets are validated by trigger.
+* Child rows can only reference parents owned by the same user: every foreign
+  key to `devices`, `connector_accounts`, `people`, `threads`, `documents` and
+  `money_accounts` is a composite `(user_id, id)` key (nullable ones use
+  `on delete set null (column)` so `user_id` is never nulled).
+* The graph is one typed edge table; polymorphic targets are validated by trigger,
+  and so are `context_events.subject`, `conclusions.subject` and `handoffs.focus`.
+* Clients (the `authenticated` role) cannot write `connector_accounts` except
+  `label`, `status`, `metadata`; cannot write `connector_sync_states` except
+  `enabled`; and cannot write `action_requests` at all. Those rows are the
+  server's (connector-link, the sync engine, action-dispatch).
 
 ## Entities
 
@@ -79,7 +88,10 @@ TypeScript; never floats.
 ## Credentials
 
 `connector_accounts.credential_ref` is an opaque Vault id. `vx_credential_put/get/delete`
-(security definer, `service_role` only) are the only way in or out. See
+(security definer, `service_role` only) are the only way in or out, and they are
+bound to accounts: `get`/`delete` only act on a ref that some account row carries,
+and `put` with an explicit ref refuses a ref that belongs to another account.
+`pnpm db:verify` exercises them against a plaintext Vault stand-in. See
 `credentials.md`.
 
 ## Storage and Realtime
@@ -99,8 +111,13 @@ read from Vault (`vixera_functions_url`, `vixera_sync_secret`); see `supabase.md
 
 1. Every table has `user_id`.
 2. Every table has RLS and at least one policy.
-3. The dev user sees seeded rows; another authenticated user sees nothing and
-   cannot insert rows for the dev user; authenticated cannot call Vault functions.
+3. The dev user sees seeded rows and can write its own rows; it cannot write
+   `credential_ref`, sync checkpoints or `action_requests`. Another authenticated
+   user sees nothing, cannot insert rows for the dev user, cannot reference the
+   dev user's parents through any foreign key, and cannot call Vault functions.
 4. Dangling and self relationships are rejected; `vx_relate` is idempotent;
    deleting an entity removes its edges and conclusions.
 5. Natural-key upserts and context-event dedupe do not duplicate rows.
+6. Dangling subjects on `context_events`, `conclusions` and `handoffs.focus` are rejected.
+7. As `service_role`, `vx_credential_put/get/delete` round-trip a credential,
+   refuse another account's ref, and `vx_connector_account_disconnect` removes it.

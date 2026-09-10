@@ -1,7 +1,8 @@
 import type { ActionRequestId, DeviceId, UserId } from "../ids.ts";
 import type { IsoDateTime, JsonObject, UserScoped } from "./common.ts";
 
-export type ActionRequestStatus = "queued" | "running" | "done" | "failed";
+export const ACTION_REQUEST_STATUSES = ["queued", "running", "done", "failed"] as const;
+export type ActionRequestStatus = (typeof ACTION_REQUEST_STATUSES)[number];
 
 /**
  * Audit + idempotency record for a server-side action (notification actions,

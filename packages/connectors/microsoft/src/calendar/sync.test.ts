@@ -28,7 +28,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     expect(page?.fullResync).toBeUndefined();
     expect(page?.checkpoint).toEqual({ deltaLink: DELTA_1, window: WINDOW });
     expect(page?.batch.events.map((e) => e.externalId)).toEqual(["AAMkAGfake-evt-timed", "AAMkAGfake-evt-allday"]);
-    expect(page?.batch.deleted).toEqual([{ externalId: "AAMkAGfake-evt-cancelled" }, { externalId: "AAMkAGfake-evt-removed" }]);
+    expect(page?.batch.deleted).toEqual([{ externalId: "AAMkAGfake-evt-cancelled", externalCalendarId: "primary" }, { externalId: "AAMkAGfake-evt-removed", externalCalendarId: "primary" }]);
     // isSelf comes from the account address on the context, never from provider data.
     expect(page?.batch.events[0]?.participants.filter((p) => p.isSelf).map((p) => p.email)).toEqual(["me@example.com"]);
   });

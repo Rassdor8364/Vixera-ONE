@@ -105,11 +105,11 @@ export interface DocumentRow {
   updated_at: string;
 }
 
-/** jsonb element of mail_messages.to_addresses / cc_addresses. */
+/** jsonb element of mail_messages.to_addresses / cc_addresses — the domain (camelCase) shape, as documented in docs/schema.md and used by seed.sql. */
 export interface MailAddressJson {
   email: string;
   name: string | null;
-  person_id: string | null;
+  personId: string | null;
 }
 
 export interface MailMessageRow {
@@ -174,14 +174,14 @@ export interface MoneyTransactionRow {
   updated_at: string;
 }
 
-/** jsonb element of time_events.participants / organizer. */
+/** jsonb element of time_events.participants / organizer — the domain (camelCase) shape. */
 export interface ParticipantJson {
   email: string | null;
   name: string | null;
   response: EventParticipant["response"];
-  is_organizer: boolean;
-  is_self: boolean;
-  person_id: string | null;
+  isOrganizer: boolean;
+  isSelf: boolean;
+  personId: string | null;
 }
 
 export interface TimeEventRow {
@@ -584,11 +584,11 @@ function locationFromJson(value: unknown): DocumentLocation {
 // Mail
 // ---------------------------------------------------------------------------
 function mailAddressFromJson(a: MailAddressJson): MailAddress {
-  return { email: a.email, name: a.name ?? null, personId: (a.person_id ?? null) as PersonId | null };
+  return { email: a.email, name: a.name ?? null, personId: (a.personId ?? null) as PersonId | null };
 }
 
 function mailAddressToJson(a: { email: string; name: string | null }, personId: string | null | undefined): MailAddressJson {
-  return { email: a.email, name: a.name, person_id: personId ?? null };
+  return { email: a.email, name: a.name, personId: personId ?? null };
 }
 
 export function mailMessageFromRow(r: MailMessageRow): MailMessage {
@@ -738,9 +738,9 @@ export function participantFromJson(p: ParticipantJson): EventParticipant {
     email: p.email ?? null,
     name: p.name ?? null,
     response: p.response ?? "unknown",
-    isOrganizer: p.is_organizer ?? false,
-    isSelf: p.is_self ?? false,
-    personId: (p.person_id ?? null) as PersonId | null,
+    isOrganizer: p.isOrganizer ?? false,
+    isSelf: p.isSelf ?? false,
+    personId: (p.personId ?? null) as PersonId | null,
   };
 }
 
@@ -749,9 +749,9 @@ export function participantToJson(p: EventParticipant, personId?: string | null)
     email: p.email,
     name: p.name,
     response: p.response,
-    is_organizer: p.isOrganizer,
-    is_self: p.isSelf,
-    person_id: personId !== undefined ? personId : (p.personId ?? null),
+    isOrganizer: p.isOrganizer,
+    isSelf: p.isSelf,
+    personId: personId !== undefined ? personId : (p.personId ?? null),
   };
 }
 
@@ -783,7 +783,7 @@ export type TimeEventInsert = Omit<TimeEventRow, "id" | "created_at" | "updated_
 
 export function timeEventToRow(userId: UserId, connectorAccountId: string, e: TimeEventWrite): TimeEventInsert {
   const participants = e.participants.map((p, i) => participantToJson(p, e.participantPersonIds?.[i] ?? p.personId ?? null));
-  const organizerPersonId = e.organizer ? (participants.find((p) => p.email && p.email === e.organizer?.email)?.person_id ?? e.organizer.personId ?? null) : null;
+  const organizerPersonId = e.organizer ? (participants.find((p) => p.email && p.email === e.organizer?.email)?.personId ?? e.organizer.personId ?? null) : null;
   return {
     user_id: userId,
     connector_account_id: connectorAccountId,

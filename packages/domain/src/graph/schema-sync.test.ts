@@ -1,42 +1,72 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ENTITY_TYPES, RELATIONSHIP_KINDS } from "./relationship.ts";
+import { ENTITY_TYPES, RELATIONSHIP_KINDS, RELATIONSHIP_SOURCES } from "./relationship.ts";
+import {
+  ACTION_REQUEST_STATUSES,
+  ATTENTIONS,
+  CONNECTOR_ACCOUNT_STATUSES,
+  CONNECTOR_CAPABILITIES,
+  CREDENTIAL_LOCATIONS,
+  DOCUMENT_SOURCES,
+  HANDOFF_STATES,
+  INGEST_KINDS,
+  INGEST_SOURCES,
+  INGEST_STATUSES,
+  MONEY_ACCOUNT_TYPES,
+  PERSON_IDENTITY_KINDS,
+  PLATFORMS,
+  PROVIDER_IDS,
+  SYNC_STATUSES,
+  THREAD_STATUSES,
+  TIME_EVENT_STATUSES,
+} from "../entities/index.ts";
 
 /**
- * Seam guard: the TypeScript enums and the PostgreSQL enums must be identical.
- * Reads the first migration and compares every `create type ... as enum (...)`.
+ * Seam guard: every PostgreSQL enum in the spine migration must equal the
+ * runtime constant that defines the matching TypeScript union. Adding a value
+ * on either side without the other fails here.
  */
 const MIGRATION = resolve(__dirname, "../../../../supabase/migrations/20260910000100_spine.sql");
+const sql = readFileSync(MIGRATION, "utf8");
 
 function sqlEnum(name: string): string[] {
-  const sql = readFileSync(MIGRATION, "utf8");
   const m = sql.match(new RegExp(`create type public\\.${name} as enum \\(([^;]*)\\);`, "s"));
   if (!m) throw new Error(`enum ${name} not found in migration`);
   return [...(m[1] ?? "").matchAll(/'([^']+)'/g)].map((x) => x[1] as string);
 }
 
+const MIRRORS: Record<string, readonly string[]> = {
+  entity_type: ENTITY_TYPES,
+  relationship_kind: RELATIONSHIP_KINDS,
+  relationship_source: RELATIONSHIP_SOURCES,
+  platform: PLATFORMS,
+  provider_id: PROVIDER_IDS,
+  connector_capability: CONNECTOR_CAPABILITIES,
+  connector_account_status: CONNECTOR_ACCOUNT_STATUSES,
+  credential_location: CREDENTIAL_LOCATIONS,
+  sync_status: SYNC_STATUSES,
+  person_identity_kind: PERSON_IDENTITY_KINDS,
+  thread_status: THREAD_STATUSES,
+  document_source: DOCUMENT_SOURCES,
+  money_account_type: MONEY_ACCOUNT_TYPES,
+  time_event_status: TIME_EVENT_STATUSES,
+  attention: ATTENTIONS,
+  handoff_state: HANDOFF_STATES,
+  ingest_kind: INGEST_KINDS,
+  ingest_source: INGEST_SOURCES,
+  ingest_status: INGEST_STATUSES,
+  action_request_status: ACTION_REQUEST_STATUSES,
+};
+
 describe("domain enums mirror SQL enums", () => {
-  it("entity_type", () => {
-    expect(sqlEnum("entity_type")).toEqual([...ENTITY_TYPES]);
-  });
-  it("relationship_kind", () => {
-    expect(sqlEnum("relationship_kind")).toEqual([...RELATIONSHIP_KINDS]);
-  });
-  it("provider_id / capability / status enums cover the TS unions", () => {
-    expect(sqlEnum("provider_id")).toEqual(["google", "microsoft", "plaid", "praxion", "mock"]);
-    expect(sqlEnum("connector_capability")).toEqual(["mail", "calendar", "bank", "document"]);
-    expect(sqlEnum("connector_account_status")).toEqual(["active", "paused", "needs_reauth", "error", "disconnected"]);
-    expect(sqlEnum("credential_location")).toEqual(["server_vault", "device", "none"]);
-    expect(sqlEnum("attention")).toEqual(["needs_attention", "quiet", "dismissed"]);
-    expect(sqlEnum("handoff_state")).toEqual(["pending", "delivered", "accepted", "expired", "cancelled"]);
-    expect(sqlEnum("ingest_kind")).toEqual(["file", "image", "url", "text"]);
-    expect(sqlEnum("ingest_source")).toEqual(["share", "capture", "drop", "clipboard", "command"]);
-    expect(sqlEnum("document_source")).toEqual(["mail_attachment", "share", "capture", "drop", "praxion", "filesystem", "handoff", "connector"]);
-    expect(sqlEnum("money_account_type")).toEqual(["checking", "savings", "credit", "loan", "investment", "other"]);
-    expect(sqlEnum("time_event_status")).toEqual(["confirmed", "tentative", "cancelled"]);
-    expect(sqlEnum("thread_status")).toEqual(["active", "quiet", "archived"]);
-    expect(sqlEnum("action_request_status")).toEqual(["queued", "running", "done", "failed"]);
-    expect(sqlEnum("platform")).toEqual(["windows", "android", "macos", "ios", "ipados", "web", "server"]);
+  for (const [name, values] of Object.entries(MIRRORS)) {
+    it(name, () => {
+      expect(sqlEnum(name)).toEqual([...values]);
+    });
+  }
+  it("every SQL enum has a mirror", () => {
+    const declared = [...sql.matchAll(/create type public\.(\w+) as enum/g)].map((m) => m[1]);
+    expect(declared.sort()).toEqual(Object.keys(MIRRORS).sort());
   });
 });

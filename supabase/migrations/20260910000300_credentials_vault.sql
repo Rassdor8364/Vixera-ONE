@@ -40,6 +40,12 @@ begin
       perform vault.update_secret(v_ref, p_secret::text, v_name, 'Vixera One connector credential');
     end if;
   else
+    -- An explicit ref must already be the ref of THIS account; never rename
+    -- another account's secret.
+    if not exists (select 1 from public.connector_accounts where id = p_account_id and credential_ref = p_ref::text) then
+      raise exception 'credential ref % does not belong to connector account %', p_ref, p_account_id
+        using errcode = 'invalid_parameter_value';
+    end if;
     v_ref := p_ref;
     perform vault.update_secret(v_ref, p_secret::text, v_name, 'Vixera One connector credential');
   end if;
@@ -60,7 +66,12 @@ as $$
 declare
   v_secret text;
 begin
-  select decrypted_secret into v_secret from vault.decrypted_secrets where id = p_ref;
+  -- Only secrets bound to a connector account can be read through this door.
+  if not exists (select 1 from public.connector_accounts where credential_ref = p_ref::text) then
+    return null;
+  end if;
+  select decrypted_secret into v_secret from vault.decrypted_secrets
+    where id = p_ref and name like 'vixera:connector_account:%';
   if v_secret is null then
     return null;
   end if;
@@ -75,7 +86,10 @@ security definer
 set search_path = ''
 as $$
 begin
-  delete from vault.secrets where id = p_ref;
+  if not exists (select 1 from public.connector_accounts where credential_ref = p_ref::text) then
+    return;
+  end if;
+  delete from vault.secrets where id = p_ref and name like 'vixera:connector_account:%';
   update public.connector_accounts
     set credential_ref = null, credential_location = 'none'
     where credential_ref = p_ref::text;

@@ -152,7 +152,7 @@ async function* run(
     for (const entry of entries) {
       if (!entry || typeof entry.id !== "string" || !entry.id) continue;
       if (entry["@removed"] || entry.isCancelled === true) {
-        deleted.push({ externalId: entry.id });
+        deleted.push({ externalId: entry.id, externalCalendarId: "primary" });
         continue;
       }
       try {

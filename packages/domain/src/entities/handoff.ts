@@ -2,7 +2,8 @@ import type { DeviceId, DocumentId, HandoffId, ThreadId, UserId } from "../ids.t
 import type { IsoDateTime, JsonObject, UserScoped } from "./common.ts";
 import type { EntityRef } from "../graph/relationship.ts";
 
-export type HandoffState = "pending" | "delivered" | "accepted" | "expired" | "cancelled";
+export const HANDOFF_STATES = ["pending", "delivered", "accepted", "expired", "cancelled"] as const;
+export type HandoffState = (typeof HANDOFF_STATES)[number];
 
 /** Praxion-supplied location inside a document. Opaque to Vixera beyond page. */
 export interface PraxionLocation {

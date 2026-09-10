@@ -2,7 +2,14 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities of the Vixera One Field window.",
-  "windows": ["field"],
+  "platforms": [
+    "windows",
+    "macOS",
+    "linux"
+  ],
+  "windows": [
+    "field"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
@@ -17,15 +24,40 @@
     "fs:allow-stat",
     {
       "identifier": "fs:scope",
-      "allow": [{ "path": "$APPDATA/**" }, { "path": "$APPCACHE/**" }, { "path": "$TEMP/**" }, { "path": "$DOWNLOAD/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DESKTOP/**" }]
+      "allow": [
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$APPCACHE/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        }
+      ]
     },
     "http:default",
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "http://127.0.0.1:*" },
-        { "url": "http://localhost:*" },
-        { "url": "https://*.supabase.co" }
+        {
+          "url": "http://127.0.0.1:*"
+        },
+        {
+          "url": "http://localhost:*"
+        },
+        {
+          "url": "https://*.supabase.co"
+        }
       ]
     }
   ]

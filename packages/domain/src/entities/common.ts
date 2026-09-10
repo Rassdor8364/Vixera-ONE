@@ -18,4 +18,5 @@ export interface Timestamped {
   readonly updatedAt: IsoDateTime;
 }
 
-export type Platform = "windows" | "android" | "macos" | "ios" | "ipados" | "web" | "server";
+export const PLATFORMS = ["windows", "android", "macos", "ios", "ipados", "web", "server"] as const;
+export type Platform = (typeof PLATFORMS)[number];

@@ -1,15 +1,8 @@
 import type { ConnectorAccountId, DeviceId, DocumentId, UserId } from "../ids.ts";
 import type { JsonObject, Timestamped, UserScoped } from "./common.ts";
 
-export type DocumentSource =
-  | "mail_attachment"
-  | "share"
-  | "capture"
-  | "drop"
-  | "praxion"
-  | "filesystem"
-  | "handoff"
-  | "connector";
+export const DOCUMENT_SOURCES = ["mail_attachment", "share", "capture", "drop", "praxion", "filesystem", "handoff", "connector"] as const;
+export type DocumentSource = (typeof DOCUMENT_SOURCES)[number];
 
 /** Where the bytes of a document can be found. Vixera stores context, not rendering state. */
 export type DocumentLocation =

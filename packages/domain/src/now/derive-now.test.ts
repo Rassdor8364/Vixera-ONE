@@ -81,6 +81,30 @@ describe("deriveNow", () => {
     expect(r.upcoming.map((t) => t.title)).toEqual(["soon", "later"]);
   });
 
+  it("honors snooze: quiet while active, back in play once elapsed", () => {
+    const active = event({ id: "e7" as ContextEventId, title: "Snoozed", kind: "mail.received", importance: 90, attention: "quiet", metadata: { snoozedUntil: "2026-09-10T09:00:00Z" } });
+    const elapsed = event({ id: "e8" as ContextEventId, title: "Back", kind: "mail.received", importance: 90, attention: "quiet", metadata: { snoozedUntil: "2026-09-09T09:00:00Z" } });
+    const r = deriveNow({ contextEvents: [active, elapsed], timeEvents: [], moneyTransactions: [], threads: [], relationships: [], now: NOW });
+    expect(r.quiet.map((i) => i.title)).toEqual(["Snoozed"]);
+    expect(r.needsMe.map((i) => i.title)).toEqual(["Back"]);
+    expect(r.needsMe[0]?.reasons).toContain("snooze elapsed");
+  });
+
+  it("treats time events as appointments: happening now boosts, finished ones fall back", () => {
+    const meetingId = "11111111-1111-4111-8111-000000000006" as TimeEventId;
+    const meeting: TimeEvent = {
+      id: meetingId, userId: DEV_USER_ID, connectorAccountId: "c" as ConnectorAccountId, externalCalendarId: "primary", externalId: "m",
+      title: "Kickoff", description: null, startsAt: "2026-09-09T14:30:00Z", endsAt: "2026-09-09T15:15:00Z", allDay: false, timezone: null, location: null,
+      status: "confirmed", organizer: null, participants: [], externalLink: null, metadata: {}, createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
+    };
+    const ev = event({ id: "e9" as ContextEventId, title: "Kickoff", kind: "time.event.upcoming", importance: 45, dueAt: meeting.startsAt, subject: ref("time_event", meetingId), occurredAt: "2026-09-09T12:00:00Z" });
+    const during = deriveNow({ contextEvents: [ev], timeEvents: [meeting], threads: [], relationships: [], now: NOW });
+    expect(during.needsMe[0]?.reasons).toContain("happening now");
+    const after = deriveNow({ contextEvents: [ev], timeEvents: [meeting], threads: [], relationships: [], now: new Date("2026-09-09T16:00:00Z") });
+    expect(after.needsMe).toHaveLength(0);
+    expect([...after.changed, ...after.canWait, ...after.quiet][0]?.reasons).toContain("already happened");
+  });
+
   it("is deterministic for the same input", () => {
     const ev = [event({ id: "e6" as ContextEventId, title: "x", kind: "k", importance: 60 })];
     const a = deriveNow({ contextEvents: ev, timeEvents: [], moneyTransactions: [], threads, relationships, now: NOW });

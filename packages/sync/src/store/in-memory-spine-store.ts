@@ -567,11 +567,11 @@ export class InMemorySpineStore implements SpineStore {
     return { rows, inserted, updated };
   }
 
-  async deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[]): Promise<number> {
+  async deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[], externalCalendarId?: string): Promise<number> {
     const ids = new Set(externalIds);
     let count = 0;
     for (const e of [...this.timeEvents.values()]) {
-      if (e.connectorAccountId === connectorAccountId && ids.has(e.externalId)) {
+      if (e.connectorAccountId === connectorAccountId && ids.has(e.externalId) && (externalCalendarId === undefined || e.externalCalendarId === externalCalendarId)) {
         this.timeEvents.delete(e.id);
         this.onEntityDeleted({ type: "time_event", id: e.id });
         count++;

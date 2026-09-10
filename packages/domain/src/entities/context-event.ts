@@ -2,7 +2,8 @@ import type { ConnectorAccountId, ContextEventId, UserId } from "../ids.ts";
 import type { IsoDateTime, JsonObject, UserScoped } from "./common.ts";
 import type { EntityRef } from "../graph/relationship.ts";
 
-export type Attention = "needs_attention" | "quiet" | "dismissed";
+export const ATTENTIONS = ["needs_attention", "quiet", "dismissed"] as const;
+export type Attention = (typeof ATTENTIONS)[number];
 
 /**
  * Something that happened in the user's context: a message arrived, an event

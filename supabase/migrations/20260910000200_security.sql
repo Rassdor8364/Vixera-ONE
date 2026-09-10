@@ -64,16 +64,25 @@ create policy handoffs_owner on public.handoffs for all to authenticated
 create policy relationships_owner on public.relationships for all to authenticated
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
--- action_requests: clients may read their own audit trail and submit requests,
--- but only the server (service role) transitions them. Clients cannot update or delete.
+-- action_requests: clients read their own audit trail. Rows are created and
+-- transitioned only by the server (action-dispatch, service role): the client
+-- submits an ActionEnvelope over HTTPS, never a row.
 create policy action_requests_select_own on public.action_requests
   for select to authenticated using (user_id = (select auth.uid()));
-create policy action_requests_insert_own on public.action_requests
-  for insert to authenticated with check (user_id = (select auth.uid()) and status = 'queued');
+revoke insert, update, delete on public.action_requests from authenticated;
 
--- The credential reference is opaque, but clients have no reason to write it.
--- Only the server links credentials (see migration 3).
-revoke update (credential_ref, credential_location) on public.connector_accounts from authenticated;
+-- Connector accounts are created and linked by the server (connector-link) and
+-- disconnected by the server (vx_connector_account_disconnect). A column-level
+-- REVOKE is a no-op while Supabase's table-level default grant stands, so the
+-- table-level write privileges are dropped and only the columns a client may
+-- edit are granted back. RLS (connector_accounts_owner) still scopes updates.
+revoke insert, update, delete on public.connector_accounts from authenticated;
+grant update (label, status, metadata) on public.connector_accounts to authenticated;
+
+-- Sync state (cursor, status, errors) is written by the engine only; a client may
+-- pause a capability.
+revoke insert, update, delete on public.connector_sync_states from authenticated;
+grant update (enabled) on public.connector_sync_states to authenticated;
 
 -- Anonymous callers get nothing. (Supabase grants table privileges to anon by
 -- default; with no policies for anon, RLS denies every row.)

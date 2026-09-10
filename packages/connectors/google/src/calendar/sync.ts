@@ -164,11 +164,11 @@ async function listCalendars(client: GoogleApiClient): Promise<GoogleCalendarLis
 
 function fold(ctx: SyncContext, calendarId: string, items: readonly GoogleEvent[]): CalendarSyncBatch {
   const events: NormalizedTimeEvent[] = [];
-  const deleted: { externalId: string }[] = [];
+  const deleted: { externalId: string; externalCalendarId: string }[] = [];
   for (const raw of items) {
     if (!raw?.id) continue;
     if (raw.status === "cancelled") {
-      deleted.push({ externalId: raw.id });
+      deleted.push({ externalId: raw.id, externalCalendarId: calendarId });
       continue;
     }
     try {

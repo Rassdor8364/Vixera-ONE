@@ -4,6 +4,8 @@
 --   * every domain row carries user_id (seam 1), even though there is one user today
 --   * provider schemas never leak in: connectors write normalized rows only
 --   * the context graph is one typed edge table, validated by trigger
+--   * child rows can only reference parents of the same user: composite FKs on (user_id, id)
+--   * polymorphic subjects (context_events, conclusions, handoffs.focus) are validated by trigger
 --   * everything here is idempotent enough to re-run on a fresh database
 
 create extension if not exists pgcrypto with schema extensions;
@@ -90,7 +92,8 @@ create table public.devices (
   name text not null,
   praxion_available boolean not null default false,
   last_seen_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint devices_user_id_id_unique unique (user_id, id)
 );
 create index devices_user_idx on public.devices (user_id);
 
@@ -113,7 +116,8 @@ create table public.connector_accounts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint connector_accounts_unique_account unique (user_id, provider, external_account_id),
-  constraint connector_accounts_credential_ref_is_opaque check (credential_ref is null or length(credential_ref) <= 256)
+  constraint connector_accounts_credential_ref_is_opaque check (credential_ref is null or length(credential_ref) <= 256),
+  constraint connector_accounts_user_id_id_unique unique (user_id, id)
 );
 comment on column public.connector_accounts.credential_ref is 'Opaque reference into the credential store (Vault id or device keychain key). Never a secret.';
 create index connector_accounts_user_idx on public.connector_accounts (user_id, provider);
@@ -122,7 +126,7 @@ create trigger connector_accounts_updated_at before update on public.connector_a
 
 -- Independent sync state per (account, capability). One failure never blocks the rest.
 create table public.connector_sync_states (
-  connector_account_id uuid not null references public.connector_accounts (id) on delete cascade,
+  connector_account_id uuid not null,
   capability public.connector_capability not null,
   user_id uuid not null references public.users (id) on delete cascade,
   enabled boolean not null default true,
@@ -133,7 +137,8 @@ create table public.connector_sync_states (
   last_error text,
   consecutive_failures integer not null default 0,
   updated_at timestamptz not null default now(),
-  primary key (connector_account_id, capability)
+  primary key (connector_account_id, capability),
+  constraint connector_sync_states_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete cascade
 );
 create index connector_sync_states_user_idx on public.connector_sync_states (user_id);
 create trigger connector_sync_states_updated_at before update on public.connector_sync_states
@@ -149,10 +154,12 @@ create table public.people (
   primary_email text,
   organization text,
   notes text,
-  merged_into_id uuid references public.people (id) on delete set null,
+  merged_into_id uuid,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint people_merged_into_fkey foreign key (user_id, merged_into_id) references public.people (user_id, id) on delete set null (merged_into_id),
+  constraint people_user_id_id_unique unique (user_id, id)
 );
 create index people_user_idx on public.people (user_id);
 create index people_user_name_idx on public.people (user_id, lower(display_name));
@@ -162,14 +169,16 @@ create trigger people_updated_at before update on public.people
 create table public.person_identities (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  person_id uuid not null references public.people (id) on delete cascade,
+  person_id uuid not null,
   kind public.person_identity_kind not null,
   value text not null,
   raw_value text not null,
   provider text,
-  connector_account_id uuid references public.connector_accounts (id) on delete set null,
+  connector_account_id uuid,
   created_at timestamptz not null default now(),
-  constraint person_identities_unique_value unique (user_id, kind, value)
+  constraint person_identities_unique_value unique (user_id, kind, value),
+  constraint person_identities_person_fkey foreign key (user_id, person_id) references public.people (user_id, id) on delete cascade,
+  constraint person_identities_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete set null (connector_account_id)
 );
 create index person_identities_person_idx on public.person_identities (person_id);
 
@@ -185,7 +194,8 @@ create table public.threads (
   summary text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint threads_user_id_id_unique unique (user_id, id)
 );
 create index threads_user_idx on public.threads (user_id, status);
 create trigger threads_updated_at before update on public.threads
@@ -200,7 +210,7 @@ create table public.documents (
   title text not null,
   mime_type text,
   source public.document_source not null,
-  connector_account_id uuid references public.connector_accounts (id) on delete set null,
+  connector_account_id uuid,
   source_ref jsonb not null default '{}'::jsonb,
   location jsonb not null default '{"kind":"none"}'::jsonb,
   praxion_document_id text,
@@ -208,7 +218,9 @@ create table public.documents (
   content_hash text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint documents_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete set null (connector_account_id),
+  constraint documents_user_id_id_unique unique (user_id, id)
 );
 create index documents_user_idx on public.documents (user_id, updated_at desc);
 create index documents_user_hash_idx on public.documents (user_id, content_hash) where content_hash is not null;
@@ -222,7 +234,7 @@ create trigger documents_updated_at before update on public.documents
 create table public.mail_messages (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  connector_account_id uuid not null references public.connector_accounts (id) on delete cascade,
+  connector_account_id uuid not null,
   external_id text not null,
   external_thread_id text,
   subject text,
@@ -230,7 +242,7 @@ create table public.mail_messages (
   body_text text,
   from_address text,
   from_name text,
-  from_person_id uuid references public.people (id) on delete set null,
+  from_person_id uuid,
   to_addresses jsonb not null default '[]'::jsonb,
   cc_addresses jsonb not null default '[]'::jsonb,
   sent_at timestamptz,
@@ -241,7 +253,9 @@ create table public.mail_messages (
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint mail_messages_unique_external unique (user_id, connector_account_id, external_id)
+  constraint mail_messages_unique_external unique (user_id, connector_account_id, external_id),
+  constraint mail_messages_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete cascade,
+  constraint mail_messages_from_person_fkey foreign key (user_id, from_person_id) references public.people (user_id, id) on delete set null (from_person_id)
 );
 create index mail_messages_user_received_idx on public.mail_messages (user_id, received_at desc);
 create index mail_messages_thread_idx on public.mail_messages (connector_account_id, external_thread_id);
@@ -255,7 +269,7 @@ create trigger mail_messages_updated_at before update on public.mail_messages
 create table public.money_accounts (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  connector_account_id uuid not null references public.connector_accounts (id) on delete cascade,
+  connector_account_id uuid not null,
   external_id text not null,
   name text not null,
   official_name text,
@@ -268,7 +282,9 @@ create table public.money_accounts (
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint money_accounts_unique_external unique (user_id, connector_account_id, external_id)
+  constraint money_accounts_unique_external unique (user_id, connector_account_id, external_id),
+  constraint money_accounts_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete cascade,
+  constraint money_accounts_user_id_id_unique unique (user_id, id)
 );
 create index money_accounts_user_idx on public.money_accounts (user_id);
 create trigger money_accounts_updated_at before update on public.money_accounts
@@ -277,8 +293,8 @@ create trigger money_accounts_updated_at before update on public.money_accounts
 create table public.money_transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  connector_account_id uuid not null references public.connector_accounts (id) on delete cascade,
-  money_account_id uuid not null references public.money_accounts (id) on delete cascade,
+  connector_account_id uuid not null,
+  money_account_id uuid not null,
   external_id text not null,
   amount numeric(20, 4) not null,
   currency char(3) not null,
@@ -288,11 +304,14 @@ create table public.money_transactions (
   authorized_at timestamptz,
   pending boolean not null default false,
   category text[] not null default '{}',
-  counterparty_person_id uuid references public.people (id) on delete set null,
+  counterparty_person_id uuid,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint money_transactions_unique_external unique (user_id, connector_account_id, external_id)
+  constraint money_transactions_unique_external unique (user_id, connector_account_id, external_id),
+  constraint money_transactions_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete cascade,
+  constraint money_transactions_money_account_fkey foreign key (user_id, money_account_id) references public.money_accounts (user_id, id) on delete cascade,
+  constraint money_transactions_counterparty_fkey foreign key (user_id, counterparty_person_id) references public.people (user_id, id) on delete set null (counterparty_person_id)
 );
 comment on column public.money_transactions.amount is 'Signed: negative leaves the account, positive arrives. Provider sign conventions are normalized by the connector.';
 create index money_transactions_user_posted_idx on public.money_transactions (user_id, posted_on desc);
@@ -306,7 +325,7 @@ create trigger money_transactions_updated_at before update on public.money_trans
 create table public.time_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  connector_account_id uuid not null references public.connector_accounts (id) on delete cascade,
+  connector_account_id uuid not null,
   external_calendar_id text not null,
   external_id text not null,
   title text not null,
@@ -324,7 +343,8 @@ create table public.time_events (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint time_events_unique_external unique (user_id, connector_account_id, external_calendar_id, external_id),
-  constraint time_events_range check (ends_at >= starts_at)
+  constraint time_events_range check (ends_at >= starts_at),
+  constraint time_events_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete cascade
 );
 create index time_events_user_start_idx on public.time_events (user_id, starts_at);
 create trigger time_events_updated_at before update on public.time_events
@@ -345,11 +365,12 @@ create table public.context_events (
   importance smallint not null default 50 check (importance between 0 and 100),
   due_at timestamptz,
   attention public.attention not null default 'needs_attention',
-  connector_account_id uuid references public.connector_accounts (id) on delete set null,
+  connector_account_id uuid,
   dedupe_key text not null,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  constraint context_events_dedupe unique (user_id, dedupe_key)
+  constraint context_events_dedupe unique (user_id, dedupe_key),
+  constraint context_events_account_fkey foreign key (user_id, connector_account_id) references public.connector_accounts (user_id, id) on delete set null (connector_account_id)
 );
 create index context_events_user_occurred_idx on public.context_events (user_id, attention, occurred_at desc);
 create index context_events_subject_idx on public.context_events (subject_type, subject_id);
@@ -376,7 +397,7 @@ create index conclusions_subject_idx on public.conclusions (user_id, subject_typ
 create table public.ingest_items (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  device_id uuid references public.devices (id) on delete set null,
+  device_id uuid,
   kind public.ingest_kind not null,
   source public.ingest_source not null,
   title text,
@@ -386,11 +407,13 @@ create table public.ingest_items (
   size_bytes bigint,
   storage_path text,
   status public.ingest_status not null default 'received',
-  document_id uuid references public.documents (id) on delete set null,
+  document_id uuid,
   error text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  processed_at timestamptz
+  processed_at timestamptz,
+  constraint ingest_items_device_fkey foreign key (user_id, device_id) references public.devices (user_id, id) on delete set null (device_id),
+  constraint ingest_items_document_fkey foreign key (user_id, document_id) references public.documents (user_id, id) on delete set null (document_id)
 );
 create index ingest_items_user_status_idx on public.ingest_items (user_id, status, created_at desc);
 
@@ -400,13 +423,13 @@ create index ingest_items_user_status_idx on public.ingest_items (user_id, statu
 create table public.handoffs (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.users (id) on delete cascade,
-  source_device_id uuid not null references public.devices (id) on delete cascade,
-  target_device_id uuid references public.devices (id) on delete set null,
+  source_device_id uuid not null,
+  target_device_id uuid,
   state public.handoff_state not null default 'pending',
   focus_type public.entity_type,
   focus_id uuid,
-  thread_id uuid references public.threads (id) on delete set null,
-  document_id uuid references public.documents (id) on delete set null,
+  thread_id uuid,
+  document_id uuid,
   artifact_storage_path text,
   praxion_location jsonb,
   conclusions text[] not null default '{}',
@@ -416,7 +439,11 @@ create table public.handoffs (
   accepted_at timestamptz,
   expires_at timestamptz,
   metadata jsonb not null default '{}'::jsonb,
-  constraint handoffs_focus_pair check ((focus_type is null) = (focus_id is null))
+  constraint handoffs_focus_pair check ((focus_type is null) = (focus_id is null)),
+  constraint handoffs_source_device_fkey foreign key (user_id, source_device_id) references public.devices (user_id, id) on delete cascade,
+  constraint handoffs_target_device_fkey foreign key (user_id, target_device_id) references public.devices (user_id, id) on delete set null (target_device_id),
+  constraint handoffs_thread_fkey foreign key (user_id, thread_id) references public.threads (user_id, id) on delete set null (thread_id),
+  constraint handoffs_document_fkey foreign key (user_id, document_id) references public.documents (user_id, id) on delete set null (document_id)
 );
 create index handoffs_user_state_idx on public.handoffs (user_id, state, created_at desc);
 
@@ -433,10 +460,11 @@ create table public.action_requests (
   result jsonb,
   error text,
   attempts integer not null default 0,
-  actor_device_id uuid references public.devices (id) on delete set null,
+  actor_device_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint action_requests_idempotent unique (user_id, idempotency_key)
+  constraint action_requests_idempotent unique (user_id, idempotency_key),
+  constraint action_requests_device_fkey foreign key (user_id, actor_device_id) references public.devices (user_id, id) on delete set null (actor_device_id)
 );
 create index action_requests_user_status_idx on public.action_requests (user_id, status, created_at desc);
 create trigger action_requests_updated_at before update on public.action_requests
@@ -522,6 +550,43 @@ $$;
 
 create trigger relationships_validate before insert or update on public.relationships
   for each row execute function public.vx_validate_relationship();
+
+-- context_events.subject, conclusions.subject and handoffs.focus are polymorphic
+-- references too; validate them the same way (existence AND ownership).
+create or replace function public.vx_validate_subject()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if not public.vx_entity_exists(new.subject_type, new.subject_id, new.user_id) then
+    raise exception 'subject % % does not exist for user', new.subject_type, new.subject_id
+      using errcode = 'foreign_key_violation';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.vx_validate_handoff_focus()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.focus_type is not null and not public.vx_entity_exists(new.focus_type, new.focus_id, new.user_id) then
+    raise exception 'handoff focus % % does not exist for user', new.focus_type, new.focus_id
+      using errcode = 'foreign_key_violation';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger context_events_validate before insert or update on public.context_events
+  for each row execute function public.vx_validate_subject();
+create trigger conclusions_validate before insert or update on public.conclusions
+  for each row execute function public.vx_validate_subject();
+create trigger handoffs_validate before insert or update on public.handoffs
+  for each row execute function public.vx_validate_handoff_focus();
 
 -- When an entity disappears, its edges, events and conclusions go with it.
 create or replace function public.vx_on_entity_deleted()

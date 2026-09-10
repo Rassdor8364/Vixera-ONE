@@ -77,9 +77,15 @@ export interface NormalizedMoneyTransaction {
   readonly metadata?: JsonObject;
 }
 
-/** A provider-side deletion (message trashed, event cancelled/removed, transaction removed). */
+/**
+ * A provider-side deletion (message trashed, event cancelled/removed,
+ * transaction removed). Calendar deletions carry the calendar id because
+ * `time_events` is keyed by (account, calendar, event id): the same event id can
+ * live in two calendars of one account.
+ */
 export interface NormalizedDeletion {
   readonly externalId: string;
+  readonly externalCalendarId?: string;
 }
 
 export interface MailSyncBatch {
@@ -95,5 +101,8 @@ export interface CalendarSyncBatch {
 export interface BankSyncBatch {
   readonly accounts: readonly NormalizedMoneyAccount[];
   readonly transactions: readonly NormalizedMoneyTransaction[];
+  /** Removed transactions. */
   readonly deleted: readonly NormalizedDeletion[];
+  /** Removed money accounts (rare; separate signal at every provider). */
+  readonly deletedAccounts?: readonly NormalizedDeletion[];
 }

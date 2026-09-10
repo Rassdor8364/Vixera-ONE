@@ -12,7 +12,8 @@ export interface EventParticipant {
   readonly personId?: PersonId | null;
 }
 
-export type TimeEventStatus = "confirmed" | "tentative" | "cancelled";
+export const TIME_EVENT_STATUSES = ["confirmed", "tentative", "cancelled"] as const;
+export type TimeEventStatus = (typeof TIME_EVENT_STATUSES)[number];
 
 /** A calendar event, normalized. Calendar is INPUT TO CONTEXT. */
 export interface TimeEvent extends UserScoped, Timestamped {

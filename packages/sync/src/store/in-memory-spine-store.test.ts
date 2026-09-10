@@ -246,3 +246,24 @@ describe("InMemorySpineStore misc semantics", () => {
     expect(await store.findDocumentBySourceRef(null, doc.sourceRef)).toBeNull();
   });
 });
+
+describe("calendar-scoped deletions", () => {
+  it("deletes only the event in the named calendar when the same id lives in two calendars", async () => {
+    const { InMemorySpineStore } = await import("./in-memory-spine-store.ts");
+    const { DEV_USER_ID } = await import("@vixera/domain");
+    const store = new InMemorySpineStore(DEV_USER_ID);
+    const account = await store.createConnectorAccount({
+      provider: "mock", externalAccountId: "acc", label: "Mock", address: null, capabilities: ["calendar"], status: "active",
+      credentialLocation: "none", credentialRef: null, lastError: null, metadata: {},
+    });
+    const base = {
+      externalId: "evt-1", title: "Shared", description: null, startsAt: "2026-09-10T10:00:00Z", endsAt: "2026-09-10T11:00:00Z", allDay: false,
+      timezone: null, location: null, status: "confirmed" as const, organizer: null, participants: [], externalLink: null,
+    };
+    await store.upsertTimeEvents(account.id, [{ ...base, externalCalendarId: "primary" }, { ...base, externalCalendarId: "shared" }]);
+    expect(await store.deleteTimeEvents(account.id, ["evt-1"], "shared")).toBe(1);
+    const left = await store.listTimeEvents({ from: "2026-09-01T00:00:00Z", to: "2026-09-30T00:00:00Z" });
+    expect(left.map((e) => e.externalCalendarId)).toEqual(["primary"]);
+    expect(await store.deleteTimeEvents(account.id, ["evt-1"])).toBe(1);
+  });
+});

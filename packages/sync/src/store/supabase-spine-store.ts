@@ -517,8 +517,8 @@ export class SupabaseSpineStore implements SpineStore {
     );
   }
 
-  async deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[]): Promise<number> {
-    return this.deleteByExternalIds("time_events", connectorAccountId, externalIds);
+  async deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[], externalCalendarId?: string): Promise<number> {
+    return this.deleteByExternalIds("time_events", connectorAccountId, externalIds, externalCalendarId);
   }
 
   // -------------------------------------------------------------------------
@@ -869,12 +869,14 @@ export class SupabaseSpineStore implements SpineStore {
     return { rows, inserted, updated };
   }
 
-  private async deleteByExternalIds(table: string, connectorAccountId: string, externalIds: readonly string[]): Promise<number> {
+  private async deleteByExternalIds(table: string, connectorAccountId: string, externalIds: readonly string[], externalCalendarId?: string): Promise<number> {
     if (!externalIds.length) return 0;
     let count = 0;
     for (const chunk of chunks([...new Set(externalIds)], CHUNK)) {
+      let q = this.from(table).delete().eq("user_id", this.userId).eq("connector_account_id", connectorAccountId).in("external_id", chunk);
+      if (externalCalendarId !== undefined) q = q.eq("external_calendar_id", externalCalendarId);
       const deleted = await this.rows<{ id: string }>(
-        this.from(table).delete().eq("user_id", this.userId).eq("connector_account_id", connectorAccountId).in("external_id", chunk).select("id"),
+        q.select("id"),
         `delete ${table}`,
       );
       count += deleted.length;

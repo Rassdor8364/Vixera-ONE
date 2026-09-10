@@ -42,7 +42,7 @@ describe("syncCalendar initial", () => {
     expect(pages[0]?.done).toBe(false);
     // primary page 2: token stored, cancelled -> deleted
     expect(pages[1]?.batch.events.map((e) => e.externalId)).toEqual(["allday001", "timed001", "untitled001"]);
-    expect(pages[1]?.batch.deleted).toEqual([{ externalId: "cancelled001" }]);
+    expect(pages[1]?.batch.deleted).toEqual([{ externalId: "cancelled001", externalCalendarId: PRIMARY }]);
     expect(pages[1]?.checkpoint).toEqual({ calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-1" } } });
     expect(pages[1]?.done).toBe(false);
     // team calendar: last page => done
@@ -76,7 +76,7 @@ describe("syncCalendar incremental", () => {
     const call = fake.callsTo(eventsUrl(PRIMARY))[0]!;
     expect(call.url.searchParams.get("syncToken")).toBe("fake-sync-token-primary-1");
     expect(call.url.searchParams.get("timeMin")).toBeNull();
-    expect(pages[0]?.batch.deleted).toEqual([{ externalId: "cancelled001" }]);
+    expect(pages[0]?.batch.deleted).toEqual([{ externalId: "cancelled001", externalCalendarId: PRIMARY }]);
     expect(pages[0]?.batch.events.map((e) => e.externalId)).toEqual(["n1"]);
     expect(pages[0]?.checkpoint).toEqual({ calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-2" } } });
     expect(pages[0]?.done).toBe(true);

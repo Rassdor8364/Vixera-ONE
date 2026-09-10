@@ -17,7 +17,8 @@ export interface Person extends UserScoped, Timestamped {
   readonly metadata: JsonObject;
 }
 
-export type PersonIdentityKind = "email" | "phone" | "provider";
+export const PERSON_IDENTITY_KINDS = ["email", "phone", "provider"] as const;
+export type PersonIdentityKind = (typeof PERSON_IDENTITY_KINDS)[number];
 
 export interface PersonIdentity extends UserScoped {
   readonly id: string;

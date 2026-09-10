@@ -251,7 +251,8 @@ export interface SpineWriter {
   deleteMoneyTransactions(connectorAccountId: string, externalIds: readonly string[]): Promise<number>;
 
   upsertTimeEvents(connectorAccountId: string, events: readonly TimeEventWrite[]): Promise<UpsertResult<TimeEvent>>;
-  deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[]): Promise<number>;
+  /** Scoped to one calendar when `externalCalendarId` is given (the same event id can live in two calendars). */
+  deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[], externalCalendarId?: string): Promise<number>;
 
   /** Natural key dedupeKey: existing events are returned unchanged (attention decisions are never overwritten). */
   upsertContextEvents(events: readonly ContextEventInput[]): Promise<UpsertResult<ContextEvent>>;
