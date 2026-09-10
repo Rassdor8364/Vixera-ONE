@@ -176,6 +176,20 @@ settingsEvaluated { s -> remap(s.pluginManagement.repositories, MIRROR); remap(s
 allprojects { p -> remap(p.buildscript.repositories, MIRROR); remap(p.repositories, MIRROR) }
 ```
 
+## Release APK
+
+`scripts/build-installers.sh android` produces a signed arm64 APK
+(~11 MB). Details, including the keystore that must be backed up offline, are in
+[`installers.md`](./installers.md).
+
+Release builds minify with R8, which debug builds skip. That is why
+`plugins/tauri-plugin-vixera-share/android/proguard-rules.pro` carries
+`consumerProguardFiles` rules for Google Tink: `androidx.security-crypto` pulls
+it in, it references classes absent from the runtime classpath, and it resolves
+key managers reflectively. Without those rules the release build fails at
+`minifyUniversalReleaseWithR8`; with the keeps missing it would instead fail at
+runtime inside `secure_get` / `secure_set`.
+
 ## Signing
 
 Debug builds use the default debug keystore. For release APKs create a keystore

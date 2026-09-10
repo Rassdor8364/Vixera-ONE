@@ -91,6 +91,17 @@ Needs the `postgrest` binary on `PATH` (or at `/tmp/vixera-live-stack/postgrest`
 This is what proves the Supabase store against the real API: row caps, `numeric`
 as JSON number, conflict targets, RPC signatures and RLS. See `docs/supabase.md`.
 
+### Installers
+
+```bash
+scripts/build-installers.sh          # windows | android | all
+```
+
+One `.exe` for Windows (NSIS, per-user, no admin) and one signed `.apk` for
+Android arm64, both baking in `apps/desktop/.env.production`. See
+[`docs/installers.md`](docs/installers.md) — including the Android signing key,
+which needs an offline backup.
+
 ### Deploying
 
 The `Vixera-ONE` Supabase project (`uhdlacchajiblhmgasjg`) already has the full

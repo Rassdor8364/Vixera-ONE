@@ -9,6 +9,7 @@ Companion documents live beside it in `docs/`:
 
 | Topic | Document |
 | --- | --- |
+| Installers (Windows .exe, Android .apk) | [`installers.md`](./installers.md) |
 | Database schema | [`schema.md`](./schema.md) |
 | Connector contract | [`connectors.md`](./connectors.md) |
 | Praxion local contract | [`praxion-contract.md`](./praxion-contract.md) |
