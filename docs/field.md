@@ -64,9 +64,13 @@ offers Add to thread. Read only: no payment affordance exists.
 Windows, HTML drop in a browser), Pick files, "Arriving" (ingest items still
 `received`), searchable documents with a location mark (On this device /
 Synced / At source). Open uses Praxion when present and the OS viewer or a
-signed URL otherwise; Add to thread; Continue on; Compare and Annotate stay
-visible but disabled with the reason ("Needs Praxion on this device" or
-"contract version is incompatible").
+signed URL otherwise; Add to thread; Continue on; Compare and Annotate ask
+Praxion for the artifact action (`requestArtifactAction` → `POST /v1/actions`),
+which resolves Praxion's own document id from the open call rather than from a
+column Vixera never populates. Without Praxion they are disabled with the reason
+("Needs Praxion on this device" or "contract version is incompatible"), and a
+Praxion that does not offer the action answers so in one line. Vixera implements
+no part of comparing or annotating.
 
 **Quiet** (`areas/Quiet.tsx`) — context events with `attention = quiet`
 (60 days), each with "Needs attention" (`context_event.attend`, which also
@@ -178,7 +182,7 @@ Same code, same areas, phone layout. What differs (`platform/tauri.ts`
 * No OS notifications from NOW (`NeedsMeWatcher` is desktop only).
 * Praxion is never present: Open uses the OS viewer through a cached copy
   when the fs capability allows writing, otherwise a signed URL in the
-  browser. Compare / Annotate stay disabled.
+  browser. Compare / Annotate stay disabled with the reason.
 * Handoffs work in both directions ("Continue on <phone>", and accepting on
   the phone).
 * The sign-out button sits in the context line at every width.

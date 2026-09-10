@@ -37,9 +37,14 @@ Same engine, other triggers:
 | Server action | `connector.sync_now` through `action-dispatch` | 60 s (the client is waiting) |
 | Dev-fixture mode | `SyncEngine.runAll()` in-process over `InMemorySpineStore` + `MockConnector` | none |
 
-The wall-clock budget only stops **starting** new (account, capability)
-pairs; a pair in flight finishes its current page. Skipped pairs are reported
-as `skipped` with reason "time budget exhausted" and resume from their
+The wall-clock budget stops **starting** new (account, capability) pairs, and
+`runCapability` also takes the deadline: a running pair stops paging as soon as
+the budget is spent, but only immediately after a checkpoint was persisted, so
+the stopping point is always a durable resume point and never mid-page. A source
+that yields no intermediate checkpoint (Graph delta produces one only at the end)
+simply runs to completion — the budget can never make it lose work. Skipped pairs
+are reported as `skipped` with reason "time budget exhausted" and an interrupted
+one reports `ok` with a reason naming the budget; both resume from their
 checkpoint on the next run. `runSync` also computes `selfAddresses` from
 every account's `address`, so the user never becomes a person in their own
 graph.
@@ -262,7 +267,11 @@ acknowledgement and no cancel action).
 1. **Create** — "Continue on <device>" (`ContinueOn`, `createHandoff`) →
    `handoff.create`: validates source/target device, thread, document
    (all must be the user's rows); `focus`, `threadId`, `documentId`,
-   `praxionLocation`, `conclusions`, `commandHistory` (the One Command ring);
+   `praxionLocation`, `conclusions`, `commandHistory` (the One Command ring).
+   `praxionLocation` is filled in by `createHandoff` from the
+   `ScreenContextRegistry` when the focused screen document is provably the one
+   being handed off (same Praxion document id, or the same device path when
+   neither side names a Praxion id) — Vixera never calls Praxion from UI code;
    `artifactStoragePath` when the document lives in Storage. TTL 24 h
    (`expiresAt`). A `handoff.created` context event (importance 60, `dueAt =
    expiresAt`) makes it show up in NOW on every device.
