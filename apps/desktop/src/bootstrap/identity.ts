@@ -11,6 +11,7 @@
  * payload or from provider data.
  */
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import { keepSignedIn } from "./session-preference.ts";
 import { NoCurrentUserError, StaticCurrentUserProvider, setCurrentUserProvider, type CurrentUser, type CurrentUserProvider, type UserId } from "@vixera/domain";
 
 export type SessionListener = (session: Session | null) => void;
@@ -21,10 +22,19 @@ export class SessionCurrentUserProvider implements CurrentUserProvider {
 
   constructor(private readonly client: SupabaseClient) {}
 
-  /** Loads the persisted session and starts tracking auth changes. */
+  /**
+   * Loads the persisted session and starts tracking auth changes. A session
+   * restored from the keychain is discarded when the user asked not to be kept
+   * signed in — that is what makes the checkbox on the door mean something.
+   */
   async start(): Promise<Session | null> {
     const { data } = await this.client.auth.getSession();
-    this.setSession(data.session ?? null);
+    if (data.session && !keepSignedIn()) {
+      await this.client.auth.signOut();
+      this.setSession(null);
+    } else {
+      this.setSession(data.session ?? null);
+    }
     this.client.auth.onAuthStateChange((_event, session) => {
       this.setSession(session);
     });

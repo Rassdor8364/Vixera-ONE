@@ -1,5 +1,5 @@
 /**
- * App: shell → (sign-in | Field). The Field mounts only with a current user,
+ * App: shell → (Auth | Field). The Field mounts only with a current user,
  * so every store and every query is bound to that user id from the start.
  */
 import { useEffect, useMemo, useState } from "react";
@@ -9,7 +9,8 @@ import type { AppShell } from "../bootstrap/runtime.ts";
 import { createSessionRuntime } from "../bootstrap/runtime.ts";
 import { SpineProvider } from "../data/spine-provider.tsx";
 import { Field } from "../field/Field.tsx";
-import { SignIn } from "./SignIn.tsx";
+import { Auth } from "./Auth.tsx";
+import "./auth.css";
 
 export function App({ shell }: { shell: AppShell }) {
   const [session, setSession] = useState<Session | null>(() => shell.session?.currentSession() ?? null);
@@ -20,7 +21,7 @@ export function App({ shell }: { shell: AppShell }) {
 
   if (!runtime) {
     if (!shell.supabase) return <p className="notice">No session and no Supabase client.</p>;
-    return <SignIn client={shell.supabase} defaultEmail={shell.config.devUserEmail} />;
+    return <Auth client={shell.supabase} defaultEmail={shell.config.devUserEmail} />;
   }
   const signOut = shell.supabase ? async () => { await shell.supabase?.auth.signOut(); } : undefined;
   return (

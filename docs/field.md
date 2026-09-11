@@ -11,6 +11,39 @@ Layout (`field/Field.tsx`): a context line on top (current area · focused
 entity · state mark · Praxion mark · sign out), a quiet row of area labels, the
 area itself, and the One Command bar at the bottom. One column below 720 px.
 
+## The door
+
+`apps/desktop/src/app/Auth.tsx` is the only screen before the Field, and the
+only onboarding there is. Three modes on one surface: sign in, create account,
+reset password. It follows the Vixera One Auth design — two panels on a wide
+screen, the brand left and the form right, collapsing to the form alone under
+860px so the Android companion gets the same screen.
+
+Everything goes straight to Supabase Auth; Vixera has no account system of its
+own. Registration is `auth.signUp` with the name in user metadata, which the
+`vx_handle_new_auth_user` trigger copies into `public.users.display_name`.
+
+The live project has `mailer_autoconfirm` off, so `signUp` returns a user and no
+session: the screen then asks the person to open the emailed confirmation link
+before signing in. Confirmation mail goes through Supabase's built-in sender,
+which is rate-limited to a handful per hour — fine for one person, not for a
+launch. Point the project at real SMTP before that matters.
+
+"Keep me signed in" is a real preference, not decoration. The session always
+lives in the OS keychain; the flag decides whether a restored session survives
+the *next* launch, and `identity.ts` signs out at startup when it is off.
+
+Two deliberate departures from the design file. The social sign-in row is
+omitted because no OAuth provider is configured on the project, and a button
+that cannot work is worse than no button. The terms line is reworded: the
+original said Vixera reads connected services locally on the device, which is
+not what this build does — connectors sync server-side, and only Praxion
+documents stay local.
+
+Fonts (Jost, Cormorant Garamond) are bundled as woff2 under `src/assets/fonts`,
+63 KB together, because the app's CSP has no route to a font CDN and must work
+offline.
+
 ## Composition
 
 | Layer | File | Role |
