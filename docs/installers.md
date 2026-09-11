@@ -37,17 +37,48 @@ the app binary, every NSIS plugin and the installer itself, with a DigiCert
 timestamp so the signature outlives the certificate. File properties and the
 signature dialog read `CN=Vixera AI, O=Vixera AI`.
 
-What that does and does not buy:
+### Why SmartScreen still says "Unknown publisher"
 
-* It does **not** silence SmartScreen. Windows trusts a certificate chain, not a
-  name, and this certificate is its own issuer. First run still shows "Windows
-  protected your PC" → *More info* → *Run anyway*.
-* On machines you control, importing `.signing/vixera-ai-codesign.crt` into
-  Trusted Root and Trusted Publishers makes the signature trusted — the usual
-  route for internal distribution, by Group Policy in a domain.
-* For a signature the public trusts out of the box, buy an OV or EV
-  code-signing certificate and point `SIGN_PFX` at it. Nothing else changes; an
-  EV certificate also builds SmartScreen reputation immediately.
+Because the certificate is its own issuer. Windows fills the *Publisher* field
+from a certificate that chains to a root it already trusts; a self-signed one
+has no such chain, so it reports `Unknown publisher` even though the file is
+signed and the signature is intact. If self-signing could set that name, anyone
+could claim to be anyone — which is the whole point of the check. **No build
+flag changes this.**
+
+Two ways to make it read `Vixera AI`:
+
+**On machines you own — free, immediate.** Import the public certificate into
+Trusted Root and Trusted Publishers:
+
+```powershell
+# elevated PowerShell, with vixera-ai-codesign.crt beside the script
+powershell -ExecutionPolicy Bypass -File scripts/trust-vixera-cert.ps1
+```
+
+`scripts/vixera-ai-codesign.crt` is the public half only, safe to copy around.
+Only that machine is affected; in a domain the same thing is done by Group
+Policy. SmartScreen may still warn once on reputation for a brand-new file, but
+the publisher will no longer read `Unknown`.
+
+**For anyone else — buy a certificate.** The publisher name comes from CA
+validation of the organisation, so it cannot be shortcut.
+
+| | What it gets you | Rough cost |
+| --- | --- | --- |
+| Azure Trusted Signing | Publisher name, Microsoft-operated, no hardware token | lowest, billed monthly |
+| OV certificate | Publisher name; SmartScreen reputation builds with downloads | ~$200–400/yr |
+| EV certificate | Publisher name and SmartScreen reputation from day one | ~$300–600/yr |
+
+Since mid-2023 every CA-issued code-signing key must live on a hardware token
+or HSM, so signing moves to a Windows machine with `signtool`, or to a cloud
+signing service. Azure Trusted Signing avoids the token and is usually the
+cheapest route, but it validates the organisation — typically wanting a few
+years of trading history, otherwise individual validation instead. Verify
+current terms before buying.
+
+Whichever you choose, the build does not change: point `SIGN_PFX` at the new
+certificate, or swap `windows-sign.sh` for a `signtool` call.
 
 Inspect a built installer:
 
