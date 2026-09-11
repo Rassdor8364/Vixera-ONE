@@ -104,6 +104,44 @@ Sideloading: copy the APK to the phone and open it, or `adb install -r
 VixeraOne-<version>-android-arm64.apk`. Android will ask permission to install
 from this source the first time.
 
+## Updating an installed copy
+
+There is no auto-updater in either app. A new build is applied by running the new
+installer, and the server side (schema, Edge Functions, connector logic) updates
+centrally without touching the clients at all.
+
+**Windows.** Close Vixera One, then run the new `-setup.exe`. It installs to the
+same per-user location (`%LOCALAPPDATA%\Vixera One`), overwrites in place, and
+needs no uninstall and no elevation. The Supabase session lives in the Windows
+credential store, not in the install directory, so a signed-in app stays signed
+in across the upgrade. If SmartScreen still says `Unknown publisher`, the trust
+script above has not been run on that machine — running it once is enough for
+every later installer signed by the same certificate.
+
+**Android.** Android identifies an app by `applicationId` + signing key, and
+refuses an install that changes either. Two things therefore matter:
+
+- **A key change means a clean install.** The pre-`CN=Vixera AI` builds were
+  signed with a different key, so an APK signed with the current one cannot
+  install over them — Android rejects it with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
+  Uninstall the old app first. That erases its local state (the device identity
+  row and anything still queued in the share inbox); everything in the spine is
+  server-side and returns on sign-in. This is a one-time cost: the keystore is
+  fixed now, so later builds install over the top normally.
+- **Bump `version` in `tauri.conf.json` for every release you intend to install
+  over an earlier one.** Tauri derives `versionCode` from it as
+  `major * 1000000 + minor * 1000 + patch`, so `0.1.0` is `1000` and `0.1.1` is
+  `1001`. Android accepts an update only when `versionCode` is strictly greater,
+  so re-shipping the same version number produces an APK that will not install
+  over its predecessor. `gen/android/app/tauri.properties` is regenerated from
+  the config on every build — do not edit it by hand. (`bundle.android.versionCode`
+  overrides the derivation, and `autoIncrementVersionCode` bumps on each build,
+  if either is ever wanted.)
+
+Both installers bake in `.env.production` at build time, so a change to the
+Supabase project or the Praxion port needs a rebuild and a reinstall, not just a
+restart.
+
 ## Signing key
 
 The release keystore lives at
