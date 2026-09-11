@@ -73,8 +73,11 @@ build_android() {
   local apk
   apk="$(find "$APP/src-tauri/gen/android/app/build/outputs/apk" -name '*-release*.apk' ! -name '*unsigned*' -print -quit)"
   [[ -n "$apk" ]] || { echo "no signed release APK produced"; exit 1; }
-  cp -v "$apk" "$OUT/vixera-one-arm64.apk"
-  "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$OUT/vixera-one-arm64.apk" | head -4
+  cp -v "$apk" "$OUT/VixeraOne-$(version)-android-arm64.apk"
+  # One apksigner, not every build-tools version the glob happens to match.
+  local apksigner
+  apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+  [[ -x "$apksigner" ]] && { "$apksigner" verify --print-certs "$OUT/VixeraOne-$(version)-android-arm64.apk" | grep -E "DN:|SHA-256 digest" || true; }
 }
 
 case "$WHAT" in
