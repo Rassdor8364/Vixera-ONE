@@ -42,16 +42,20 @@ build_windows() {
   printf '{"bundle":{"windows":{"signCommand":"bash %s/scripts/windows-sign.sh %%1"}}}' "$ROOT" > "$overlay"
   ( cd "$APP" && pnpm tauri build "${extra[@]}" --bundles nsis --config "$overlay" )
   rm -f "$overlay"
+  # Pin to the version just built and take the newest match. Matching only
+  # `*-setup.exe` picks up a previous version still sitting in target/ and
+  # silently ships it under the new name — `-print -quit` takes whichever the
+  # filesystem returns first, which is not the newest.
   local built
-  built="$(find "$ROOT/target" -path '*/nsis/*-setup.exe' -newermt '-2 hours' -print -quit)"
-  [[ -n "$built" ]] || { echo "no NSIS installer produced"; exit 1; }
-  cp -v "$built" "$OUT/VixeraOne-$(version)-windows-x64-setup.exe"
+  built="$(find "$ROOT/target" -path '*/nsis/*-setup.exe' -name "*_$(version)_*" \
+             -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+  [[ -n "$built" ]] || { echo "no NSIS installer for version $(version) in target/"; exit 1; }
+  local out="$OUT/VixeraOne-$(version)-windows-x64-setup.exe"
+  cp -v "$built" "$out"
   # Report who signed it. `verify` exits non-zero for a self-signed chain, which
   # is expected here and must not fail the build (the script runs under pipefail).
   if command -v osslsigncode >/dev/null; then
-    for f in "$OUT"/*setup.exe; do
-      osslsigncode verify "$f" 2>/dev/null | grep -E 'Subject:|Timestamp time:' | head -2 || true
-    done
+    osslsigncode verify "$out" 2>/dev/null | grep -E 'Subject:|Timestamp time:' | head -2 || true
   fi
 }
 
@@ -71,7 +75,8 @@ build_android() {
     exit 1; }
   ( cd "$APP" && pnpm tauri android build --apk --target aarch64 )
   local apk
-  apk="$(find "$APP/src-tauri/gen/android/app/build/outputs/apk" -name '*-release*.apk' ! -name '*unsigned*' -print -quit)"
+  apk="$(find "$APP/src-tauri/gen/android/app/build/outputs/apk" -name '*-release*.apk' ! -name '*unsigned*' \
+           -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
   [[ -n "$apk" ]] || { echo "no signed release APK produced"; exit 1; }
   cp -v "$apk" "$OUT/VixeraOne-$(version)-android-arm64.apk"
   # One apksigner, not every build-tools version the glob happens to match.
