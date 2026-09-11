@@ -20,7 +20,7 @@ pub mod device;
 pub mod hash;
 pub mod praxion;
 
-pub use credentials::{CredentialError, CredentialStore, InMemoryCredentialStore, CREDENTIAL_SERVICE};
+pub use credentials::{ChunkedCredentialStore, CredentialError, CredentialStore, InMemoryCredentialStore, CREDENTIAL_SERVICE};
 #[cfg(all(feature = "keyring", any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub use credentials::KeyringCredentialStore;
 pub use device::{DeviceError, DeviceIdentity, Platform, DEVICE_FILE_NAME};

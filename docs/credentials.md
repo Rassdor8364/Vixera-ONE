@@ -113,3 +113,37 @@ Audit trail: `action_requests` records server actions; `connector_sync_states`
 records per-capability errors; Vault access is only possible from Edge
 Functions with the service role, whose invocations are in the Supabase function
 logs.
+
+## The Windows 2560-byte credential cap
+
+Windows Credential Manager limits `CredentialBlob` to 2560 bytes, and the blob is
+the value encoded as **UTF-16**, so an entry holds at most 1280 code units —
+roughly 1280 ASCII characters. A Supabase session is well past that: an access
+JWT, a refresh token, and the serialized user object including `user_metadata`.
+Storing it unsplit fails, and `keyring` surfaces it as:
+
+```
+credential value rejected for key supabase.session: password encoded as UTF-16 exceeds 2560
+```
+
+`ChunkedCredentialStore` wraps the keychain store and splits oversized values
+across `supabase.session:c0 … :cN-1`, with the primary entry holding a manifest.
+It is transparent in both directions:
+
+- a value that fits is written whole, so entries written before this existed —
+  and entries on platforms with roomier stores — read back unchanged;
+- the manifest is prefixed with U+0001, which cannot begin any value Vixera
+  stores (they are JSON or base64), so a plain value is never mistaken for one.
+
+Chunks are written **before** the manifest, so an interrupted write leaves the
+previous value readable rather than publishing a half-written session. A torn
+value — manifest present, a chunk missing — reads as absent rather than as an
+error, because for every caller it means what a missing credential means: sign in
+again.
+
+It wraps all three desktop targets rather than sitting behind a Windows `cfg`, so
+macOS and Linux exercise the same code path the tests cover. Android is not
+wrapped: `EncryptedSharedPreferences` has no comparable limit.
+
+The cap is per entry, not per service, so the sibling keys supabase-js derives
+(`supabase.session-code-verifier` and friends) are unaffected — they are small.

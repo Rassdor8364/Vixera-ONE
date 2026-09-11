@@ -85,7 +85,14 @@ fn build_credential_store<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Box<
     // Dev builds use a separate service name so `pnpm dev:desktop` never reads or
     // overwrites the installed app's session.
     let service = if cfg!(debug_assertions) { "ai.vixera.one.dev" } else { vixera_platform::CREDENTIAL_SERVICE };
-    Box::new(vixera_platform::KeyringCredentialStore::with_service(service))
+    // Wrapped for the Windows Credential Manager blob cap: a Supabase session is
+    // several times the 1280 UTF-16 units an entry can hold, so it is split across
+    // entries. Applied to every desktop target rather than behind a Windows cfg so
+    // all three run the one code path the tests cover; values that fit are still
+    // written whole, so macOS and Linux keychains look the same as before.
+    Box::new(vixera_platform::ChunkedCredentialStore::new(
+        vixera_platform::KeyringCredentialStore::with_service(service),
+    ))
 }
 
 #[cfg(mobile)]
