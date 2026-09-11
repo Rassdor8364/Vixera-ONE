@@ -143,3 +143,50 @@ connector-link/callback?state=bad` and confirm the "Not connected" page.
 Bucket `artifacts` is created by migration 4 (and declared in `config.toml` for
 local). Objects are keyed `<user_id>/<purpose>/<uuid>-<name>`; policies allow only
 the owner.
+
+## pg_net is readable by anon and authenticated, and cannot be fixed from `postgres`
+
+`vx_trigger_scheduled_sync()` calls `net.http_post`, which puts the row — URL,
+body and **headers, including `X-Vixera-Sync-Secret`** — into
+`net.http_request_queue` until pg_net's worker picks it up. pg_net grants that
+table, `net._http_response` and every `net.*` function to **PUBLIC**, so `anon`
+and `authenticated` can read them.
+
+It cannot be revoked from this project. Those objects are owned by
+`supabase_admin`; the role the CLI, MCP and the SQL editor all connect as
+(`postgres`) is neither a superuser nor a member of it, so a `REVOKE` is a silent
+no-op — Postgres warns rather than errors, which means a migration that tries it
+**reports success and changes nothing**. Verify with `relacl` / `proacl`, never
+with `has_table_privilege`:
+
+```sql
+select relname, relacl from pg_class where relnamespace = 'net'::regnamespace;
+-- `=arwdDxtm/supabase_admin` — empty grantee — is the grant to PUBLIC
+```
+
+Why it is being accepted rather than worked around:
+
+- **Not reachable with the shipped key.** PostgREST exposes only `public`. The
+  anon key compiled into the installers reaches PostgREST and GoTrue, not raw
+  Postgres, so there is no way to run `select * from net.http_request_queue`
+  with it. Reading it needs a direct database connection, which needs the
+  database password.
+- **Nothing is stored durably.** The worker deletes the queue row as it sends,
+  so the secret exists there for milliseconds per tick, ten minutes apart.
+  `net._http_response` keeps *response* headers only — the request headers, and
+  therefore the secret, are never written to it.
+- **Small blast radius if it did leak.** `X-Vixera-Sync-Secret` authorises one
+  thing: asking `connector-sync` to run a scheduled pass. That returns counts,
+  not user data, and every account it touches is still scoped by `user_id`.
+  Rotate with `supabase secrets set VIXERA_SYNC_SECRET=...` plus
+  `vault.create_secret(..., 'vixera_sync_secret')`.
+
+The residual risk is therefore defence-in-depth only: a future SQL-injectable
+`SECURITY INVOKER` function in `public` would hand an attacker an SSRF primitive
+along with everything else it already hands them. Every `public` function here is
+parameterised plpgsql with `search_path` pinned; keep it that way.
+
+The `extension_in_public` advisor warning about `pg_net` has the same root and
+the same answer: the extension's registration marker is in `public`, but all
+twelve of its functions live in `net`, so nothing of pg_net is callable through
+PostgREST.
