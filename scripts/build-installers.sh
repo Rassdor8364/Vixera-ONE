@@ -17,6 +17,8 @@ APP="$ROOT/apps/desktop"
 WHAT="${1:-all}"
 OUT="$ROOT/dist/installers"
 
+version() { node -p "require('$APP/src-tauri/tauri.conf.json').version" 2>/dev/null || echo 0.0.0; }
+
 [[ -f "$APP/.env.production" ]] || {
   echo "missing $APP/.env.production — copy .env.production.example and fill it in"; exit 1; }
 mkdir -p "$OUT"
@@ -40,10 +42,17 @@ build_windows() {
   printf '{"bundle":{"windows":{"signCommand":"bash %s/scripts/windows-sign.sh %%1"}}}' "$ROOT" > "$overlay"
   ( cd "$APP" && pnpm tauri build "${extra[@]}" --bundles nsis --config "$overlay" )
   rm -f "$overlay"
-  find "$ROOT/target" -path '*/nsis/*-setup.exe' -newermt '-2 hours' -exec cp -v {} "$OUT/" \;
-  command -v osslsigncode >/dev/null && for f in "$OUT"/*setup.exe; do
-    osslsigncode verify "$f" 2>/dev/null | grep -E 'Subject:|Timestamp time:' | head -2
-  done
+  local built
+  built="$(find "$ROOT/target" -path '*/nsis/*-setup.exe' -newermt '-2 hours' -print -quit)"
+  [[ -n "$built" ]] || { echo "no NSIS installer produced"; exit 1; }
+  cp -v "$built" "$OUT/VixeraOne-$(version)-windows-x64-setup.exe"
+  # Report who signed it. `verify` exits non-zero for a self-signed chain, which
+  # is expected here and must not fail the build (the script runs under pipefail).
+  if command -v osslsigncode >/dev/null; then
+    for f in "$OUT"/*setup.exe; do
+      osslsigncode verify "$f" 2>/dev/null | grep -E 'Subject:|Timestamp time:' | head -2 || true
+    done
+  fi
 }
 
 build_android() {
