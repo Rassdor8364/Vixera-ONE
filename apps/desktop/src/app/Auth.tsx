@@ -302,5 +302,11 @@ function friendlyError(err: unknown): string {
   if (/user already registered/i.test(message)) return "An account already exists for that email. Try signing in.";
   if (/for security purposes/i.test(message)) return "Too many attempts just now. Wait a minute and try again.";
   if (/email not confirmed/i.test(message)) return "Confirm your email address first — check your inbox for the link.";
+  // The project's mail quota, not anything this person did. Worth naming the way
+  // out, since on a single-user project the person reading this owns the project.
+  if (/email rate limit|over_email_send_rate_limit/i.test(message))
+    return "This Supabase project has sent as many emails as its hourly limit allows. Wait an hour, or turn off email confirmation in the project's Auth settings and try again.";
+  if (/over_request_rate_limit|too many requests/i.test(message))
+    return "Too many requests to this project just now. Wait a minute and try again.";
   return message;
 }

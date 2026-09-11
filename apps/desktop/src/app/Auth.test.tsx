@@ -143,6 +143,21 @@ describe("Auth", () => {
     expect(text()).toContain("Reset link sent");
   });
 
+  it("names the way out of the project's email quota instead of echoing the code", async () => {
+    const { client } = fakeClient({
+      signUp: vi.fn(async () => ({ data: {}, error: new Error("email rate limit exceeded") })),
+    });
+    render(client);
+    act(() => byText("Create account").click());
+    type('input[type="email"]', "daniel@vixera.ai");
+    type('input[type="password"]', "longenoughpassword");
+    act(() => host.querySelector<HTMLElement>(".auth__check")!.click());
+    await act(async () => {
+      host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(text()).toContain("turn off email confirmation");
+  });
+
   it("turns Supabase's stock messages into something a person can act on", async () => {
     const { client } = fakeClient({
       signInWithPassword: vi.fn(async () => ({ data: {}, error: new Error("Invalid login credentials") })),
