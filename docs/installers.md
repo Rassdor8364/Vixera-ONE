@@ -32,11 +32,28 @@ It is cross-compiled from Linux with `cargo-xwin` (which fetches the MSVC CRT an
 Windows SDK headers itself) and packaged with `makensis`. On a Windows machine the
 same script works without the cross-compilation flags.
 
-**The installer is not code-signed.** Tauri skips signing when the host is not
-Windows, and there is no certificate for this project. SmartScreen will show
-"Windows protected your PC" on first run; *More info → Run anyway* installs it.
-Signing needs an Authenticode certificate and `bundle.windows.signCommand` in
-`tauri.conf.json`.
+**Signed as Vixera AI, self-signed.** `scripts/windows-sign.sh` Authenticode-signs
+the app binary, every NSIS plugin and the installer itself, with a DigiCert
+timestamp so the signature outlives the certificate. File properties and the
+signature dialog read `CN=Vixera AI, O=Vixera AI`.
+
+What that does and does not buy:
+
+* It does **not** silence SmartScreen. Windows trusts a certificate chain, not a
+  name, and this certificate is its own issuer. First run still shows "Windows
+  protected your PC" → *More info* → *Run anyway*.
+* On machines you control, importing `.signing/vixera-ai-codesign.crt` into
+  Trusted Root and Trusted Publishers makes the signature trusted — the usual
+  route for internal distribution, by Group Policy in a domain.
+* For a signature the public trusts out of the box, buy an OV or EV
+  code-signing certificate and point `SIGN_PFX` at it. Nothing else changes; an
+  EV certificate also builds SmartScreen reputation immediately.
+
+Inspect a built installer:
+
+```bash
+osslsigncode verify dist/installers/VixeraOne-*-windows-x64-setup.exe
+```
 
 ### Android
 
@@ -67,9 +84,14 @@ back is a new package name and a fresh install.
 
 | | |
 | --- | --- |
-| Alias | `vixera-one` |
+| Subject | `CN=Vixera AI, O=Vixera AI, OU=Vixera One` |
+| Alias | `vixera-ai` |
 | Key | RSA 4096, valid 30 years |
-| SHA-256 | `25:8A:96:86:0E:F9:26:50:84:55:61:D1:38:C2:B3:73:F0:D5:A4:5F:C6:AD:29:00:78:11:0D:9C:19:FC:80:88` |
+| SHA-256 | `c3d0a85006a7b8c6f50980880d3ada4a3d3e1063298d0451a7ca90539af1c634` |
+
+The Windows certificate is separate, in `.signing/` — also git-ignored, also
+worth backing up, though losing it only means re-issuing one rather than
+orphaning an installed app.
 
 Confirm what a built APK was signed with:
 
@@ -103,9 +125,9 @@ never loads, so no invented people or invoices ship in either installer.
 ## What has and has not been tested
 
 Built and inspected here: the Windows installer is a valid PE32 NSIS archive
-containing the app and uninstaller; the APK is signed by the key above, and
-carries the native library, the share plugin classes and the share intent
-filters.
+containing the app and uninstaller, Authenticode-signed as Vixera AI with a
+verified DigiCert timestamp; the APK is signed by the key above, and carries the
+native library, the share plugin classes and the share intent filters.
 
 Not tested here, because this build machine is Linux and headless: running the
 Windows installer on Windows, and installing the APK on a phone. First run on
