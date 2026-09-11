@@ -132,6 +132,19 @@ The dev identity does not exist in a deployed project; create the real user thro
 Supabase Auth and sign in from the app. `currentUser()` then resolves from the
 session (see `current-user.md`).
 
+**Deployed to `uhdlacchajiblhmgasjg` on 2026-09-11.** All four functions are
+ACTIVE at version 1, with the JWT gates as designed: `action-dispatch` and
+`ingest-process` verify the platform JWT; `connector-link` and `connector-sync`
+do not, because each authenticates its own caller in the function body (the
+OAuth callback arrives from the system browser with no Vixera session, and cron
+presents `X-Vixera-Sync-Secret`). Verified live: both gated functions answer an
+anon key with Vixera's own `unauthorized` envelope rather than a platform error,
+which is what proves the module booted; `connector-sync` rejects a missing
+bearer and a wrong secret; `connector-link` answers a bare GET with `405` and a
+preflight with `204`. The full scheduled chain — `pg_cron` →
+`vx_trigger_scheduled_sync()` → `pg_net` → `connector-sync` → `200` — was run
+end to end and logged in `net._http_response`.
+
 First-deploy smoke test, once the functions are up: link one account and confirm
 the `connector_accounts` row appears in the Field; `POST connector-sync` with the
 user JWT and read the report; `POST action-dispatch` twice with the same
