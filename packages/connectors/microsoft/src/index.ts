@@ -33,7 +33,6 @@ export {
   initialCalendarDeltaUrl,
   isWindowStale,
   openWindow,
-  CALENDAR_DELTA_SELECT,
   WINDOW_MAX_AGE_DAYS,
   type CalendarCheckpoint,
   type CalendarWindow,

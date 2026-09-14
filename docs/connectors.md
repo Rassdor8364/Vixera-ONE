@@ -230,10 +230,24 @@ never as an error.
 * `GET /me/calendarView/delta?startDateTime=<now − pastDays>&endDateTime=<now + futureDays>`
   over the default calendar, UTC times (`Prefer: outlook.timezone="UTC"`),
   then the delta link. `isCancelled` and `@removed` → deletions.
+* **No `$select`** (and no `$expand`/`$filter`/`$orderby`/`$search`): Graph
+  documents that a delta call on a calendarView returns the same properties
+  as `GET /calendarView` and "you cannot use `$select` to get only a subset
+  of those properties" ([event: delta → OData query
+  parameters](https://learn.microsoft.com/graph/api/event-delta)). Page size
+  (`Prefer: odata.maxpagesize`) is the only lever on payload; the normalizer
+  reads the fields it needs from the full event.
 * A delta link only tracks the window it was opened with. When the stored
   window is more than `WINDOW_MAX_AGE_DAYS` (7) older than a fresh one would
   be, the source re-opens a new window with `fullResync: true` so upcoming
-  events keep flowing. 410 → same restart.
+  events keep flowing. 410 → same restart, and so is a **400 on the stored
+  delta link** (a link out of our checkpoint that Graph rejects — for
+  instance one issued while `$select` was still being sent — is a dead
+  checkpoint, not a permanent error). A 400 on the fresh window request
+  itself stays an `unknown` error.
+* Intermediate pages keep the previous checkpoint: the window is small
+  enough that a round fits one run, so the mail-style per-page resume point
+  is not needed here.
 
 ### Plaid — `packages/connectors/bank/src/connector.ts`
 
