@@ -48,6 +48,11 @@ jobs:
         run: bash scripts/check-secrets.sh
       - name: Migration sanity
         run: bash scripts/check-migrations.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: One version everywhere (package.json ← tauri.conf.json, = Cargo.toml)
+        run: bash scripts/check-version.sh
 
   typescript:
     name: typescript · typecheck, test, build
