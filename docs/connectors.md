@@ -248,6 +248,18 @@ never as an error.
 * Intermediate pages keep the previous checkpoint: the window is small
   enough that a round fits one run, so the mail-style per-page resume point
   is not needed here.
+* **Time zones.** Timed events arrive in UTC and are stamped as such. If
+  Graph answers in another zone, the name is resolved through `Intl` for
+  IANA zones and through a CLDR Windows → IANA table
+  (`src/calendar/windows-zones.ts`, 139 rows) for Windows names such as
+  "New Zealand Standard Time"; an unknown name keeps the wall time as UTC
+  and sets `metadata.timeZoneUnresolved`. **All-day events** are stored by
+  Graph as midnight in the zone they were created in and converted to UTC
+  like any other time (an Auckland holiday arrives as 11:00Z the day
+  before), so the civil date is the date that instant falls on in
+  `originalStartTimeZone`; only when that zone cannot be resolved does the
+  normalizer fall back to the nearest UTC midnight (wrong at UTC+13/+14 and
+  UTC−12) and flag the event.
 
 ### Plaid — `packages/connectors/bank/src/connector.ts`
 
