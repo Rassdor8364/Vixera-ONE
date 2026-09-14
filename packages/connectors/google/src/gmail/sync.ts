@@ -224,9 +224,16 @@ async function fetchMessages(
   const missing: string[] = [];
   const results = await mapConcurrent(ids, options.concurrency, async (id) => {
     const res = await client.getJson<GmailMessage>(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, { tolerate: [404] });
-    if (res.status === 404 || !res.body) {
+    if (res.status === 404) {
       missing.push(id);
       return null;
+    }
+    // Only a 404 means "gone". A 2xx whose body did not parse (empty, truncated,
+    // an HTML error page from a proxy) is a failed fetch: reporting it as
+    // missing would delete the stored message and everything linked to it,
+    // and the advanced history checkpoint would never fetch it again.
+    if (!res.body) {
+      throw new ConnectorError("invalid_response", `Gmail returned HTTP ${res.status} without a JSON body for message ${id}`, true);
     }
     try {
       return normalizeGmailMessage(res.body);

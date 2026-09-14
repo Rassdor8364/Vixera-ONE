@@ -157,6 +157,27 @@ describe("syncMail incremental history", () => {
     expect(resumed?.backfill?.fullResync).toBe(true);
   });
 
+  it("never turns a 200 with an empty or non-JSON messages.get body into a deletion", async () => {
+    for (const bad of [{ text: "" }, { text: "<html>upstream hiccup</html>" }]) {
+      const fake = createFakeFetch([
+        { match: `${GMAIL_API}/history`, reply: { json: { history: [{ id: "900001", messagesAdded: [{ message: { id: "flaky" } }] }], historyId: "900010" } } },
+        { match: /\/users\/me\/messages\/flaky\?format=full/, reply: { status: 200, ...bad } },
+      ]);
+      const pages: unknown[] = [];
+      const error = await (async () => {
+        try {
+          for await (const page of syncMail(makeContext(fake.fetch), { historyId: "884000" }, options)) pages.push(page);
+          return null;
+        } catch (e) {
+          return e as { code?: string; retryable?: boolean };
+        }
+      })();
+      // the run fails (retried by the next run from the same historyId) and no page — so no deletion — was emitted
+      expect(error).toMatchObject({ code: "invalid_response", retryable: true });
+      expect(pages).toEqual([]);
+    }
+  });
+
   it("treats an unrecognized checkpoint as a fresh full resync", async () => {
     const fake = createFakeFetch([
       { match: `${GMAIL_API}/profile`, reply: { json: profile } },
