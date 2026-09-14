@@ -1,8 +1,12 @@
 /**
  * Realtime: one channel per signed-in user over `postgres_changes` for the
  * tables the Field reacts to. Every change calls `onChange`; the hooks
- * refresh their reads. RLS applies to subscriptions, and the filter keeps
- * the channel to the user's own rows.
+ * refresh their reads. RLS applies to INSERT and UPDATE events and the filter
+ * keeps the channel to the user's own rows. DELETE events are different:
+ * Realtime does not apply RLS to them and, with the default replica identity
+ * (migration 9), they carry only the primary key — which the user_id filter
+ * cannot match — so this channel receives no DELETE events. A deletion shows
+ * on the next read; nothing here may assume it will be told about one.
  */
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 

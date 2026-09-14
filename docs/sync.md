@@ -219,14 +219,25 @@ NOW area shows `needsMe`, `changed`, `upcoming` and `canWait`.
 `apps/desktop/src/data/realtime.ts` opens one channel `field:<userId>` over
 `postgres_changes` for `context_events`, `handoffs`, `connector_accounts`,
 `connector_sync_states`, `ingest_items`, `threads` with
-`filter: user_id=eq.<userId>` (RLS applies to subscriptions too). Every change
-bumps the `SpineProvider` version and every `useSpineQuery` re-reads. The
-publication is set in migrations `20260910000400` (`context_events`,
-`handoffs`, `threads`, `ingest_items`, `connector_sync_states`,
-`action_requests`) and `20260910000700` (`connector_accounts`). Completed
-actions bump the version as well, so the Field never depends on Realtime to
-see its own writes. Channel status drives the state mark (Connecting / Synced
-/ Offline).
+`filter: user_id=eq.<userId>`. Every change bumps the `SpineProvider`
+version and every `useSpineQuery` re-reads. The publication is set in
+migrations `20260910000400` (`context_events`, `handoffs`, `threads`,
+`ingest_items`, `connector_sync_states`, `action_requests`) and
+`20260910000700` (`connector_accounts`). Completed actions bump the version as
+well, so the Field never depends on Realtime to see its own writes. Channel
+status drives the state mark (Connecting / Synced / Offline).
+
+RLS applies to INSERT and UPDATE events, not to DELETE events: Supabase
+Realtime sends every delete on a published table to every subscriber, carrying
+the old row as far as the table's replica identity exposes it. Migrations 4
+and 7 had set `replica identity full` on `handoffs`, `context_events` and
+`connector_accounts`, which broadcast deleted rows whole, across users.
+Migration 9 (`20260914000100`) returns them to the default identity: a DELETE
+event now carries only the primary key, the `user_id` filter cannot match it,
+and the channel receives no DELETE events at all. Deletions surface on the
+next read (any other change, or launch); nothing in the Field assumes it is
+told about one. `check-migrations.sh` fails any migration set that leaves a
+table on full identity, and `verify.sql` asserts it against the database.
 
 ## 8. Ingest pipeline
 

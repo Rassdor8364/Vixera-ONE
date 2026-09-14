@@ -11,6 +11,8 @@
 #   - no SECURITY DEFINER function is left executable by PUBLIC/anon/authenticated
 #     unless it is on the documented allow-list below
 #   - no migration references seed.sql or dev fixture ids
+#   - no table ends up with `replica identity full` (Realtime does not apply RLS
+#     to DELETE events, and full identity broadcasts the whole deleted row)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$ROOT/supabase/migrations"
@@ -46,6 +48,20 @@ for f in "${files[@]}"; do
   for l in "${hits[@]}"; do fail "$name: grants to anon: $l"; done
   mapfile -t hits < <(lines_matching 'seed\.sql|00000000-0000-4000-8000-000000000001' "$f")
   for l in "${hits[@]}"; do fail "$name: references dev seed: $l"; done
+done
+
+# Replica identity: the last `alter table … replica identity` per table across
+# the migrations (version order) wins, so an early `full` reverted later passes.
+declare -A replident
+for f in "${files[@]}"; do
+  mapfile -t hits < <(grep -oiE 'alter table (public\.)?[a-z_]+ replica identity (full|default|nothing)' "$f" || true)
+  for h in "${hits[@]}"; do
+    t="$(awk '{print $3}' <<< "$h")"; t="${t#public.}"
+    replident[$t]="$(awk '{print tolower($NF)}' <<< "$h")"
+  done
+done
+for t in "${!replident[@]}"; do
+  [[ "${replident[$t]}" == full ]] && fail "$t ends with replica identity full: Realtime would broadcast its deleted rows to every subscriber, unfiltered by RLS"
 done
 
 # SECURITY DEFINER functions. Walk each function header (from `create function`

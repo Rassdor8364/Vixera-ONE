@@ -26,6 +26,18 @@ begin
   if bad is not null then raise exception 'tables without RLS/policies: %', bad; end if;
 end $$;
 
+-- 2b. No table has replica identity full. Realtime does not apply RLS to
+-- DELETE events; with full identity the deleted row would be broadcast whole
+-- to every subscriber of the table (migration 9 reverted migrations 4 and 7).
+do $$
+declare bad text;
+begin
+  select string_agg(c.relname, ', ') into bad
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind = 'r' and c.relreplident = 'f';
+  if bad is not null then raise exception 'tables with replica identity full: %', bad; end if;
+end $$;
+
 -- 3. RLS isolates users: the dev user sees seeded rows, another user sees none.
 set role authenticated;
 select set_config('request.jwt.claims', '{"sub":"00000000-0000-4000-8000-000000000001","role":"authenticated"}', false);
