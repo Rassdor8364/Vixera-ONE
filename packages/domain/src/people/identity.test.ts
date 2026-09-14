@@ -24,3 +24,28 @@ describe("identity normalization", () => {
     ]);
   });
 });
+
+describe("address parsing survives real headers", () => {
+  it("keeps a sender whose display name contains quotes", () => {
+    expect(parseAddress('Eric "Studio" Lindqvist <eric@studio.se>')).toEqual({ email: "eric@studio.se", name: 'Eric "Studio" Lindqvist' });
+    expect(parseAddress('"Ruiz, Marta" <m@r.law>')).toEqual({ email: "m@r.law", name: "Ruiz, Marta" });
+    expect(parseAddress('"O\\"Brien" <o@x.com>')).toEqual({ email: "o@x.com", name: 'O"Brien' });
+  });
+
+  it("flattens RFC 2822 groups to their members instead of inventing a person named after the group", () => {
+    expect(parseAddressList("Team: a@x.com, b@x.com;")).toEqual([{ email: "a@x.com", name: null }, { email: "b@x.com", name: null }]);
+    expect(parseAddressList("Accounts: Ann <ann@x.com>; Bob <bob@y.com>")).toEqual([{ email: "ann@x.com", name: "Ann" }, { email: "bob@y.com", name: "Bob" }]);
+  });
+
+  it("an unbalanced quote does not swallow the rest of the header", () => {
+    const parsed = parseAddressList('"Ruiz, Marta <m@r.law>, priya@northwind.com');
+    expect(parsed.map((a) => a.email)).toEqual(["m@r.law", "priya@northwind.com"]);
+  });
+
+  it("rejects local parts that are not addresses", () => {
+    for (const bad of ["eric lindqvist@studio.se", "<eric>@studio.se", "a@b@studio.se", '"ruiz, marta <m@r.law>, priya@northwind.com', "team: a@x.com"]) {
+      expect(normalizeEmail(bad), bad).toBeNull();
+    }
+    expect(normalizeEmail("Eric.Lindqvist+inv@Studio.SE")).toBe("eric.lindqvist+inv@studio.se");
+  });
+});

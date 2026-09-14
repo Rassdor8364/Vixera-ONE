@@ -45,14 +45,24 @@ export class ContextGraph {
     return this.edges.size;
   }
 
-  /** Adds an edge; returns the existing edge if the same fact is already present. */
+  /**
+   * Adds an edge. The same fact asserted again keeps its id and takes the
+   * greater confidence — exactly what `vx_relate` does on conflict — so a
+   * user's explicit link (1.0) is never reported as the linker's 0.3 guess.
+   */
   relate(input: RelationshipInput): Relationship {
     if (input.from.type === input.to.type && input.from.id === input.to.id) {
       throw new Error("An entity cannot relate to itself");
     }
     const key = edgeKey(input);
     const existing = this.edges.get(key);
-    if (existing) return existing;
+    if (existing) {
+      const confidence = Math.max(existing.confidence, clamp01(input.confidence ?? 1));
+      if (confidence === existing.confidence) return existing;
+      const upgraded: Relationship = { ...existing, confidence };
+      this.edges.set(key, upgraded);
+      return upgraded;
+    }
     const edge: Relationship = {
       id: newId<RelationshipId>(),
       userId: this.userId,
@@ -152,7 +162,10 @@ export class ContextGraph {
       throw new Error(`Relationship ${edge.id} belongs to another user`);
     }
     const key = edgeKey(edge);
-    this.edges.set(key, edge);
+    // Two rows for one natural key (should not happen; the table has a unique
+    // constraint) merge to the stronger rather than letting the last one win.
+    const prior = this.edges.get(key);
+    this.edges.set(key, prior && prior.confidence > edge.confidence ? { ...prior } : edge);
     for (const node of [edge.from, edge.to]) {
       const nk = refKey(node);
       let set = this.byNode.get(nk);

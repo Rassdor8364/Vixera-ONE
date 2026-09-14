@@ -86,3 +86,19 @@ describe("ContextGraph", () => {
     expect(e.source).toBe("user");
   });
 });
+
+describe("repeated assertions keep the stronger confidence, like vx_relate", () => {
+  it("a user's explicit link upgrades the linker's guess and keeps the edge id", () => {
+    const g = new ContextGraph(DEV_USER_ID);
+    const a = ref("person", "11111111-1111-4111-8111-000000000001");
+    const d = ref("document", "11111111-1111-4111-8111-000000000002");
+    const first = g.relate({ from: a, kind: "relates_to", to: d, confidence: 0.3, source: "rule" });
+    const second = g.relate({ from: a, kind: "relates_to", to: d, confidence: 1, source: "user" });
+    expect(second.id).toBe(first.id);
+    expect(second.confidence).toBe(1);
+    expect(g.all()).toHaveLength(1);
+    expect(g.all()[0]?.confidence).toBe(1);
+    // A weaker repeat changes nothing.
+    expect(g.relate({ from: a, kind: "relates_to", to: d, confidence: 0.1 }).confidence).toBe(1);
+  });
+});

@@ -11,12 +11,16 @@ export interface IdentityKey {
   readonly value: string;
 }
 
+/** RFC 5322 dot-atom, roughly: no whitespace, no angle brackets, quotes, commas, colons or a second @. */
+const LOCAL_PART = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+$/;
+
 export function normalizeEmail(raw: string): string | null {
   const trimmed = raw.trim().toLowerCase();
   const at = trimmed.lastIndexOf("@");
   if (at <= 0 || at === trimmed.length - 1) return null;
   const local = trimmed.slice(0, at);
   const domain = trimmed.slice(at + 1);
+  if (!LOCAL_PART.test(local) || local.length > 64) return null;
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) && domain !== "localhost") return null;
   return `${local}@${domain}`;
 }
@@ -53,32 +57,77 @@ export function displayNameFromEmail(email: string): string {
     .join(" ");
 }
 
-/** Parses "Name <addr@x>" / "addr@x" / "<addr@x>" into parts. */
+/**
+ * Parses "Name <addr@x>" / "addr@x" / "<addr@x>" into parts. The name is
+ * everything before the LAST "<", with surrounding quotes and backslash
+ * escapes removed, so `Eric "Studio" Lindqvist <eric@x>` keeps its sender
+ * instead of being dropped.
+ */
 export function parseAddress(raw: string): { email: string; name: string | null } | null {
-  const m = raw.match(/^\s*(?:"?([^"<]*)"?\s*)?<([^>]+)>\s*$/);
-  if (m) {
-    const email = normalizeEmail(m[2] ?? "");
+  const lt = raw.lastIndexOf("<");
+  const gt = raw.lastIndexOf(">");
+  if (lt >= 0 && gt > lt) {
+    const email = normalizeEmail(raw.slice(lt + 1, gt));
     if (!email) return null;
-    const name = (m[1] ?? "").trim();
+    const name = unquote(raw.slice(0, lt));
     return { email, name: name.length ? name : null };
   }
   const email = normalizeEmail(raw);
   return email ? { email, name: null } : null;
 }
 
-/** Splits a comma-separated header into addresses; commas inside quotes are respected. */
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  const inner = /^"(.*)"$/s.exec(trimmed)?.[1] ?? trimmed;
+  return inner.replace(/\\(.)/g, "$1").trim();
+}
+
+/**
+ * Splits a header into addresses. Commas inside quotes and angle brackets are
+ * respected; RFC 2822 groups (`Team: a@x, b@x;`) are flattened to their
+ * members; an unbalanced quote falls back to a plain comma split rather than
+ * swallowing the rest of the header into one bogus address.
+ */
 export function parseAddressList(raw: string | null | undefined): { email: string; name: string | null }[] {
   if (!raw) return [];
+  const parts = splitAddresses(raw) ?? raw.split(",");
+  return parts.map(parseAddress).filter((a): a is { email: string; name: string | null } => a !== null);
+}
+
+/** Quote- and bracket-aware split; null when a quote is left open at the end. */
+function splitAddresses(raw: string): string[] | null {
   const parts: string[] = [];
   let cur = "";
   let quoted = false;
+  let angle = false;
+  let escaped = false;
   for (const ch of raw) {
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+      continue;
+    }
+    if (quoted && ch === "\\") {
+      cur += ch;
+      escaped = true;
+      continue;
+    }
     if (ch === '"') quoted = !quoted;
-    if (ch === "," && !quoted) {
+    else if (!quoted && ch === "<") angle = true;
+    else if (!quoted && ch === ">") angle = false;
+    if (!quoted && !angle && ch === ":" && !cur.includes("@")) {
+      // `Group name:` — drop the label, keep parsing the members.
+      cur = "";
+      continue;
+    }
+    if (!quoted && !angle && (ch === "," || ch === ";")) {
       parts.push(cur);
       cur = "";
-    } else cur += ch;
+      continue;
+    }
+    cur += ch;
   }
+  if (quoted) return null;
   if (cur.trim()) parts.push(cur);
-  return parts.map(parseAddress).filter((a): a is { email: string; name: string | null } => a !== null);
+  return parts;
 }
