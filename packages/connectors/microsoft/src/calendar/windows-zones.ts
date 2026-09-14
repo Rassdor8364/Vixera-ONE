@@ -154,9 +154,17 @@ const WINDOWS_TO_IANA: ReadonlyMap<string, string> = new Map(
       ["Tonga Standard Time", "Pacific/Tongatapu"],
       ["Samoa Standard Time", "Pacific/Apia"],
       ["Line Islands Standard Time", "Pacific/Kiritimati"],
+      // Legacy Windows ids Exchange still emits for old items; not in CLDR 2021a.
+      ["Kamchatka Standard Time", "Asia/Kamchatka"],
+      ["Mid-Atlantic Standard Time", "Etc/GMT+2"],
     ] as const
   ).map(([windows, iana]) => [windows.toLowerCase(), iana]),
 );
+
+/** Every Windows zone name the table knows (tests walk it; nothing else needs it). */
+export function windowsZoneNames(): string[] {
+  return [...WINDOWS_TO_IANA.keys()];
+}
 
 /** The IANA zone for a Windows zone name, or null when the name is not a known Windows zone. */
 export function windowsZoneToIana(name: string): string | null {

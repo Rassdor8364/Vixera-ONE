@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import calendarDelta from "../__fixtures__/calendar-delta.json";
-import { normalizeGraphEvent, toInstant, toResponse, toStatus, zoneOffsetMinutes } from "./normalize.ts";
+import { normalizeGraphEvent, toInstant, toResponse, toStatus, zoneOffsetAt, zoneOffsetMinutes } from "./normalize.ts";
+import { windowsZoneNames } from "./windows-zones.ts";
 import type { GraphEvent } from "./types.ts";
 import { windowsZoneToIana } from "./windows-zones.ts";
 
@@ -96,6 +97,15 @@ describe("normalizeGraphEvent", () => {
     expect(unknown.metadata?.timeZoneUnresolved).toBe(true);
     // A true midnight without any zone is unchanged and not flagged.
     expect(toInstant({ dateTime: "2026-09-14T00:00:00.0000000", timeZone: "UTC" }, true, null)).toEqual({ iso: "2026-09-14T00:00:00.000Z", unresolvedZone: false });
+    // Exchange spells UTC as tzone://Microsoft/Utc on old items: known, not flagged.
+    expect(toInstant({ dateTime: "2026-09-14T00:00:00.0000000", timeZone: "UTC" }, true, "tzone://Microsoft/Utc")).toEqual({ iso: "2026-09-14T00:00:00.000Z", unresolvedZone: false });
+    // Legacy Windows ids Exchange still emits resolve too.
+    expect(toInstant({ dateTime: "2026-09-13T12:00:00.0000000", timeZone: "UTC" }, true, "Kamchatka Standard Time")?.unresolvedZone).toBe(false);
+  });
+
+  it("resolves every Windows zone name in the table through Intl (a typo would silently flag that zone)", () => {
+    for (const name of windowsZoneNames()) expect(zoneOffsetAt(name, Date.UTC(2026, 0, 1)), name).not.toBeNull();
+    expect(windowsZoneNames().length).toBeGreaterThanOrEqual(139);
   });
 
   it("marks cancelled events as cancelled and tentative showAs as tentative", () => {

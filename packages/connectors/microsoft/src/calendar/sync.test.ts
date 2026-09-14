@@ -27,7 +27,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     expect(call?.url.searchParams.get("startDateTime")).toBe(WINDOW.start);
     expect(call?.url.searchParams.get("endDateTime")).toBe(WINDOW.end);
     expect([...(call?.url.searchParams.keys() ?? [])].sort()).toEqual(["endDateTime", "startDateTime"]);
-    expect(call?.headers.prefer).toBe('odata.maxpagesize=50, outlook.timezone="UTC"');
+    expect(call?.headers.prefer).toBe('odata.maxpagesize=50, outlook.timezone="UTC", outlook.body-content-type="text"');
 
     const page = pages[0];
     expect(page?.done).toBe(true);

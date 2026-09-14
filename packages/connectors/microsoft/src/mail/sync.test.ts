@@ -161,6 +161,22 @@ describe("syncMail (Microsoft Graph delta)", () => {
     expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true }]);
   });
 
+  it("treats a sync-state error code on a stored link as a dead checkpoint whatever the status, and other 404s as errors", async () => {
+    // Graph: "a 40X-series error with error codes such as syncStateNotFound".
+    for (const code of ["SyncStateNotFound", "syncStateInvalid", "ResyncRequired", "ErrorInvalidSyncStateData"]) {
+      const fake = createFakeFetch([
+        { match: "$deltatoken=fake-delta-1", reply: { status: 404, json: { error: { code, message: "The sync state is not found." } } } },
+        { match: /messages\/delta\?\$select=/, reply: { json: { value: [], "@odata.deltaLink": DELTA_2 } } },
+      ]);
+      const pages = await collect(syncMail(makeContext(fake.fetch), { deltaLink: DELTA_1 }, OPTIONS));
+      expect(pages, code).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true }]);
+    }
+    // A 404 of another kind on a stored link is a real error, not a restart.
+    const other = createFakeFetch([{ match: "$deltatoken=fake-delta-1", reply: { status: 404, json: { error: { code: "ErrorItemNotFound", message: "Folder gone." } } } }]);
+    await expect(collect(syncMail(makeContext(other.fetch), { deltaLink: DELTA_1 }, OPTIONS))).rejects.toMatchObject({ code: "unknown" });
+    expect(other.calls).toHaveLength(1);
+  });
+
   it("does not treat a 400 on a fresh query or on a Graph-issued nextLink as a checkpoint problem", async () => {
     const fresh = createFakeFetch([{ match: "/messages/delta", reply: { status: 400, json: { error: { code: "BadRequest", message: "nope" } } } }]);
     await expect(collect(syncMail(makeContext(fresh.fetch), null, OPTIONS))).rejects.toMatchObject({ code: "unknown" });

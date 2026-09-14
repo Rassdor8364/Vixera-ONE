@@ -43,7 +43,7 @@ export interface GetOptions {
 }
 
 /** Graph error envelope (provider schema, stays here). */
-interface GraphErrorBody {
+export interface GraphErrorBody {
   readonly error?: {
     readonly code?: string;
     readonly message?: string;
@@ -62,12 +62,16 @@ export class GraphRateLimitedError extends ConnectorError {
   }
 }
 
+/** Refreshes one client performs in one sync run before it gives the credential up. */
+export const MAX_REFRESHES_PER_RUN = 3;
+
 export class GraphApiClient {
   #credential: ConnectorCredential;
   /** The single in-flight (or settled) refresh; concurrent 401s all wait on it instead of racing. */
   #refresh: Promise<void> | null = null;
   /** Access token produced by the last settled refresh; a 401 on it is final unless it has expired by its own clock. */
   #refreshedToken: string | null = null;
+  #refreshes = 0;
 
   constructor(
     private readonly ctx: ApiContext,
@@ -124,7 +128,14 @@ export class GraphApiClient {
     }
     if (accessTokenOf(this.#credential) !== token) return;
     if (token === this.#refreshedToken && !isExpired(this.#credential, this.ctx.now())) return;
-    this.ctx.log?.("microsoft.credential.refresh");
+    // A token endpoint that keeps issuing already-expired tokens (or a clock
+    // skew inside the expiry margin) would otherwise turn one sync run into an
+    // unbounded refresh loop; a run that needs more than this is re-linked.
+    if (this.#refreshes >= MAX_REFRESHES_PER_RUN) {
+      throw new ConnectorError("unauthorized", `Microsoft credential expired ${this.#refreshes} times in one run; re-link the account`, false);
+    }
+    this.#refreshes += 1;
+    this.ctx.log?.("microsoft.credential.refresh", { attempt: this.#refreshes });
     this.#refresh = (async () => {
       const fresh = await refreshAccessToken(this.ctx.fetch, this.oauth, this.#credential, this.ctx.now);
       this.#credential = fresh;
@@ -166,6 +177,26 @@ export function parseRetryAfter(value: string | null, now: () => Date = () => ne
   const at = Date.parse(trimmed);
   if (!Number.isFinite(at)) return null;
   return Math.max(0, Math.round((at - now().getTime()) / 1000));
+}
+
+/**
+ * Graph documents sync-state expiry as "a 40X-series error with error codes
+ * such as syncStateNotFound" — not one status. On a link that came out of our
+ * own checkpoint, any of these codes (or a 400 / 410, which Graph also uses)
+ * means the checkpoint is dead, never that the request is wrong.
+ */
+const SYNC_STATE_ERROR = /syncState|resyncRequired|InvalidSyncStateData/i;
+
+export function isDeadCheckpoint(res: { status: number; body: unknown }, stored: boolean): boolean {
+  if (res.status === 410) return true;
+  if (!stored) return false;
+  if (res.status === 400) return true;
+  return SYNC_STATE_ERROR.test((res.body as GraphErrorBody | null)?.error?.code ?? "");
+}
+
+/** The ConnectorError a Graph response maps to; for callers that tolerated a status and then decided it was not theirs to handle. */
+export function mapGraphError(status: number, headers: Headers, body: unknown): ConnectorError {
+  return mapError(status, headers, body as GraphErrorBody | null);
 }
 
 function mapError(status: number, headers: Headers, body: GraphErrorBody | null): ConnectorError {

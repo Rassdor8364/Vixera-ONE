@@ -7,9 +7,14 @@
  *                carries the new `@odata.deltaLink`
  *   HTTP 410     Graph dropped the delta token → restart from the initial
  *                backfill with every page marked `fullResync: true`
- *   HTTP 400/410 on a STORED link (deltaLink or backfill nextLink) → same
- *                restart: a link that came out of our checkpoint and that Graph
- *                rejects is a dead checkpoint, not a permanent error
+ *   HTTP 400/410 on a STORED link (deltaLink or backfill nextLink), or any
+ *                4xx on it whose error code is in Graph's sync-state family
+ *                (syncStateNotFound, resyncRequired, …) → same restart: a link
+ *                that came out of our checkpoint and that Graph rejects is a
+ *                dead checkpoint, not a permanent error. A 400 on a fresh query
+ *                or on a Graph-issued nextLink stays a real error, so a run
+ *                cannot loop; across runs a persistently rejected checkpoint
+ *                means a full resync every run (logged, not hidden).
  *
  * Checkpoint (opaque to the engine, owned by this file), one of:
  *   { deltaLink: string }                                   a complete delta round
@@ -18,8 +23,10 @@
  * The initial backfill can be larger than one run's time budget, and the
  * engine stops at the deadline and restarts the pass next run unless a page
  * moved the checkpoint. So every intermediate backfill page persists its
- * `@odata.nextLink` (Graph encodes the paging state in it; the docs say to
- * save and reuse it) and the next run resumes there. Intermediate pages of an
+ * `@odata.nextLink` and the next run resumes there — on the assumption, which
+ * Graph documents for deltaLinks but not for nextLinks, that the skiptoken
+ * carries the same sync state hours later; a rejected one falls back to the
+ * restart above. Intermediate pages of an
  * incremental round keep the previous deltaLink instead: rounds are small and
  * replaying one is cheaper than losing the last complete round. Every page is
  * idempotent for the store (natural key = message id). Tombstones (`@removed`)
@@ -31,7 +38,7 @@
  * attachment metadata (non-inline file attachments only).
  */
 import { ConnectorError, type Checkpoint, type MailSyncBatch, type NormalizedDeletion, type NormalizedMailMessage, type SyncContext, type SyncPage } from "@vixera/domain";
-import { GRAPH_API, GraphApiClient, graphUrl, mapConcurrent } from "../http.ts";
+import { GRAPH_API, GraphApiClient, graphUrl, isDeadCheckpoint, mapConcurrent, mapGraphError } from "../http.ts";
 import type { MicrosoftOAuthConfig } from "../oauth.ts";
 import { normalizeGraphMessage } from "./normalize.ts";
 import type { GraphAttachment, GraphCollection, GraphDeltaPage, GraphMessage, GraphMessageDeltaEntry } from "./types.ts";
@@ -137,13 +144,14 @@ async function* run(
   ctx.log?.(round ? "microsoft.mail.delta.start" : "microsoft.mail.backfill.start", { fullResync, resumed: previous?.backfill !== undefined, backfillDays: options.backfillDays });
 
   for (;;) {
-    const res = await client.getJson<GraphDeltaPage<GraphMessageDeltaEntry>>(next, { tolerate: stored ? [400, 410] : [410], headers: { prefer } });
-    if (res.status === 410 || res.status === 400) {
+    const res = await client.getJson<GraphDeltaPage<GraphMessageDeltaEntry>>(next, { tolerate: stored ? [400, 404, 410] : [410], headers: { prefer } });
+    if (isDeadCheckpoint(res, stored)) {
       if (!previous) throw new ConnectorError("checkpoint_invalid", "Microsoft Graph returned 410 for a fresh mail delta query", false);
       ctx.log?.(round !== null && res.status === 410 ? "microsoft.mail.delta.expired" : "microsoft.mail.checkpoint.rejected", { status: res.status });
       yield* run(ctx, client, options, null, true);
       return;
     }
+    if (res.status === 404) throw mapGraphError(res.status, res.headers, res.body); // tolerated only to read its code
     stored = false;
     const entries = res.body?.value ?? [];
     const deleted: NormalizedDeletion[] = [];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeEntities, htmlToText } from "./html.ts";
+import { decodeEntities, htmlToText, MAX_HTML_CHARS } from "./html.ts";
 
 describe("htmlToText", () => {
   it("strips tags, turns block ends and <br> into newlines, and collapses whitespace", () => {
@@ -24,6 +24,26 @@ describe("htmlToText", () => {
   it("does not split a tag on a '>' inside a quoted attribute", () => {
     expect(htmlToText('<p><a href="https://example.com/?a=1&amp;b=2" title="x > y">link</a> text</p>')).toBe("link text");
     expect(htmlToText("<img alt='a > b' src=\"x.png\"><span data-x='1>0'>ok</span>")).toBe("ok");
+  });
+
+  it("strips attribute soup the grammar rejects instead of leaking or swallowing text", () => {
+    // An apostrophe in an unquoted value used to make the tag unmatched (leaked verbatim).
+    expect(htmlToText("<p class=don't>Hello</p>")).toBe("Hello");
+    // …or, when a later quote matched, swallow everything in between.
+    expect(htmlToText("<a href=http://x.com/it's>click</a> Hello, don't panic. <b>Bold</b> end")).toBe("click Hello, don't panic. Bold end");
+    // An unterminated quote must not eat the following tags and their text.
+    expect(htmlToText('<p>a</p><img alt="unterminated><p>visible?</p>')).toBe("a\nvisible?");
+    // A '>' inside a properly quoted value still does not split the tag.
+    expect(htmlToText('<a title="x > y">link</a>')).toBe("link");
+  });
+
+  it("stays linear on hostile bodies and bounds the markup it scans", () => {
+    const start = Date.now();
+    for (const soup of ["<a ", "<a '", "<script", "<a \""]) {
+      const text = htmlToText(soup.repeat(1_000_000 / soup.length));
+      expect(text.length).toBeLessThanOrEqual(MAX_HTML_CHARS);
+    }
+    expect(Date.now() - start).toBeLessThan(2_000);
   });
 
   it("returns an empty string for markup without text", () => {

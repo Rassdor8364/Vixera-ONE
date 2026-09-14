@@ -32,7 +32,7 @@
  * size is the only lever on payload; the normalizer reads what it needs.
  */
 import { ConnectorError, type CalendarSyncBatch, type Checkpoint, type NormalizedDeletion, type NormalizedTimeEvent, type SyncContext, type SyncPage } from "@vixera/domain";
-import { GRAPH_API, GraphApiClient, graphUrl } from "../http.ts";
+import { GRAPH_API, GraphApiClient, graphUrl, isDeadCheckpoint, mapGraphError } from "../http.ts";
 import type { GraphDeltaPage } from "../mail/types.ts";
 import type { MicrosoftOAuthConfig } from "../oauth.ts";
 import { normalizeGraphEvent } from "./normalize.ts";
@@ -122,7 +122,9 @@ async function* run(
   previous: CalendarCheckpoint | null,
   fullResync: boolean,
 ): AsyncIterable<SyncPage<CalendarSyncBatch>> {
-  const prefer = `odata.maxpagesize=${options.pageSize}, outlook.timezone="UTC"`;
+  // calendarView/delta takes no $select, so every event comes with its HTML
+  // body; asking for text bodies keeps the un-selectable payload small.
+  const prefer = `odata.maxpagesize=${options.pageSize}, outlook.timezone="UTC", outlook.body-content-type="text"`;
   const window = previous?.window ?? openWindow(ctx.now(), options.window);
   let next: string = previous?.deltaLink ?? initialCalendarDeltaUrl(window);
   // The first request of a run may carry a link out of our own checkpoint; only that one can be a dead checkpoint.
@@ -130,13 +132,14 @@ async function* run(
   ctx.log?.(previous ? "microsoft.calendar.delta.start" : "microsoft.calendar.window.open", { fullResync, start: window.start, end: window.end });
 
   for (;;) {
-    const res = await client.getJson<GraphDeltaPage<GraphEventDeltaEntry>>(next, { tolerate: stored ? [400, 410] : [410], headers: { prefer } });
-    if (res.status === 410 || res.status === 400) {
+    const res = await client.getJson<GraphDeltaPage<GraphEventDeltaEntry>>(next, { tolerate: stored ? [400, 404, 410] : [410], headers: { prefer } });
+    if (isDeadCheckpoint(res, stored)) {
       if (!previous) throw new ConnectorError("checkpoint_invalid", "Microsoft Graph returned 410 for a fresh calendarView delta query", false);
       ctx.log?.(res.status === 410 ? "microsoft.calendar.delta.expired" : "microsoft.calendar.checkpoint.rejected", { status: res.status });
       yield* run(ctx, client, options, null, true);
       return;
     }
+    if (res.status === 404) throw mapGraphError(res.status, res.headers, res.body); // tolerated only to read its code
     stored = false;
     const entries = res.body?.value ?? [];
     const deleted: NormalizedDeletion[] = [];

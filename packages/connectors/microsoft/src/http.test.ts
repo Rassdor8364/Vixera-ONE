@@ -1,6 +1,6 @@
 import { ConnectorError } from "@vixera/domain";
 import { describe, expect, it } from "vitest";
-import { GRAPH_API, GraphApiClient } from "./http.ts";
+import { GRAPH_API, GraphApiClient, MAX_REFRESHES_PER_RUN } from "./http.ts";
 import { FAKE_CREDENTIAL, FAKE_OAUTH, makeContext } from "./testing/context.ts";
 import { createFakeFetch, type FakeReply, type FakeRoute } from "./testing/fake-fetch.ts";
 
@@ -77,6 +77,38 @@ describe("GraphApiClient refresh", () => {
     // A later request on the same client does not refresh again either: the credential is live by its clock and Graph rejects it.
     await expect(client.getJson(RESOURCE)).rejects.toMatchObject({ code: "unauthorized" });
     expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(1);
+  });
+
+  it("a refresh that fails rejects every concurrent waiter with the token endpoint's verdict, after one token call", async () => {
+    const fake = createFakeFetch([
+      { match: "/oauth2/v2.0/token", reply: { status: 400, json: { error: "invalid_grant", error_description: "AADSTS70000: refresh token revoked" } } },
+      { match: RESOURCE, reply: REJECTED },
+    ]);
+    const ctx = makeContext(fake.fetch);
+    const client = new GraphApiClient(ctx, FAKE_OAUTH);
+    const codes = await Promise.all([1, 2, 3, 4].map(() => client.getJson(RESOURCE).then(() => "ok", (e: unknown) => (e as ConnectorError).code)));
+    expect(codes).toEqual(["unauthorized", "unauthorized", "unauthorized", "unauthorized"]);
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(1);
+    expect(ctx.refreshed).toHaveLength(0);
+    // The failed refresh cleared the shared promise: a later 401 may try the token endpoint again (it is not a loop, the request itself decides).
+    await client.getJson(RESOURCE).catch(() => null);
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(2);
+  });
+
+  it("gives a credential up as unauthorized after MAX_REFRESHES_PER_RUN refreshes in one run", async () => {
+    // A token endpoint that only ever issues already-expired tokens.
+    let issued = 1;
+    const fake = createFakeFetch([
+      { match: "/oauth2/v2.0/token", reply: () => ({ json: { access_token: `fake-access-token-${++issued}`, refresh_token: "fake-refresh-2", expires_in: 0 } }) },
+      { match: RESOURCE, reply: { json: { value: [] } } },
+    ]);
+    const now = new Date("2026-09-10T12:00:00.000Z");
+    const expired = { ...FAKE_CREDENTIAL, expiresAt: "2026-09-10T11:00:00.000Z" };
+    const client = new GraphApiClient(makeContext(fake.fetch, { now: () => now, credential: expired }), FAKE_OAUTH);
+    for (let i = 0; i < MAX_REFRESHES_PER_RUN; i++) await client.getJson(RESOURCE); // each call: expired → refresh → send
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(MAX_REFRESHES_PER_RUN);
+    await expect(client.getJson(RESOURCE)).rejects.toMatchObject({ code: "unauthorized", retryable: false });
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(MAX_REFRESHES_PER_RUN);
   });
 
   it("maps 403 to unauthorized (needs_reauth) with the Graph error code in the message", async () => {

@@ -171,7 +171,7 @@ export function toInstant(value: GraphDateTimeTimeZone | null | undefined, allDa
   const zone = value?.timeZone?.trim();
   let instant = asUtc;
   let unresolvedZone = false;
-  if (zone && !/^(utc|z|gmt)$/i.test(zone) && !wall.explicitUtc) {
+  if (zone && !UTC_ZONE.test(zone) && !wall.explicitUtc) {
     const offsetMinutes = zoneOffsetMinutes(zone, asUtc);
     if (offsetMinutes === null) unresolvedZone = true;
     else instant = asUtc - offsetMinutes * 60_000;
@@ -229,7 +229,11 @@ export function zoneOffsetMinutes(zone: string, wallAsUtcMs: number): number | n
 }
 
 /** Offset (minutes east of UTC) of a zone at an instant, or null for an unknown zone. */
+/** Spellings of UTC Graph and Exchange use, including the `tzone://Microsoft/Utc` form of old items. */
+const UTC_ZONE = /^(utc|z|gmt|tzone:\/\/microsoft\/utc)$/i;
+
 export function zoneOffsetAt(zone: string, instantMs: number): number | null {
+  if (UTC_ZONE.test(zone.trim())) return 0;
   const offsetAt = offsetFunction(zone);
   return offsetAt ? offsetAt(instantMs) : null;
 }

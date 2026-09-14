@@ -269,8 +269,10 @@ never as an error.
   the one `GraphApiClient` of the run.
 * **Backfill pages are resume points.** Every intermediate page of the
   initial backfill carries its `@odata.nextLink` as `backfill.nextLink`
-  (Graph encodes the paging state in the link and documents it as the thing
-  to save and reuse), so a backfill larger than one run's time budget stops
+  (on the assumption — Graph documents it for `deltaLink`, not for
+  `nextLink` — that the skiptoken carries the same sync state hours later;
+  a rejected one falls back to the restart below), so a backfill larger than
+  one run's time budget stops
   at the deadline on a checkpoint and continues from that page next run
   instead of restarting. The last page drops `backfill` and carries the new
   `@odata.deltaLink`.
