@@ -313,7 +313,7 @@ export class SupabaseSpineStore implements SpineStore {
 
   async upsertPerson(input: PersonInput): Promise<Person> {
     const row = personToRow(this.userId, input.id ?? newId(), input);
-    const saved = await this.required<PersonRow>(this.from("people").upsert(row, { onConflict: "id" }).select().single(), "person", row.id);
+    const saved = await this.required<PersonRow>(this.from("people").upsert(row, { onConflict: "user_id,id" }).select().single(), "person", row.id);
     return personFromRow(saved);
   }
 
@@ -379,14 +379,14 @@ export class SupabaseSpineStore implements SpineStore {
   // Documents
   // -------------------------------------------------------------------------
   async listDocuments(query: DocumentsQuery = {}): Promise<Document[]> {
-    let q = this.select("documents");
+    let q = this.selectCounted("documents");
     const search = query.search?.trim();
     if (search) q = q.ilike("title", ilike(search));
     if (query.connectorAccountId) q = q.eq("connector_account_id", query.connectorAccountId);
     if (query.mimeTypePrefix) q = q.ilike("mime_type", `${escapeLike(query.mimeTypePrefix)}%`);
     if (query.updatedSince) q = q.gte("updated_at", query.updatedSince);
-    q = paged(q.order("updated_at", { ascending: false }), query);
-    return (await this.rows<DocumentRow>(q, "documents")).map(documentFromRow);
+    const ordered = q.order("updated_at", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<DocumentRow>((from, to) => ordered.range(from, to), query, "documents")).map(documentFromRow);
   }
 
   async getDocument(id: string): Promise<Document | null> {
@@ -412,7 +412,7 @@ export class SupabaseSpineStore implements SpineStore {
 
   async upsertDocument(input: DocumentInput): Promise<Document> {
     const row = documentToRow(this.userId, input.id ?? newId(), input);
-    return documentFromRow(await this.required<DocumentRow>(this.from("documents").upsert(row, { onConflict: "id" }).select().single(), "document", row.id));
+    return documentFromRow(await this.required<DocumentRow>(this.from("documents").upsert(row, { onConflict: "user_id,id" }).select().single(), "document", row.id));
   }
 
   async updateDocument(id: string, patch: DocumentPatch): Promise<Document> {
@@ -429,7 +429,7 @@ export class SupabaseSpineStore implements SpineStore {
   // Mail
   // -------------------------------------------------------------------------
   async listMailMessages(query: MailQuery = {}): Promise<MailMessage[]> {
-    let q = this.select("mail_messages");
+    let q = this.selectCounted("mail_messages");
     if (query.connectorAccountId) q = q.eq("connector_account_id", query.connectorAccountId);
     if (query.fromPersonId) q = q.eq("from_person_id", query.fromPersonId);
     if (query.receivedSince) q = q.gte("received_at", query.receivedSince);
@@ -438,8 +438,8 @@ export class SupabaseSpineStore implements SpineStore {
       const p = orIlike(search);
       q = q.or(`subject.ilike.${p},snippet.ilike.${p},from_address.ilike.${p},from_name.ilike.${p}`);
     }
-    q = paged(q.order("received_at", { ascending: false }), query);
-    return (await this.rows<MailMessageRow>(q, "mail")).map(mailMessageFromRow);
+    const ordered = q.order("received_at", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<MailMessageRow>((from, to) => ordered.range(from, to), query, "mail")).map(mailMessageFromRow);
   }
 
   async getMailMessage(id: string): Promise<MailMessage | null> {
@@ -480,7 +480,7 @@ export class SupabaseSpineStore implements SpineStore {
   }
 
   async listMoneyTransactions(query: TransactionsQuery = {}): Promise<MoneyTransaction[]> {
-    let q = this.select("money_transactions");
+    let q = this.selectCounted("money_transactions");
     if (query.connectorAccountId) q = q.eq("connector_account_id", query.connectorAccountId);
     if (query.moneyAccountId) q = q.eq("money_account_id", query.moneyAccountId);
     if (query.postedFrom) q = q.gte("posted_on", query.postedFrom);
@@ -491,8 +491,8 @@ export class SupabaseSpineStore implements SpineStore {
       const p = orIlike(search);
       q = q.or(`description.ilike.${p},merchant_name.ilike.${p}`);
     }
-    q = paged(q.order("posted_on", { ascending: false }), query);
-    return (await this.rows<MoneyTransactionRow>(q, "transactions")).map(moneyTransactionFromRow);
+    const ordered = q.order("posted_on", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<MoneyTransactionRow>((from, to) => ordered.range(from, to), query, "transactions")).map(moneyTransactionFromRow);
   }
 
   async getMoneyTransaction(id: string): Promise<MoneyTransaction | null> {
@@ -540,10 +540,10 @@ export class SupabaseSpineStore implements SpineStore {
   // Time
   // -------------------------------------------------------------------------
   async listTimeEvents(query: TimeQuery): Promise<TimeEvent[]> {
-    let q = this.select("time_events").lte("starts_at", query.to).gte("ends_at", query.from);
+    let q = this.selectCounted("time_events").lte("starts_at", query.to).gte("ends_at", query.from);
     if (query.connectorAccountId) q = q.eq("connector_account_id", query.connectorAccountId);
-    q = paged(q.order("starts_at", { ascending: true }), query);
-    return (await this.rows<TimeEventRow>(q, "time events")).map(timeEventFromRow);
+    const ordered = q.order("starts_at", { ascending: true }).order("id", { ascending: true });
+    return (await this.pageAll<TimeEventRow>((from, to) => ordered.range(from, to), query, "time events")).map(timeEventFromRow);
   }
 
   async getTimeEvent(id: string): Promise<TimeEvent | null> {
@@ -585,7 +585,7 @@ export class SupabaseSpineStore implements SpineStore {
   // Context events + conclusions
   // -------------------------------------------------------------------------
   async listContextEvents(query: ContextEventsQuery = {}): Promise<ContextEvent[]> {
-    let q = this.select("context_events");
+    let q = this.selectCounted("context_events");
     if (query.attention) {
       const wanted: Attention[] = Array.isArray(query.attention) ? [...(query.attention as readonly Attention[])] : [query.attention as Attention];
       q = wanted.length === 1 ? q.eq("attention", wanted[0]) : q.in("attention", wanted);
@@ -593,8 +593,8 @@ export class SupabaseSpineStore implements SpineStore {
     if (query.occurredSince) q = q.gte("occurred_at", query.occurredSince);
     if (query.kindPrefix) q = q.ilike("kind", `${escapeLike(query.kindPrefix)}%`);
     if (query.subject) q = q.eq("subject_type", query.subject.type).eq("subject_id", query.subject.id);
-    q = paged(q.order("occurred_at", { ascending: false }), query);
-    return (await this.rows<ContextEventRow>(q, "context events")).map(contextEventFromRow);
+    const ordered = q.order("occurred_at", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<ContextEventRow>((from, to) => ordered.range(from, to), query, "context events")).map(contextEventFromRow);
   }
 
   async getContextEvent(id: string): Promise<ContextEvent | null> {
@@ -806,7 +806,7 @@ export class SupabaseSpineStore implements SpineStore {
 
   async upsertDevice(input: DeviceInput): Promise<Device> {
     const row = deviceToRow(this.userId, input.id ?? newId(), input);
-    return deviceFromRow(await this.required<DeviceRow>(this.from("devices").upsert(row, { onConflict: "id" }).select().single(), "device", row.id));
+    return deviceFromRow(await this.required<DeviceRow>(this.from("devices").upsert(row, { onConflict: "user_id,id" }).select().single(), "device", row.id));
   }
 
   async updateDevice(id: string, patch: DevicePatch): Promise<Device> {
@@ -816,7 +816,7 @@ export class SupabaseSpineStore implements SpineStore {
   }
 
   async listHandoffs(query: HandoffsQuery = {}): Promise<Handoff[]> {
-    let q = this.select("handoffs");
+    let q = this.selectCounted("handoffs");
     if (query.state) {
       const states = Array.isArray(query.state) ? [...query.state] : [query.state];
       q = states.length === 1 ? q.eq("state", states[0]) : q.in("state", states);
@@ -824,8 +824,8 @@ export class SupabaseSpineStore implements SpineStore {
     if (query.targetDeviceId !== undefined) {
       q = query.targetDeviceId === null ? q.is("target_device_id", null) : q.eq("target_device_id", query.targetDeviceId);
     }
-    q = paged(q.order("created_at", { ascending: false }), query);
-    return (await this.rows<HandoffRow>(q, "handoffs")).map(handoffFromRow);
+    const ordered = q.order("created_at", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<HandoffRow>((from, to) => ordered.range(from, to), query, "handoffs")).map(handoffFromRow);
   }
 
   async getHandoff(id: string): Promise<Handoff | null> {
@@ -845,10 +845,10 @@ export class SupabaseSpineStore implements SpineStore {
   }
 
   async listIngestItems(query: IngestQuery = {}): Promise<IngestItem[]> {
-    let q = this.select("ingest_items");
+    let q = this.selectCounted("ingest_items");
     if (query.status) q = q.eq("status", query.status);
-    q = paged(q.order("created_at", { ascending: false }), query);
-    return (await this.rows<IngestItemRow>(q, "ingest items")).map(ingestItemFromRow);
+    const ordered = q.order("created_at", { ascending: false }).order("id", { ascending: true });
+    return (await this.pageAll<IngestItemRow>((from, to) => ordered.range(from, to), query, "ingest items")).map(ingestItemFromRow);
   }
 
   async getIngestItem(id: string): Promise<IngestItem | null> {
@@ -1002,14 +1002,6 @@ export function isTransientStoreError(err: unknown): boolean {
   return TRANSIENT_CODES.has(code) || TRANSIENT_CODE_CLASSES.some((c) => code.startsWith(c));
 }
 
-function paged(q: SelectBuilder, page: Page): SelectBuilder {
-  if (page.limit !== undefined) {
-    const offset = page.offset ?? 0;
-    return q.range(offset, offset + page.limit - 1);
-  }
-  if (page.offset) return q.range(page.offset, page.offset + 999);
-  return q;
-}
 
 /** Escapes LIKE wildcards in user text. */
 export function escapeLike(term: string): string {

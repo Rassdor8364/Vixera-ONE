@@ -322,6 +322,17 @@ describe("filter helpers", () => {
   });
 });
 
+describe("upserts keyed by id", () => {
+  it("conflict on (user_id, id), never on id alone: a foreign id under the service role is a primary-key error, not an overwrite", async () => {
+    const { client, calls } = fakeClient(() => ({ data: { ...PERSON_ROW }, error: null }));
+    const store = new SupabaseSpineStore(client, DEV_USER_ID);
+    await store.upsertPerson({ id: PERSON_ROW.id, displayName: "Eric Lindqvist", primaryEmail: null, organization: null, notes: null, metadata: {} });
+    const people = calls.find((c) => c.target === "people")!;
+    expect(op(people, "upsert")?.args[1]).toEqual({ onConflict: "user_id,id" });
+    expect((op(people, "upsert")?.args[0] as { user_id: string }).user_id).toBe(DEV_USER_ID);
+  });
+});
+
 describe("isTransientStoreError", () => {
   const storage = (code: string | null) => new SpineStorageError("x", code);
   it("treats connection, resource, cancellation and rollback failures — and a codeless fetch failure — as transient", () => {
