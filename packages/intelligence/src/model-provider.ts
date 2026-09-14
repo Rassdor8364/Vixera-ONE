@@ -2,17 +2,21 @@
  * Model abstraction for Vixera One.
  *
  * Vixera One IS the intelligence layer; language-model providers are
- * adapters behind this interface. Phase 1 needs only the seam: a request /
- * result shape, an error for "no model configured", a null provider, and a
- * registry so callers ask for "the default model" instead of a vendor.
+ * adapters behind this interface. The package is runtime-neutral (Node,
+ * Deno, the WebView) and has no vendor code in it. Adapters for Vixera AI,
+ * Claude, OpenAI, Gemini or a local model each implement `ModelProvider` and
+ * are registered by id; nothing above this layer names a vendor.
  *
- * Real provider adapters come later and MUST implement `ModelProvider`. They
- * run SERVER-SIDE ONLY (Edge Functions): API keys live in Supabase secrets,
- * never in client code, never in the spine, never in source. There is no
- * model marketplace and no per-user model settings in Phase 1. The intended
- * first consumers are a model-backed `IntentRouter` (packages/command) and
- * conclusion generation (`Conclusion.producedBy = "model:<provider>/<model>"`).
+ * Adapters that hold API keys run SERVER-SIDE ONLY (Edge Functions): keys
+ * live in Supabase secrets, never in client code, never in the spine, never
+ * in source. The `locality` capability is how a task refuses to send context
+ * off the device when it must stay local.
+ *
+ * Consumers do not call `complete()` directly for product work; they go
+ * through the typed tasks in tasks.ts, which bound the context, validate the
+ * output and record an audit event.
  */
+import { ModelUnavailableError } from "./errors.ts";
 
 export interface CompletionMessage {
   readonly role: "user" | "assistant";
@@ -24,7 +28,13 @@ export interface CompletionRequest {
   readonly messages: readonly CompletionMessage[];
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /** "json": the provider must return one JSON value and nothing else. */
   readonly responseFormat?: "text" | "json";
+}
+
+export interface CompletionOptions {
+  /** Cancels the call; the provider must stop work and reject with ModelCancelledError. */
+  readonly signal?: AbortSignal;
 }
 
 export interface CompletionUsage {
@@ -41,20 +51,25 @@ export interface CompletionResult {
   readonly usage?: CompletionUsage;
 }
 
-export interface ModelProvider {
-  readonly id: string;
-  complete(request: CompletionRequest): Promise<CompletionResult>;
+/**
+ * What a provider can do, declared up front so a task can pick or refuse a
+ * provider without trying it.
+ */
+export interface ModelCapabilities {
+  /** Where inference happens. "local" never leaves the device; "remote" is a network call. */
+  readonly locality: "local" | "remote";
+  /** The adapter can be told to return a single JSON value and will. */
+  readonly structuredOutput: boolean;
+  /** Upper bound on request size, in the provider's own tokens. Tasks use it as a rough budget. */
+  readonly maxInputTokens: number;
+  /** The adapter honours `CompletionOptions.signal` mid-flight (not just before starting). */
+  readonly cancellation: boolean;
 }
 
-/** Thrown when a completion is requested but no usable model is available. */
-export class ModelUnavailableError extends Error {
-  constructor(
-    readonly providerId: string,
-    message = `Model provider "${providerId}" is not available`,
-  ) {
-    super(message);
-    this.name = "ModelUnavailableError";
-  }
+export interface ModelProvider {
+  readonly id: string;
+  readonly capabilities: ModelCapabilities;
+  complete(request: CompletionRequest, options?: CompletionOptions): Promise<CompletionResult>;
 }
 
 /**
@@ -64,8 +79,9 @@ export class ModelUnavailableError extends Error {
  */
 export class NullModelProvider implements ModelProvider {
   readonly id = "null";
+  readonly capabilities: ModelCapabilities = { locality: "local", structuredOutput: false, maxInputTokens: 0, cancellation: true };
 
-  async complete(_request: CompletionRequest): Promise<CompletionResult> {
+  async complete(_request: CompletionRequest, _options?: CompletionOptions): Promise<CompletionResult> {
     throw new ModelUnavailableError(this.id, "No model provider is configured");
   }
 }
@@ -112,5 +128,14 @@ export class ModelRegistry {
 
   ids(): string[] {
     return [...this.providers.keys()];
+  }
+
+  /** Providers whose capabilities satisfy every given requirement. */
+  matching(requirements: Partial<ModelCapabilities>): ModelProvider[] {
+    return [...this.providers.values()].filter((p) =>
+      (Object.entries(requirements) as [keyof ModelCapabilities, unknown][]).every(([k, v]) =>
+        k === "maxInputTokens" ? p.capabilities.maxInputTokens >= (v as number) : p.capabilities[k] === v,
+      ),
+    );
   }
 }
