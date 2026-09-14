@@ -121,7 +121,11 @@ build_windows() {
 
 build_android() {
   echo "==> Android APK (arm64, signed release)"
+  # Same default as release-verify; a shell without the profile export (a CI
+  # step, a background job) otherwise stops here with the SDK sitting in place.
+  [[ -n "${ANDROID_HOME:-}" ]] || { [[ -d /opt/android-sdk ]] && export ANDROID_HOME=/opt/android-sdk; }
   : "${ANDROID_HOME:?set ANDROID_HOME}"
+  [[ -n "${NDK_HOME:-}" ]] || { NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"; [[ -n "$NDK_HOME" ]] && export NDK_HOME; }
   : "${NDK_HOME:?set NDK_HOME}"
   [[ -f "$APP/src-tauri/gen/android/key.properties" ]] || {
     echo "missing gen/android/key.properties — a release APK must be signed."

@@ -115,7 +115,7 @@ the Android signing key, which needs an offline backup.
 ### Deploying
 
 The `Vixera-ONE` Supabase project (`uhdlacchajiblhmgasjg`) already has the full
-schema: eight migrations applied and the invariants verified on the live
+schema: eight of eleven migrations applied and the invariants verified on the live
 database. Edge Functions still need a token:
 
 ```bash
@@ -182,7 +182,9 @@ curl -s http://127.0.0.1:47815/v1/health
 | Document | Content |
 | --- | --- |
 | [`docs/phase-1-brief.md`](docs/phase-1-brief.md) | the product brief the code was built from; the reference for scope |
-| [`docs/architecture.md`](docs/architecture.md) | layering, seams, runtime topology, Phase 1 status against the definition of done |
+| [`docs/architecture.md`](docs/architecture.md) | layering, seams, runtime topology, Phase 1 and Phase 2 status against the definition of done |
+| [`docs/smoke-tests.md`](docs/smoke-tests.md) | the procedures that turn fixture-tested into integration-tested: live project, Google, Microsoft, Plaid, devices, release |
+| [`docs/field-phase-2-design.md`](docs/field-phase-2-design.md) | the focus object, the context trail and lenses — written design, not implemented |
 | [`docs/schema.md`](docs/schema.md) | tables, enums, graph, invariants verified by `db:verify` |
 | [`docs/connectors.md`](docs/connectors.md) | Connector interface, accounts, credentials, checkpoints per provider, error handling, link flows, adding a provider |
 | [`docs/sync.md`](docs/sync.md) | sync flow end to end, idempotency, linker rules, NOW derivation, Realtime, ingestion, handoff, server actions |

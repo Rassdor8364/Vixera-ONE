@@ -270,8 +270,8 @@ capture: the user hands Vixera an object explicitly.
   action.
 * Not a document viewer: Praxion or the OS renders artifacts; the Field only
   opens them and shows their context.
-* Not an onboarding flow: sign-in into an existing Supabase user only; no
-  sign-up, no settings suite, no team features.
+* Not an onboarding flow: the door (sign in, create account, recover by
+  code) and nothing more; no settings suite, no team features.
 * Not Praxion-dependent: with Praxion absent everything except structured
   content, compare, annotate and page state works unchanged.
 
