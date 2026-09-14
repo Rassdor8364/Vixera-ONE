@@ -58,6 +58,18 @@ export class ContextSelectionError extends Error {
   }
 }
 
+/** The provider declares it cannot do what the task needs (structured output, a prompt this large). */
+export class CapabilityError extends Error {
+  constructor(
+    readonly providerId: string,
+    readonly capability: "structuredOutput" | "maxInputTokens",
+    detail: string,
+  ) {
+    super(`Model provider "${providerId}" cannot satisfy ${capability}: ${detail}`);
+    this.name = "CapabilityError";
+  }
+}
+
 /** A task that requires a local model was asked to run on a remote one. */
 export class LocalityError extends Error {
   constructor(

@@ -2,7 +2,7 @@ import type { EntityRef } from "@vixera/domain";
 import type { ContextSelection } from "./context-selection.ts";
 import { noContext } from "./context-selection.ts";
 import { ModelRegistry } from "./model-provider.ts";
-import { TaskRunner, v, type StructuredTaskSpec, type TaskOptions, type TaskRun, type TaskRunnerOptions } from "./tasks.ts";
+import { TaskRunner, clip, v, type StructuredTaskSpec, type TaskOptions, type TaskRun, type TaskRunnerOptions } from "./tasks.ts";
 
 /**
  * The product-facing surface: six task-shaped operations over a registry of
@@ -56,7 +56,7 @@ const classifyIntent: StructuredTaskSpec<ClassifyIntentInput, ClassifyIntentOutp
       `Area: ${input.area}`,
       `Focus: ${input.focusType ?? "none"}`,
       `Timezone: ${input.timezone ?? "unknown"}`,
-      `Command: ${JSON.stringify(input.text)}`,
+      `Command: ${JSON.stringify(clip(input.text, 500))}`,
     ].join("\n"),
   validate: (value) => {
     if (!v.object(value)) return v.fail("not an object");
@@ -86,7 +86,7 @@ function summarizeContext(context: ContextSelection): StructuredTaskSpec<Summari
       "You summarize a small set of the user's own context items for the user. Use only the items given. " +
       "Reply with a single JSON object {\"summary\": string, \"citedRefs\": [{\"type\":..., \"id\":...}]} citing only refs that appear in the items.",
     prompt: (input, ctx) =>
-      [`Purpose: ${input.purpose ?? "orientation"}`, `At most ${input.maxSentences ?? 3} sentences.`, "", "Items:", ctx.serialize()].join("\n"),
+      [`Purpose: ${clip(input.purpose ?? "orientation")}`, `At most ${input.maxSentences ?? 3} sentences.`, "", "Items:", ctx.serialize()].join("\n"),
     validate: (value) => {
       if (!v.object(value) || !v.string(value["summary"])) return v.fail("summary missing");
       if (!v.array(value["citedRefs"], v.refFrom(context))) return v.fail("citedRefs contains a ref not in the context");
@@ -120,15 +120,19 @@ function extractFacts(context: ContextSelection): StructuredTaskSpec<ExtractFact
     system:
       "You extract the requested fields from the user's context items. Use only what the items say; null when absent. " +
       "Reply with a single JSON object {\"facts\": [{\"name\", \"value\", \"sourceRef\": {\"type\",\"id\"} | null}]}.",
-    prompt: (input, ctx) => ["Fields:", ...input.fields.map((f) => `- ${f.name} (${f.type}): ${f.description}`), "", "Items:", ctx.serialize()].join("\n"),
-    validate: (value) => {
+    prompt: (input, ctx) => ["Fields:", ...input.fields.map((f) => `- ${clip(f.name, 100)} (${f.type}): ${clip(f.description, 300)}`), "", "Items:", ctx.serialize()].join("\n"),
+    validate: (value, input) => {
       const isRef = v.refFrom(context);
+      const wanted = new Map(input.fields.map((f) => [f.name, f.type]));
+      const typeOk = (type: FactField["type"], x: unknown) =>
+        x === null || (type === "number" ? typeof x === "number" && Number.isFinite(x) : type === "boolean" ? typeof x === "boolean" : typeof x === "string");
       const isFact = (x: unknown): x is ExtractedFact =>
         v.object(x) &&
         v.string(x["name"], 100) &&
-        (x["value"] === null || ["string", "number", "boolean"].includes(typeof x["value"])) &&
+        wanted.has(x["name"]) &&
+        typeOk(wanted.get(x["name"]) as FactField["type"], x["value"]) &&
         (x["sourceRef"] === null || isRef(x["sourceRef"]));
-      if (!v.object(value) || !v.array(value["facts"], isFact)) return v.fail("facts malformed or cite a ref not in the context");
+      if (!v.object(value) || !v.array(value["facts"], isFact, input.fields.length)) return v.fail("facts malformed, unrequested, mistyped, or cite a ref not in the context");
       return v.pass({ facts: value["facts"] });
     },
     maxTokens: 600,
@@ -159,7 +163,7 @@ function compareContext(context: ContextSelection): StructuredTaskSpec<CompareCo
     system:
       "You compare two groups of the user's context items on one aspect. Items are labelled with their group. " +
       "Reply with a single JSON object {\"summary\": string, \"differences\": [{\"aspect\",\"left\",\"right\",\"refs\":[...]}]} citing only refs from the items.",
-    prompt: (input, ctx) => [`Left: ${input.leftLabel}`, `Right: ${input.rightLabel}`, `Aspect: ${input.aspect}`, "", "Items:", ctx.serialize()].join("\n"),
+    prompt: (input, ctx) => [`Left: ${clip(input.leftLabel, 200)}`, `Right: ${clip(input.rightLabel, 200)}`, `Aspect: ${clip(input.aspect, 300)}`, "", "Items:", ctx.serialize()].join("\n"),
     validate: (value) => {
       const isRef = v.refFrom(context);
       const isDiff = (x: unknown): x is ContextDifference =>
@@ -192,12 +196,13 @@ function deriveSuggestions(context: ContextSelection): StructuredTaskSpec<Derive
     system:
       "You point out what deserves the user's attention in their own context items, as short suggestions. You do not act; you suggest. " +
       "Reply with a single JSON object {\"suggestions\": [{\"text\", \"kind\": \"note\"|\"consider\", \"refs\": [...]}]} citing only refs from the items.",
-    prompt: (input, ctx) => [`Goal: ${input.goal ?? "what needs attention"}`, `At most ${input.max ?? 3}.`, "", "Items:", ctx.serialize()].join("\n"),
-    validate: (value) => {
+    prompt: (input, ctx) => [`Goal: ${clip(input.goal ?? "what needs attention")}`, `At most ${input.max ?? 3}.`, "", "Items:", ctx.serialize()].join("\n"),
+    validate: (value, input) => {
       const isRef = v.refFrom(context);
       const isSuggestion = (x: unknown): x is Suggestion =>
         v.object(x) && v.string(x["text"], 500) && (x["kind"] === "note" || x["kind"] === "consider") && v.array(x["refs"], isRef);
-      if (!v.object(value) || !v.array(value["suggestions"], isSuggestion, 20)) return v.fail("suggestions malformed or cite a ref not in the context");
+      const max = Math.min(20, Math.max(1, input.max ?? 3));
+      if (!v.object(value) || !v.array(value["suggestions"], isSuggestion, max)) return v.fail(`suggestions malformed, more than ${max}, or cite a ref not in the context`);
       return v.pass({ suggestions: value["suggestions"] });
     },
     maxTokens: 600,
@@ -220,7 +225,7 @@ function answerQuestion(context: ContextSelection): StructuredTaskSpec<AnswerQue
     system:
       "You answer the user's question using only the context items given. If they do not contain the answer, say so and set confidence 0. " +
       "Reply with a single JSON object {\"answer\": string, \"citedRefs\": [...], \"confidence\": 0..1} citing only refs from the items.",
-    prompt: (input, ctx) => [`Question: ${input.question}`, "", "Items:", ctx.serialize()].join("\n"),
+    prompt: (input, ctx) => [`Question: ${clip(input.question)}`, "", "Items:", ctx.serialize()].join("\n"),
     validate: (value) => {
       if (!v.object(value) || !v.string(value["answer"]) || !v.unit(value["confidence"])) return v.fail("answer or confidence missing");
       if (!v.array(value["citedRefs"], v.refFrom(context))) return v.fail("citedRefs contains a ref not in the context");

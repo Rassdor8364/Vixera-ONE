@@ -33,10 +33,15 @@ A model is never handed "the user's context". It is handed a
 
 - every item is reduced to the fields on `CONTEXT_FIELD_ALLOWLIST` for its
   entity type — subjects, titles, dates, amounts, states; **never bodies,
-  never raw addresses, never tokens** (a test asserts no allow-listed field
-  name even smells like one);
-- the whole selection sits under a byte budget (16 KiB), an item cap (50) and
-  a per-field cap (500 chars); what did not fit is counted, not silently lost;
+  never snippets, never raw addresses, never tokens**. Each list is checked at
+  compile time against the entity's own type (`satisfies FieldsOf<T>`), so a
+  misspelled or removed field is a type error, and a test asserts no
+  allow-listed field name even smells like a secret;
+- the whole selection sits under a byte budget (16 KiB by default), an item
+  cap (50) and a per-field cap (500 chars). A caller may ask for more, but a
+  budget is clamped to the ceiling — 64 KiB, 200 items, 2000 chars — and to a
+  floor, so no caller can turn "a selection" back into "everything"; bytes are
+  UTF-8 bytes, not characters. What did not fit is counted, not silently lost;
 - an entity type with no allow-list is an error, not an empty send;
 - `serialize()` is deterministic (sorted fields, one line per item), so the
   same selection produces the same prompt bytes;
@@ -63,14 +68,24 @@ was in the selection — a model cannot cite what it was not shown.
 | `deriveSuggestions` | `{ suggestions: [{ text, kind: note\|consider, refs }] }` | **suggestions, never actions**; `kind: "execute"` is rejected |
 | `answerQuestion` | `{ answer, citedRefs, confidence }` | |
 
-`TaskRunner` is the one path to a provider. It enforces the timeout (default
-15 s) by racing the call, so a provider that ignores its `AbortSignal` still
-times out; forwards the caller's signal for cancellation; refuses a remote
-provider when `requireLocality: "local"` is set, before sending anything;
-accepts fenced JSON but nothing that is not one JSON value; and raises a
-distinct error class per failure (`ModelUnavailableError`, `ModelTimeoutError`,
-`ModelCancelledError`, `ModelOutputError`, `LocalityError`), none of which
-carries prompt or response text.
+`TaskRunner` is the one path to a provider — by convention: nothing in the type
+system stops code from calling `provider.complete` directly, so "every model
+call goes through the runner" is a review rule, checked by reading, not a
+guarantee the compiler gives. The runner enforces the timeout (default 15 s) by
+racing the call, so a provider that ignores its `AbortSignal` still times out;
+forwards the caller's signal for cancellation, and refuses to send at all when
+that signal is already aborted; refuses a remote provider when
+`requireLocality: "local"` is set, before sending anything; consults the
+capabilities a provider declares rather than decorating with them — a provider
+without `structuredOutput` is refused, and a prompt past `maxInputTokens` (at
+four bytes per token, system prompt included) is refused before it is sent;
+accepts fenced JSON but nothing that is not one JSON value; hands each
+validator the task's *input* as well as the reply, so a reply is checked against
+the ask (facts for fields that were requested, differences citing refs from the
+compared sides) and not only against a shape; and raises a distinct error class
+per failure (`ModelUnavailableError`, `ModelTimeoutError`, `ModelCancelledError`,
+`ModelOutputError`, `LocalityError`, `CapabilityError`), none of which carries
+prompt or response text.
 
 ## Audit
 
@@ -86,7 +101,8 @@ guarantee.
 - write to the spine — outputs are data; changes go through typed actions
   with the user in the loop (`docs/architecture.md`, ADR-012);
 - call a provider API on its own — every provider call goes through
-  `TaskRunner`, with a bounded selection, a timeout and an audit event;
+  `TaskRunner`, with a bounded selection, a timeout and an audit event (a
+  convention enforced in review, see above);
 - see a field that is not allow-listed, or cite a ref that was not sent.
 
 ## Adding a provider

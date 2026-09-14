@@ -11,7 +11,7 @@ import type { CompletionUsage } from "./model-provider.ts";
  * in-memory sink and show the last N events; a server can forward them to a
  * metrics table keyed by user — still without content.
  */
-export type ModelRequestOutcome = "ok" | "unavailable" | "timeout" | "cancelled" | "invalid_output" | "locality_refused" | "error";
+export type ModelRequestOutcome = "ok" | "unavailable" | "timeout" | "cancelled" | "invalid_output" | "locality_refused" | "capability_refused" | "error";
 
 export interface ModelRequestAuditEvent {
   readonly task: string;
@@ -23,7 +23,7 @@ export interface ModelRequestAuditEvent {
   readonly outcome: ModelRequestOutcome;
   readonly usage: CompletionUsage | null;
   readonly context: ContextManifest;
-  /** Serialized prompt size, bytes. A size, not the text. */
+  /** Serialized prompt size in UTF-8 bytes (system + user). A size, not the text. */
   readonly promptBytes: number;
   /** Error class name on failure (e.g. "ModelTimeoutError"), never the message. */
   readonly errorName: string | null;

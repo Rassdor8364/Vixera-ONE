@@ -79,7 +79,9 @@ export interface ModelProvider {
  */
 export class NullModelProvider implements ModelProvider {
   readonly id = "null";
-  readonly capabilities: ModelCapabilities = { locality: "local", structuredOutput: false, maxInputTokens: 0, cancellation: true };
+  // Declares every capability so a task's checks pass and the call itself is
+  // what fails — "no model configured" is the message, not "cannot do JSON".
+  readonly capabilities: ModelCapabilities = { locality: "local", structuredOutput: true, maxInputTokens: Number.MAX_SAFE_INTEGER, cancellation: true };
 
   async complete(_request: CompletionRequest, _options?: CompletionOptions): Promise<CompletionResult> {
     throw new ModelUnavailableError(this.id, "No model provider is configured");

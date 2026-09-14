@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ref } from "@vixera/domain";
 import {
+  CapabilityError,
   InMemoryAuditSink,
   Intelligence,
   LocalityError,
@@ -11,6 +12,7 @@ import {
   ModelUnavailableError,
   ScriptedModelProvider,
   TaskRunner,
+  byteLength,
   noContext,
   selectContext,
   v,
@@ -38,7 +40,7 @@ describe("TaskRunner", () => {
     expect(run.output).toEqual({ said: "hi" });
     expect(run.provider).toBe("scripted");
     const [event] = audit.events();
-    expect(event).toMatchObject({ task: "echo", provider: "scripted", model: "scripted-1", outcome: "ok", promptBytes: "PRIVATE WORDS".length });
+    expect(event).toMatchObject({ task: "echo", provider: "scripted", model: "scripted-1", outcome: "ok", promptBytes: byteLength("PRIVATE WORDS") + byteLength("echo") });
     expect(JSON.stringify(event)).not.toContain("PRIVATE WORDS");
     expect(JSON.stringify(event)).not.toContain("hi");
   });
@@ -84,6 +86,29 @@ describe("TaskRunner", () => {
     await expect(runner.run(echoSpec, { say: "x" }, noContext(), { requireLocality: "local" })).rejects.toBeInstanceOf(LocalityError);
     expect(provider.requests).toHaveLength(0);
     expect(audit.events()[0]?.outcome).toBe("locality_refused");
+  });
+
+  it("a signal that is already aborted is never sent, even to a provider that ignores signals", async () => {
+    const provider = new ScriptedModelProvider('{"said":"x"}', { capabilities: { cancellation: false } });
+    const audit = new InMemoryAuditSink();
+    const runner = new TaskRunner(new ModelRegistry().register(provider), { audit });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runner.run(echoSpec, { say: "x" }, noContext(), { signal: controller.signal })).rejects.toBeInstanceOf(ModelCancelledError);
+    expect(provider.requests).toHaveLength(0);
+    expect(audit.events()[0]?.outcome).toBe("cancelled");
+  });
+
+  it("consults the provider's declared capabilities before sending", async () => {
+    const plain = new ScriptedModelProvider('{"said":"x"}', { capabilities: { structuredOutput: false } });
+    const runner = new TaskRunner(new ModelRegistry().register(plain), { audit: new InMemoryAuditSink() });
+    await expect(runner.run(echoSpec, { say: "x" }, noContext())).rejects.toBeInstanceOf(CapabilityError);
+    expect(plain.requests).toHaveLength(0);
+    const tiny = new ScriptedModelProvider('{"said":"x"}', { capabilities: { maxInputTokens: 2 } });
+    const audit = new InMemoryAuditSink();
+    const runner2 = new TaskRunner(new ModelRegistry().register(tiny), { audit });
+    await expect(runner2.run(echoSpec, { say: "a".repeat(100) }, noContext())).rejects.toBeInstanceOf(CapabilityError);
+    expect(audit.events()[0]?.outcome).toBe("capability_refused");
   });
 
   it("with no provider registered, the null provider makes the failure explicit", async () => {
@@ -137,10 +162,30 @@ describe("Intelligence tasks", () => {
     await expect(action.deriveSuggestions({}, ctx)).rejects.toBeInstanceOf(ModelOutputError);
   });
 
+  it("a reply is checked against what was asked: unrequested or mistyped facts and too many suggestions are refused", async () => {
+    const ctx = selectContext(items);
+    const fields = [{ name: "amount", description: "total", type: "number" as const }];
+    const unrequested = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"facts":[{"name":"iban","value":"SE12","sourceRef":null}]}')));
+    await expect(unrequested.extractFacts({ fields }, ctx)).rejects.toBeInstanceOf(ModelOutputError);
+    const mistyped = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"facts":[{"name":"amount","value":"four thousand","sourceRef":null}]}')));
+    await expect(mistyped.extractFacts({ fields }, ctx)).rejects.toBeInstanceOf(ModelOutputError);
+    const tooMany = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"suggestions":[{"text":"a","kind":"note","refs":[]},{"text":"b","kind":"note","refs":[]}]}')));
+    await expect(tooMany.deriveSuggestions({ max: 1 }, ctx)).rejects.toBeInstanceOf(ModelOutputError);
+  });
+
+  it("free-text inputs are clipped before they reach a prompt", async () => {
+    const provider = new ScriptedModelProvider('{"answer":"x","citedRefs":[],"confidence":0}');
+    const intel = new Intelligence(new ModelRegistry().register(provider));
+    await intel.answerQuestion({ question: "q".repeat(10_000) }, selectContext(items));
+    const prompt = provider.requests[0]?.messages[0]?.content ?? "";
+    expect(prompt.length).toBeLessThan(3_000);
+    expect(prompt).toContain("…");
+  });
+
   it("extractFacts and compareContext validate their shapes and refs", async () => {
     const ctx = selectContext(items);
     const facts = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"facts":[{"name":"amount","value":4800,"sourceRef":{"type":"document","id":"d1"}},{"name":"due","value":null,"sourceRef":null}]}')));
-    expect((await facts.extractFacts({ fields: [{ name: "amount", description: "total", type: "number" }] }, ctx)).output.facts).toHaveLength(2);
+    expect((await facts.extractFacts({ fields: [{ name: "amount", description: "total", type: "number" }, { name: "due", description: "due date", type: "date" }] }, ctx)).output.facts).toHaveLength(2);
     const cmp = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"summary":"s","differences":[{"aspect":"count","left":"1","right":"2","refs":[{"type":"mail_message","id":"m1"}]}]}')));
     expect((await cmp.compareContext({ leftLabel: "Aug", rightLabel: "Sep", aspect: "travel" }, ctx)).output.differences).toHaveLength(1);
     const bad = new Intelligence(new ModelRegistry().register(new ScriptedModelProvider('{"facts":[{"name":"x","value":{"nested":1},"sourceRef":null}]}')));

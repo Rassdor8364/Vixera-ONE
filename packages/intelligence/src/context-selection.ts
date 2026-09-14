@@ -1,4 +1,19 @@
-import type { EntityRef, EntityType } from "@vixera/domain";
+import type {
+  Conclusion,
+  ContextEvent,
+  Device,
+  Document,
+  EntityRef,
+  EntityType,
+  Handoff,
+  IngestItem,
+  MailMessage,
+  MoneyAccount,
+  MoneyTransaction,
+  Person,
+  Thread,
+  TimeEvent,
+} from "@vixera/domain";
 import { ContextSelectionError } from "./errors.ts";
 
 /**
@@ -23,32 +38,41 @@ export interface ContextItem {
 
 /**
  * What a model may be told about each entity type. Deliberately narrow:
- * subjects and titles, dates, amounts and states — never bodies, never raw
- * addresses. Widen a type here only with a documented reason.
+ * subjects and titles, dates, amounts and states — never bodies (a mail
+ * snippet is a body excerpt and is excluded), never raw addresses. Every
+ * name is checked against the entity's own type at compile time, so a field
+ * that does not exist on the entity cannot be listed and silently select
+ * nothing.
  */
-export const CONTEXT_FIELD_ALLOWLIST: Readonly<Record<EntityType, readonly string[]>> = {
-  person: ["displayName", "organisation", "role"],
-  thread: ["title", "summary", "status", "lastActivityAt"],
-  document: ["title", "kind", "mimeType", "updatedAt", "pageCount"],
-  mail_message: ["subject", "snippet", "receivedAt", "fromDisplayName", "hasAttachments"],
-  time_event: ["title", "startsAt", "endsAt", "location", "status"],
-  money_transaction: ["description", "amount", "currency", "postedOn", "category", "counterparty"],
-  money_account: ["name", "kind", "currency"],
-  context_event: ["kind", "title", "attention", "occurredAt"],
-  conclusion: ["text", "producedBy", "confidence"],
-  handoff: ["status", "createdAt"],
-  device: ["name", "platform"],
-  ingest_item: ["kind", "status", "createdAt"],
-};
+type FieldsOf<T> = readonly (keyof T & string)[];
+
+export const CONTEXT_FIELD_ALLOWLIST = {
+  person: ["displayName", "organization"] satisfies FieldsOf<Person>,
+  thread: ["title", "kind", "summary", "status", "updatedAt"] satisfies FieldsOf<Thread>,
+  document: ["title", "mimeType", "source", "sizeBytes", "updatedAt"] satisfies FieldsOf<Document>,
+  mail_message: ["subject", "sentAt", "receivedAt", "isUnread"] satisfies FieldsOf<MailMessage>,
+  time_event: ["title", "startsAt", "endsAt", "allDay", "location", "status"] satisfies FieldsOf<TimeEvent>,
+  money_transaction: ["description", "merchantName", "amount", "currency", "postedOn", "pending"] satisfies FieldsOf<MoneyTransaction>,
+  money_account: ["name", "type", "currency"] satisfies FieldsOf<MoneyAccount>,
+  context_event: ["kind", "title", "attention", "importance", "occurredAt", "dueAt"] satisfies FieldsOf<ContextEvent>,
+  conclusion: ["text", "producedBy", "confidence"] satisfies FieldsOf<Conclusion>,
+  handoff: ["state", "createdAt", "expiresAt"] satisfies FieldsOf<Handoff>,
+  device: ["name", "platform"] satisfies FieldsOf<Device>,
+  ingest_item: ["kind", "source", "status", "createdAt"] satisfies FieldsOf<IngestItem>,
+} as const satisfies Record<EntityType, readonly string[]>;
 
 export interface ContextBudget {
-  /** Serialized size cap for the whole selection. Default 16 KiB. */
+  /** Serialized size cap for the whole selection, in UTF-8 bytes. Default 16 KiB; ceiling 64 KiB. */
   readonly maxBytes?: number;
-  /** Item cap. Default 50. */
+  /** Item cap. Default 50; ceiling 200. */
   readonly maxItems?: number;
-  /** Per-string-field cap; longer values are cut with an ellipsis. Default 500. */
+  /** Per-string-field cap in characters; longer values are cut with an ellipsis. Default 500; range 8..2000. */
   readonly maxFieldChars?: number;
 }
+
+/** Hard ceilings a caller cannot raise: the point of a budget is that no call site can send the mailbox. */
+export const CONTEXT_BUDGET_CEILING = { maxBytes: 64 * 1024, maxItems: 200, maxFieldChars: 2000 } as const;
+const CONTEXT_BUDGET_FLOOR = { maxBytes: 256, maxItems: 1, maxFieldChars: 8 } as const;
 
 export interface ContextManifest {
   readonly itemCount: number;
@@ -68,6 +92,19 @@ export interface ContextSelection {
 }
 
 const DEFAULT_BUDGET: Required<ContextBudget> = { maxBytes: 16 * 1024, maxItems: 50, maxFieldChars: 500 };
+const clampBudget = (budget: ContextBudget): Required<ContextBudget> => {
+  const pick = (key: keyof ContextBudget) => {
+    const raw = budget[key];
+    const value = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_BUDGET[key];
+    return Math.min(CONTEXT_BUDGET_CEILING[key], Math.max(CONTEXT_BUDGET_FLOOR[key], value));
+  };
+  return { maxBytes: pick("maxBytes"), maxItems: pick("maxItems"), maxFieldChars: pick("maxFieldChars") };
+};
+const utf8 = new TextEncoder();
+/** Bytes on the wire, not UTF-16 code units. */
+export function byteLength(text: string): number {
+  return utf8.encode(text).byteLength;
+}
 
 /**
  * Builds a selection from candidate items. Unknown fields are dropped (not an
@@ -76,14 +113,14 @@ const DEFAULT_BUDGET: Required<ContextBudget> = { maxBytes: 16 * 1024, maxItems:
  * and silently sending nothing would hide a bug.
  */
 export function selectContext(candidates: readonly ContextItem[], budget: ContextBudget = {}): ContextSelection {
-  const b = { ...DEFAULT_BUDGET, ...budget };
+  const b = clampBudget(budget);
   const items: ContextItem[] = [];
   const fieldsByType: Record<string, Set<string>> = {};
   let bytes = 0;
   let truncated = 0;
 
   for (const candidate of candidates) {
-    const allowed = CONTEXT_FIELD_ALLOWLIST[candidate.ref.type];
+    const allowed: readonly string[] | undefined = CONTEXT_FIELD_ALLOWLIST[candidate.ref.type];
     if (!allowed) throw new ContextSelectionError(`no context allow-list for entity type "${candidate.ref.type}"`);
     const fields: Record<string, ContextScalar> = {};
     for (const name of allowed) {
@@ -93,7 +130,7 @@ export function selectContext(candidates: readonly ContextItem[], budget: Contex
     }
     const item: ContextItem = { ref: candidate.ref, fields };
     const line = serializeItem(item);
-    const cost = line.length + (items.length ? 1 : 0); // newline between items, so bytes === serialize().length
+    const cost = byteLength(line) + (items.length ? 1 : 0); // newline between items, so bytes === byteLength(serialize())
     if (items.length >= b.maxItems || bytes + cost > b.maxBytes) {
       truncated++;
       continue;

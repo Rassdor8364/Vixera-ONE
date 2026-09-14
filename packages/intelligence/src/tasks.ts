@@ -1,7 +1,8 @@
 import type { EntityRef } from "@vixera/domain";
 import { DiscardingAuditSink, type ModelRequestAuditSink, type ModelRequestOutcome } from "./audit.ts";
 import type { ContextSelection } from "./context-selection.ts";
-import { LocalityError, ModelCancelledError, ModelOutputError, ModelTimeoutError, ModelUnavailableError } from "./errors.ts";
+import { byteLength } from "./context-selection.ts";
+import { CapabilityError, LocalityError, ModelCancelledError, ModelOutputError, ModelTimeoutError, ModelUnavailableError } from "./errors.ts";
 import type { CompletionUsage, ModelProvider, ModelRegistry } from "./model-provider.ts";
 
 /**
@@ -21,14 +22,23 @@ import type { CompletionUsage, ModelProvider, ModelRegistry } from "./model-prov
  */
 
 export type ValidationResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
-export type Validator<T> = (value: unknown) => ValidationResult<T>;
+export type Validator<T, I = unknown> = (value: unknown, input: I) => ValidationResult<T>;
 
 export interface StructuredTaskSpec<I, O> {
   readonly name: string;
   readonly system: string;
   prompt(input: I, context: ContextSelection): string;
-  readonly validate: Validator<O>;
+  /** Sees the input too, so a reply can be checked against what was asked (requested fields, a `max`). */
+  readonly validate: Validator<O, I>;
   readonly maxTokens?: number;
+}
+
+/** Rough bytes-per-token used to compare a prompt against `maxInputTokens`. */
+const BYTES_PER_TOKEN = 4;
+/** Free-text inputs are cut here before they reach a prompt; context fields have their own cap. */
+export const MAX_INPUT_TEXT_CHARS = 2000;
+export function clip(text: string, max = MAX_INPUT_TEXT_CHARS): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 export interface TaskOptions {
@@ -87,13 +97,29 @@ export class TaskRunner {
         outcome,
         usage: extra.usage ?? null,
         context: context.manifest,
-        promptBytes: prompt.length,
+        promptBytes,
         errorName: extra.errorName ?? null,
       });
+    const promptBytes = byteLength(prompt) + byteLength(spec.system);
 
     if (options.requireLocality === "local" && provider.capabilities.locality !== "local") {
       finish("locality_refused", { errorName: "LocalityError" });
       throw new LocalityError(provider.id, "local");
+    }
+    // The capabilities a provider declares are consulted, not decorative.
+    if (!provider.capabilities.structuredOutput) {
+      finish("capability_refused", { errorName: "CapabilityError" });
+      throw new CapabilityError(provider.id, "structuredOutput", "every task needs one JSON value back");
+    }
+    if (promptBytes > provider.capabilities.maxInputTokens * BYTES_PER_TOKEN) {
+      finish("capability_refused", { errorName: "CapabilityError" });
+      throw new CapabilityError(provider.id, "maxInputTokens", `prompt is ~${Math.ceil(promptBytes / BYTES_PER_TOKEN)} tokens`);
+    }
+    // A signal that is already aborted means "do not send", whether or not the
+    // provider would have looked at it.
+    if (options.signal?.aborted) {
+      finish("cancelled", { errorName: "ModelCancelledError" });
+      throw new ModelCancelledError(provider.id);
     }
 
     // One controller for both cancellation sources; the provider gets its signal,
@@ -122,7 +148,7 @@ export class TaskRunner {
         finish("invalid_output", { model: result.model, usage: result.usage ?? null, errorName: "ModelOutputError" });
         throw new ModelOutputError(provider.id, spec.name, parsed.reason);
       }
-      const validated = spec.validate(parsed.value);
+      const validated = spec.validate(parsed.value, input);
       if (!validated.ok) {
         finish("invalid_output", { model: result.model, usage: result.usage ?? null, errorName: "ModelOutputError" });
         throw new ModelOutputError(provider.id, spec.name, validated.reason);
@@ -130,7 +156,7 @@ export class TaskRunner {
       finish("ok", { model: result.model, usage: result.usage ?? null });
       return { output: validated.value, provider: result.provider, model: result.model, usage: result.usage ?? null, durationMs: this.clock() - started };
     } catch (error) {
-      if (error instanceof ModelOutputError || error instanceof LocalityError) throw error;
+      if (error instanceof ModelOutputError || error instanceof LocalityError || error instanceof CapabilityError) throw error;
       if (error instanceof ModelUnavailableError) {
         finish("unavailable", { errorName: error.name });
         throw error;
