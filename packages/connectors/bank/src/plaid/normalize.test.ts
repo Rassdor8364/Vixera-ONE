@@ -119,7 +119,7 @@ describe("Plaid transaction normalization", () => {
 
   it("treats a midnight default in authorized_datetime as the date it is, not as an instant", () => {
     const base = page1.added[0] as PlaidTransaction;
-    const t = (patch: Partial<PlaidTransaction>) => normalizeTransaction({ ...base, ...patch }, ctx);
+    const t = (patch: Partial<PlaidTransaction>) => normalizeTransaction({ ...base, ...patch });
     // Plaid: "may contain default time values (such as 00:00:00)".
     expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-09T00:00:00Z" }).authorizedAt).toBeNull();
     expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-09T00:00:00.000Z" }).authorizedAt).toBeNull();

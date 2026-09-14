@@ -101,3 +101,18 @@ serialization and a content-free manifest. Replies may only cite refs from the
 selection. Every run is audited by reference and size, never by content. Task
 outputs are data; suggestions are notes, never actions. Provider adapters that
 hold keys are server-side only.
+
+## ADR-017 · A full resync does not reconcile deletions (known limitation, decided)
+When a provider invalidates a checkpoint (Gmail history too old, Graph 410,
+Calendar 410, a rejected Plaid cursor) the source re-lists from scratch with
+`fullResync: true` and the engine upserts by natural key. Rows the provider
+deleted during the gap are **not** removed: nothing in the re-list names them,
+and the engine keeps no "seen set" to subtract from. They persist with their
+context events until the provider mentions them again (it will not) or the user
+removes them. Decided against fixing now: the correct fix is a per-capability
+reconciliation pass — record the external ids a full resync touched, then delete
+the rows of that account and capability it did not touch — whose seen set must
+survive a pass that the run budget splits across runs, so it belongs in the
+checkpoint or a side table, not in memory. It is a roadmap task, and the
+engine, the sync docs and the connector docs say so rather than implying the
+gap is closed. Also noted as audit SYNC-4 / MS-4.

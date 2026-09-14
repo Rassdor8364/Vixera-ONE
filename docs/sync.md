@@ -214,6 +214,14 @@ The **Quiet** area does not use `deriveNow().quiet`; it lists context events
 with `attention = quiet` from the last 60 days directly (`useQuiet`). The
 NOW area shows `needsMe`, `changed`, `upcoming` and `canWait`.
 
+### Known limitation: a full resync keeps rows the provider deleted
+
+`fullResync: true` re-lists and upserts; it never deletes. A message trashed,
+an event cancelled or a transaction removed while a checkpoint was dead stays
+in the spine with its context events (ADR-017). The fix — a reconciliation
+pass over the ids a full resync touched, with a seen set that survives the run
+budget — is on the roadmap, not in the engine.
+
 ## 7. Realtime refresh
 
 `apps/desktop/src/data/realtime.ts` opens one channel `field:<userId>` over
