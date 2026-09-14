@@ -111,6 +111,10 @@ importers:
       '@vixera/domain':
         specifier: workspace:*
         version: link:../../domain
+    devDependencies:
+      '@vixera/sync':
+        specifier: workspace:*
+        version: link:../../sync
 
   packages/connectors/google:
     dependencies:

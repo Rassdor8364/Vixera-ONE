@@ -48,7 +48,11 @@ export interface BankTransactionsPage {
   readonly modified: readonly NormalizedMoneyTransaction[];
   /** External ids of transactions the provider removed (e.g. a pending one that settled under a new id). */
   readonly removed: readonly string[];
-  /** Cursor to continue from after this page; null when the provider has no cursor concept. */
+  /**
+   * Cursor to continue from after this page; null when the provider has no
+   * cursor concept (or, for Plaid, the empty "initial update not ready"
+   * cursor). Only the cursor of a `hasMore: false` page is safe to persist.
+   */
   readonly nextCursor: string | null;
   readonly hasMore: boolean;
 }
@@ -60,18 +64,19 @@ export interface BankProvider {
   listAccounts(ctx: BankProviderContext): Promise<NormalizedMoneyAccount[]>;
   /**
    * Pages of transaction changes from `cursor` (null = from the beginning).
-   * Pull-based: the next page is fetched only when the consumer asks for it,
-   * so a consumer that commits each page before pulling the next always
-   * knows its last committed cursor.
+   * Pull-based: the next page is fetched only when the consumer asks for it.
+   * The pages up to `hasMore: false` form one update; the consumer commits a
+   * cursor only once the update is complete.
    */
   syncTransactions(ctx: BankProviderContext, cursor: string | null): AsyncIterable<BankTransactionsPage>;
 }
 
 /**
  * Thrown by an adapter when the provider reports that the data set changed
- * underneath a pagination pass and the pass must be restarted from the last
- * committed cursor. Provider-neutral so `BankConnector` can handle it for any
- * adapter; Plaid raises the `PlaidMutationDuringPaginationError` subclass.
+ * underneath a pagination pass and the whole pass must be restarted from the
+ * cursor it began with (the last committed one). Provider-neutral so
+ * `BankConnector` can handle it for any adapter; Plaid raises the
+ * `PlaidMutationDuringPaginationError` subclass.
  */
 export class BankPaginationMutationError extends Error {
   constructor(
