@@ -35,6 +35,8 @@ interface GoogleErrorBody {
     readonly message?: string;
     readonly status?: string;
     readonly errors?: readonly { readonly reason?: string; readonly message?: string }[];
+    /** google.rpc style (`ErrorInfo.reason`, e.g. ACCESS_TOKEN_SCOPE_INSUFFICIENT). */
+    readonly details?: readonly { readonly reason?: string }[];
   };
 }
 
@@ -119,16 +121,20 @@ async function parseJson<T>(response: Response): Promise<T | null> {
 }
 
 function mapError(status: number, body: GoogleErrorBody | null): ConnectorError {
-  const reasons = (body?.error?.errors ?? []).map((e) => e.reason ?? "").filter(Boolean);
+  const reasons = [...(body?.error?.errors ?? []), ...(body?.error?.details ?? [])].map((e) => e.reason ?? "").filter(Boolean);
   const message = body?.error?.message ?? `HTTP ${status}`;
   const detail = reasons.length ? `${message} [${reasons.join(",")}]` : message;
   if (status === 401) return new ConnectorError("unauthorized", `Google rejected the credential (${detail})`, false);
   if (status === 429) return new ConnectorError("rate_limited", `Google rate limit (${detail})`, true);
   if (status === 403) {
     const quota = reasons.some((r) => /rateLimit|quota|userRateLimit|dailyLimit/i.test(r));
-    return quota
-      ? new ConnectorError("rate_limited", `Google quota exceeded (${detail})`, true)
-      : new ConnectorError("unauthorized", `Google denied access (${detail})`, false);
+    if (quota) return new ConnectorError("rate_limited", `Google quota exceeded (${detail})`, true);
+    // The token is fine, it just does not cover this API: a scope the user
+    // declined. That limits one capability; `unauthorized` would retire the
+    // whole account (needs_reauth) and stop the capabilities that do work.
+    const scope = reasons.some((r) => /insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(r));
+    if (scope) return new ConnectorError("unsupported", `Google grant does not cover this API (${detail}); re-link to allow it`, false);
+    return new ConnectorError("unauthorized", `Google denied access (${detail})`, false);
   }
   if (status >= 500) return new ConnectorError("provider_unavailable", `Google API error ${status} (${detail})`, true);
   return new ConnectorError("unknown", `Google API error ${status} (${detail})`, false);

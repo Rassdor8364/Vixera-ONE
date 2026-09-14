@@ -3,7 +3,7 @@
  * `Connector` interface. Provider schemas stop here; consumers only see
  * normalized domain objects and opaque checkpoints.
  */
-export { GoogleConnector, GOOGLE_USERINFO_ENDPOINT, type GoogleConnectorOptions } from "./connector.ts";
+export { GoogleConnector, GOOGLE_USERINFO_ENDPOINT, capabilitiesForScopes, type GoogleConnectorOptions } from "./connector.ts";
 export {
   GOOGLE_AUTHORIZATION_ENDPOINT,
   GOOGLE_SCOPES,
