@@ -58,8 +58,14 @@ pnpm typecheck                     # tsc in every workspace package
 pnpm test                          # vitest across packages/*, packages/connectors/*, apps/desktop
 pnpm test:watch
 pnpm --filter @vixera/sync test    # one package
-pnpm check                         # typecheck + test + cargo check --workspace
+pnpm check                         # secrets + migrations + typecheck + test + cargo check --workspace
+pnpm check:secrets                 # no secret-shaped content or signing material tracked
+pnpm check:migrations              # migration naming, RLS never disabled, definer functions pinned + revoked
 ```
+
+Every one of these runs in CI on each push (`.github/workflows/ci.yml`, see
+[`docs/ci.md`](docs/ci.md) for what each job proves and the branch protection
+to enable).
 
 ### Rust
 
