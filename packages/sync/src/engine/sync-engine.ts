@@ -37,12 +37,19 @@ import { addCounts, emptyCounts, type ContextLinker, type LinkCounts } from "../
  *      on their own report through `ctx.onCredentialRefreshed`
  *   5. for EACH page: apply the batch through the linker FIRST, THEN persist
  *      the page checkpoint — a crash between the two re-applies an idempotent
- *      page, it never loses one
+ *      page, it never loses one. A checkpoint counts as progress only when it
+ *      differs from the one the pass started from: real connectors echo the
+ *      previous cursor on intermediate pages.
  *   6. ConnectorError unauthorized ⇒ account needs_reauth; checkpoint_invalid
  *      ⇒ clear the checkpoint and retry once from scratch; any error ⇒ state
  *      error + lastError (credentials redacted) + consecutiveFailures+1, and
  *      the run CONTINUES with the next capability / account
  *   7. success ⇒ state idle, lastSuccessAt, consecutiveFailures 0
+ *
+ * Before 2: a capability in `error` is held back for an exponential backoff
+ * (10 min doubling to 6 h) derived from consecutiveFailures, and one whose
+ * state says `running` within the last 15 min is left alone — unless the run
+ * is `force`d (a user's Sync now).
  *
  * `runAll()` never throws because one connector failed; the SyncReport says
  * what happened where.
@@ -59,6 +66,11 @@ export interface SyncEngineOptions {
 
 export type SyncOutcomeStatus = "ok" | "error" | "skipped";
 
+export interface CapabilityRunOptions {
+  /** Ignore backoff and a recent `running` state: a user asked for this run. */
+  readonly force?: boolean;
+}
+
 export interface SyncOutcome {
   readonly connectorAccountId: string;
   readonly provider: ConnectorAccount["provider"];
@@ -71,6 +83,13 @@ export interface SyncOutcome {
   readonly pages: number;
   readonly counts: LinkCounts;
   readonly checkpointAdvanced: boolean;
+  /**
+   * The deadline passed before a resume point existed, so the pass stopped
+   * without a checkpoint: the pages applied are kept (idempotent), but the next
+   * run starts this pass over. Persistent interruption means the connector
+   * must emit per-page checkpoints, not that the engine should run longer.
+   */
+  readonly interrupted: boolean;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly durationMs: number;
@@ -85,10 +104,43 @@ export interface SyncReport {
   readonly ok: number;
   readonly errors: number;
   readonly skipped: number;
+  readonly interrupted: number;
   readonly counts: LinkCounts;
 }
 
 const MAX_PAGES = 10_000;
+export const BACKOFF_BASE_MS = 10 * 60_000;
+export const BACKOFF_MAX_MS = 6 * 3600_000;
+export const RUNNING_STALE_MS = 15 * 60_000;
+
+/** 10 min after the first failure, doubling, capped at 6 h. 0 for no failures. */
+export function backoffMs(consecutiveFailures: number): number {
+  if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return 0;
+  return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 20));
+}
+
+/** Why a capability should not run right now, or null. Pure; exported for tests. */
+export function holdReason(state: ConnectorSyncState | null, now: number): string | null {
+  if (!state?.lastAttemptAt) return null;
+  const attempted = Date.parse(state.lastAttemptAt);
+  if (Number.isNaN(attempted)) return null;
+  if (state.status === "running" && now - attempted < RUNNING_STALE_MS) {
+    return `already running since ${state.lastAttemptAt}`;
+  }
+  if (state.status === "error" && state.consecutiveFailures > 0) {
+    const until = attempted + backoffMs(state.consecutiveFailures);
+    if (now < until) return `backing off after ${state.consecutiveFailures} consecutive failure(s) until ${new Date(until).toISOString()}`;
+  }
+  return null;
+}
+
+/** Key-order-independent, so `{a,b}` and `{b,a}` compare equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v,
+  );
+}
 
 export class SyncEngine {
   private readonly store: SpineStore;
@@ -109,7 +161,7 @@ export class SyncEngine {
     this.log = options.log ?? (() => {});
   }
 
-  async runAll(): Promise<SyncReport> {
+  async runAll(options: CapabilityRunOptions = {}): Promise<SyncReport> {
     const started = this.now();
     const outcomes: SyncOutcome[] = [];
     let accounts: ConnectorAccount[] = [];
@@ -120,7 +172,7 @@ export class SyncEngine {
     }
     for (const account of accounts) {
       try {
-        outcomes.push(...(await this.runAccount(account)));
+        outcomes.push(...(await this.runAccount(account, options)));
       } catch (err) {
         // runAccount isolates failures itself; this is the last line of defence.
         this.log("sync: account run failed unexpectedly", { connectorAccountId: account.id, error: errorMessage(err) });
@@ -131,7 +183,7 @@ export class SyncEngine {
   }
 
   /** Runs every capability of one account. Accepts an id or a loaded row. */
-  async runAccount(accountOrId: string | ConnectorAccount): Promise<SyncOutcome[]> {
+  async runAccount(accountOrId: string | ConnectorAccount, options: CapabilityRunOptions = {}): Promise<SyncOutcome[]> {
     const account = typeof accountOrId === "string" ? await this.store.getConnectorAccount(accountOrId) : accountOrId;
     if (!account) throw new Error(`connector account ${String(accountOrId)} not found`);
     const outcomes: SyncOutcome[] = [];
@@ -149,20 +201,24 @@ export class SyncEngine {
         outcomes.push(this.outcome(current, capability, "skipped", this.now(), { reason: "account needs_reauth" }));
         continue;
       }
-      outcomes.push(await this.runCapability(current, capability));
+      outcomes.push(await this.runCapability(current, capability, undefined, options));
       current = (await this.store.getConnectorAccount(account.id)) ?? current;
     }
     return outcomes;
   }
 
   /**
-   * `deadlineAt` bounds the run in wall clock. The loop only breaks
-   * IMMEDIATELY AFTER a checkpoint was persisted, so the stopping point is
-   * always a durable resume point and never mid-page. A source that never
-   * yields an intermediate checkpoint (Graph delta, which only produces one at
-   * the end) simply runs to completion — the budget cannot make it lose work.
+   * `deadlineAt` bounds the run in wall clock. After each page, if the deadline
+   * has passed: when that page moved the checkpoint the pass stops there, at a
+   * durable resume point; when it did not (the connector echoed the cursor it
+   * started with, or yields none until the end) the pass stops anyway and is
+   * reported `interrupted` — bounded, so the runtime never hard-kills a run
+   * and leaves the state `running` forever, at the price of restarting that
+   * pass next time. The cure for a pass that is always interrupted is a
+   * connector that emits per-page checkpoints (Gmail does; see the connector
+   * docs for the others), not a longer budget.
    */
-  async runCapability(account: ConnectorAccount, capability: ConnectorCapability, deadlineAt?: number): Promise<SyncOutcome> {
+  async runCapability(account: ConnectorAccount, capability: ConnectorCapability, deadlineAt?: number, options: CapabilityRunOptions = {}): Promise<SyncOutcome> {
     const started = this.now();
     const counts = emptyCounts();
     let pages = 0;
@@ -176,6 +232,10 @@ export class SyncEngine {
     // Documents (Praxion) are a local connector, never paged by this engine: skip, do not record a failure every cycle.
     if (capability === "document") {
       return this.outcome(account, capability, "skipped", started, { reason: "document capability is not synced by the engine" });
+    }
+    if (!options.force) {
+      const hold = holdReason(state, started.getTime());
+      if (hold) return this.outcome(account, capability, "skipped", started, { reason: hold });
     }
 
     let connector: Connector;
@@ -235,24 +295,33 @@ export class SyncEngine {
     let checkpoint: Checkpoint | null = state?.checkpoint ?? null;
     let retriedCheckpoint = false;
     let outOfTime = false;
+    let interrupted = false;
     for (;;) {
+      const startedFrom = stableStringify(checkpoint);
       try {
         for await (const page of source(liveCtx, checkpoint)) {
           if (++pages > MAX_PAGES) throw new ConnectorError("invalid_response", `more than ${MAX_PAGES} pages`);
           if (page.fullResync) this.log("sync: full resync page", { connectorAccountId: account.id, capability });
           // Apply FIRST, then move the checkpoint: a crash in between replays an idempotent page.
           addCounts(counts, await this.applyPage(account, capability, page));
-          let resumable = false;
-          if (page.checkpoint !== null && page.checkpoint !== undefined) {
-            checkpoint = page.checkpoint;
+          // Progress is a checkpoint that differs from the one this pass started
+          // from. Persisting an echoed cursor and calling it a resume point made
+          // a capability restart the same page every run, forever, reporting ok.
+          const advanced = page.checkpoint !== null && page.checkpoint !== undefined && stableStringify(page.checkpoint) !== startedFrom;
+          if (advanced) {
+            checkpoint = page.checkpoint as Checkpoint;
             await this.store.upsertSyncState(account.id, capability, { checkpoint });
             checkpointAdvanced = true;
-            resumable = true;
           }
           if (page.done) break;
-          if (resumable && deadlineAt !== undefined && this.now().getTime() >= deadlineAt) {
-            outOfTime = true;
-            this.log("sync: budget reached, stopping at a checkpoint", { connectorAccountId: account.id, capability, pages });
+          if (deadlineAt !== undefined && this.now().getTime() >= deadlineAt) {
+            if (advanced) {
+              outOfTime = true;
+              this.log("sync: budget reached, stopping at a checkpoint", { connectorAccountId: account.id, capability, pages });
+            } else {
+              interrupted = true;
+              this.log("sync: budget reached before a resume point; this pass restarts next run", { connectorAccountId: account.id, capability, pages });
+            }
             break;
           }
         }
@@ -272,7 +341,8 @@ export class SyncEngine {
 
     await this.store.upsertSyncState(account.id, capability, {
       status: "idle",
-      lastSuccessAt: this.now().toISOString(),
+      // An interrupted pass is not a success: lastSuccessAt stays where it was.
+      ...(interrupted ? {} : { lastSuccessAt: this.now().toISOString() }),
       lastError: null,
       consecutiveFailures: 0,
     });
@@ -281,7 +351,12 @@ export class SyncEngine {
       pages,
       counts,
       checkpointAdvanced,
-      ...(outOfTime ? { reason: "stopped at a checkpoint: time budget exhausted" } : {}),
+      interrupted,
+      ...(outOfTime
+        ? { reason: "stopped at a checkpoint: time budget exhausted" }
+        : interrupted
+          ? { reason: "interrupted before a resume point: time budget exhausted and the connector emitted no per-page checkpoint" }
+          : {}),
     });
   }
 
@@ -334,7 +409,7 @@ export class SyncEngine {
     capability: ConnectorCapability,
     status: SyncOutcomeStatus,
     started: Date,
-    extra: Partial<Pick<SyncOutcome, "reason" | "errorCode" | "pages" | "counts" | "checkpointAdvanced">> = {},
+    extra: Partial<Pick<SyncOutcome, "reason" | "errorCode" | "pages" | "counts" | "checkpointAdvanced" | "interrupted">> = {},
   ): SyncOutcome {
     const finished = this.now();
     return {
@@ -348,6 +423,7 @@ export class SyncEngine {
       pages: extra.pages ?? 0,
       counts: extra.counts ?? emptyCounts(),
       checkpointAdvanced: extra.checkpointAdvanced ?? false,
+      interrupted: extra.interrupted ?? false,
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
       durationMs: Math.max(0, finished.getTime() - started.getTime()),
@@ -367,6 +443,7 @@ export class SyncEngine {
       ok: outcomes.filter((o) => o.status === "ok").length,
       errors: outcomes.filter((o) => o.status === "error").length,
       skipped: outcomes.filter((o) => o.status === "skipped").length,
+      interrupted: outcomes.filter((o) => o.interrupted).length,
       counts,
     };
   }

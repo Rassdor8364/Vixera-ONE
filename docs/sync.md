@@ -38,14 +38,20 @@ Same engine, other triggers:
 | Dev-fixture mode | `SyncEngine.runAll()` in-process over `InMemorySpineStore` + `MockConnector` | none |
 
 The wall-clock budget stops **starting** new (account, capability) pairs, and
-`runCapability` also takes the deadline: a running pair stops paging as soon as
-the budget is spent, but only immediately after a checkpoint was persisted, so
-the stopping point is always a durable resume point and never mid-page. A source
-that yields no intermediate checkpoint (Graph delta produces one only at the end)
-simply runs to completion — the budget can never make it lose work. Skipped pairs
-are reported as `skipped` with reason "time budget exhausted" and an interrupted
-one reports `ok` with a reason naming the budget; both resume from their
-checkpoint on the next run. `runSync` also computes `selfAddresses` from
+`runCapability` also takes the deadline. After each page, if the deadline has
+passed: when that page **moved** the checkpoint — a checkpoint that differs from
+the one the pass started from; an echoed cursor is not progress — the pass stops
+there, at a durable resume point, and reports `ok` with a reason naming the
+budget. When it did not (the connector echoed its cursor, or yields one only at
+the end, as Graph delta and the Google calendar window do) the pass stops
+anyway and reports `ok` with `interrupted: true`: the pages applied are kept
+(idempotent), the checkpoint is unchanged, `lastSuccessAt` is not touched, and
+the next run starts that pass over. Bounded is the point — before this, such a
+pass ran until the Edge runtime killed the invocation, which left the state
+`running` forever and starved every later user. A pass that is *always*
+interrupted needs a connector that emits per-page checkpoints (Gmail does, via
+its page token); a longer budget does not fix it. Skipped pairs are reported as
+`skipped` with reason "time budget exhausted". `runSync` also computes `selfAddresses` from
 every account's `address`, so the user never becomes a person in their own
 graph.
 
@@ -55,7 +61,12 @@ graph.
 
 1. Skip when the account is `disconnected` / `paused`, the sync state is
    `enabled = false`, the capability is not on the account, or it is
-   `document` (Praxion is local, never paged).
+   `document` (Praxion is local, never paged). Unless the run is `force`d (a
+   user's Sync now), also skip a state in `error` whose backoff has not
+   elapsed — 10 min after the first failure, doubling per consecutive
+   failure, capped at 6 h (`backoffMs`) — and a state marked `running` within
+   the last 15 min (another run has it; a crashed run's mark goes stale). Both
+   are reported as `skipped` with the reason.
 2. Mark the state `running` with `lastAttemptAt`.
 3. Load the credential by `account.credentialRef`. Missing → account
    `needs_reauth`, state `error` (`errorCode: credential_missing`).
@@ -73,11 +84,16 @@ graph.
    redacted, 1000 chars), `consecutiveFailures + 1`, and the run continues
    with the next pair.
 7. Success → state `idle`, `lastSuccessAt`, `consecutiveFailures = 0`; an
-   account in `error` status goes back to `active`.
+   account in `error` status goes back to `active`. An interrupted pass goes
+   `idle` with `consecutiveFailures = 0` but keeps its old `lastSuccessAt`.
+   Re-linking an account (`persistLinkedAccount`) resets its states to `idle`
+   with `consecutiveFailures = 0`, so a fresh credential is never held by the
+   old one's backoff.
 
 The report (`SyncReport` / `BudgetedSyncReport`) carries one `SyncOutcome`
 per pair: status `ok | error | skipped`, reason, `errorCode`, pages, link
-counts, `checkpointAdvanced`, timings. `summarizeReport` is what the
+counts, `checkpointAdvanced`, `interrupted`, timings, and an `interrupted`
+count at the top. `summarizeReport` is what the
 `connector.sync_now` action stores as its result.
 
 ## 3. Idempotency and failure isolation
@@ -91,7 +107,7 @@ Guarantees, and where each is enforced:
 | Edges never duplicate | `relationships (user, from, kind, to)`; `vx_relate` / `relate()` is idempotent (raises confidence on conflict) and rejects endpoints that do not exist for the same user |
 | People never duplicate per provider | `person_identities (user, kind, value)` with normalized values (`normalizeEmail`); `upsertPersonIdentity` returns the existing identity, and a lost race falls back to the winner's person and folds the row the loser created into it (`mergedIntoId`), so it never lingers in the People list |
 | Documents from attachments never duplicate | `findDocumentBySourceRef(account, { messageExternalId, attachmentId })` before `upsertDocument` |
-| A crash never loses data | apply-then-checkpoint ordering; intermediate pages keep a resumable checkpoint (Gmail backfill page token, Plaid cursor) or the previous one (Graph) |
+| A crash never loses data | apply-then-checkpoint ordering; intermediate pages keep a resumable checkpoint (Gmail backfill page token, Plaid cursor) or the previous one (Graph) — the engine persists a checkpoint only when it differs from the one the pass started from |
 | One failure never blocks the rest | errors are caught per capability, per account, per user; `runAll` / `runSync` / the scheduled loop never throw for a connector failure |
 | Provider tokens never leak | `redactCredential` on every persisted / logged message; Vault access only through user-bound stores |
 | Deletions are safe | store deletes cascade edges, context events and conclusions of the removed row through `vx_on_entity_deleted` triggers; deletions emit no context event |

@@ -34,6 +34,8 @@ export interface SyncRunOptions {
   readonly budgetMs?: number;
   /** Absolute deadline (epoch ms) that wins over `budgetMs` when earlier — used by the scheduled all-users run. */
   readonly deadlineAt?: number;
+  /** Ignore backoff and a recent `running` state (a user's Sync now). */
+  readonly force?: boolean;
 }
 
 export interface BudgetedSyncReport extends SyncReport {
@@ -90,7 +92,7 @@ export async function runSync(deps: SyncDeps, options: SyncRunOptions = {}): Pro
         continue;
       }
       try {
-        outcomes.push(await engine.runCapability(current, capability, deadline));
+        outcomes.push(await engine.runCapability(current, capability, deadline, options.force ? { force: true } : {}));
       } catch (err) {
         // runCapability isolates failures itself; this is the last line of defence.
         log("sync: capability run failed unexpectedly", { connectorAccountId: current.id, capability, error: errorMessage(err) });
@@ -113,6 +115,7 @@ export async function runSync(deps: SyncDeps, options: SyncRunOptions = {}): Pro
     ok: outcomes.filter((o) => o.status === "ok").length,
     errors: outcomes.filter((o) => o.status === "error").length,
     skipped: outcomes.filter((o) => o.status === "skipped").length,
+    interrupted: outcomes.filter((o) => o.interrupted).length,
     counts,
     skippedForBudget,
   };
@@ -130,6 +133,7 @@ function skipped(account: ConnectorAccount, capability: ConnectorAccount["capabi
     pages: 0,
     counts: emptyCounts(),
     checkpointAdvanced: false,
+    interrupted: false,
     startedAt: at.toISOString(),
     finishedAt: at.toISOString(),
     durationMs: 0,
@@ -158,6 +162,7 @@ export function summarizeReport(report: BudgetedSyncReport): JsonObject {
     ok: report.ok,
     errors: report.errors,
     skipped: report.skipped,
+    interrupted: report.interrupted,
     skippedForBudget: report.skippedForBudget,
     counts: { ...report.counts },
     outcomes: report.outcomes.map((o) => ({
@@ -169,6 +174,7 @@ export function summarizeReport(report: BudgetedSyncReport): JsonObject {
       errorCode: o.errorCode,
       pages: o.pages,
       checkpointAdvanced: o.checkpointAdvanced,
+      interrupted: o.interrupted,
       durationMs: o.durationMs,
     })),
   };

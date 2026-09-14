@@ -108,14 +108,20 @@ Deno.test("callback: bad / expired state and provider errors are 400s and never 
 Deno.test("disconnect: only the user's own accounts; re-link after disconnect re-enables sync states", async () => {
   const w = world();
   const account = await persistLinkedAccount(w.deps, DEV_USER_ID, "google", { externalAccountId: "google-sub-1", label: "Me", address: "me@gmail.example", capabilities: ["mail"] }, { kind: "api_key", apiKey: "k" });
-  await w.store.upsertSyncState(account.id, "mail", { enabled: false });
+  // The old credential failed three times; the engine would hold this capability for 40 minutes.
+  await w.store.upsertSyncState(account.id, "mail", { enabled: false, status: "error", lastError: "unauthorized", consecutiveFailures: 3 });
   await assert.rejects(() => disconnectAccount(w.deps, DEV_USER_ID, crypto.randomUUID()), (e: unknown) => e instanceof HttpError && e.status === 404);
   assert.deepEqual(await disconnectAccount(w.deps, DEV_USER_ID, account.id), { ok: true });
   assert.deepEqual(w.disconnected, [account.id]);
   const relinked = await persistLinkedAccount(w.deps, DEV_USER_ID, "google", { externalAccountId: "google-sub-1", label: "Me", address: "me@gmail.example", capabilities: ["mail"] }, { kind: "api_key", apiKey: "k2" });
   assert.equal(relinked.id, account.id);
   assert.equal(relinked.status, "active");
-  assert.equal((await w.store.getSyncState(account.id, "mail"))?.enabled, true);
+  const state = await w.store.getSyncState(account.id, "mail");
+  assert.equal(state?.enabled, true);
+  // A fresh credential is a fresh start: no backoff carried over from the old one.
+  assert.equal(state?.status, "idle");
+  assert.equal(state?.consecutiveFailures, 0);
+  assert.equal(state?.lastError, null);
 });
 
 Deno.test("result page: plain HTML, escaped, no secrets", () => {

@@ -15,7 +15,7 @@ function world() {
     runSync: ({ accountId }) => {
       syncCalls.push({ accountId });
       const at = clock().toISOString();
-      const report: BudgetedSyncReport = { startedAt: at, finishedAt: at, durationMs: 0, accounts: 0, outcomes: [], ok: 0, errors: 0, skipped: 0, counts: emptyCounts(), skippedForBudget: 0 };
+      const report: BudgetedSyncReport = { startedAt: at, finishedAt: at, durationMs: 0, accounts: 0, outcomes: [], ok: 0, errors: 0, skipped: 0, interrupted: 0, counts: emptyCounts(), skippedForBudget: 0 };
       return Promise.resolve(report);
     },
   };
@@ -295,6 +295,28 @@ Deno.test("person.merge moves relationships to the survivor and marks the merged
 
   const again = await dispatchAction(store, envelope("person.merge", { survivorId: survivor.id, mergedId: merged.id }, "merge-2"), ctx);
   assert.equal(again.result!.alreadyMerged, true);
+});
+
+Deno.test("context_event.quiet after an elapsed snooze stays quiet (the user's decision wins)", async () => {
+  const { store, ctx, clock } = world();
+  const subject = await store.createIngestItem({ deviceId: null, kind: "text", source: "share", title: "Note", textContent: "x", url: null, mimeType: null, sizeBytes: null, storagePath: null, status: "received", documentId: null, error: null, metadata: {}, processedAt: null });
+  const events = await store.upsertContextEvents([
+    { kind: "ingest.received", subject: ref("ingest_item", subject.id), title: "Note", summary: null, occurredAt: clock().toISOString(), importance: 60, dueAt: null, attention: "needs_attention", connectorAccountId: null, dedupeKey: "t:quiet-after-snooze", metadata: {} },
+  ]);
+  const ev = events.rows[0]!;
+  const past = new Date(clock().getTime() - 3600_000).toISOString();
+  await dispatchAction(store, envelope("context_event.snooze", { contextEventId: ev.id, until: past }), ctx);
+  // The snooze has elapsed, so NOW puts it back in play…
+  const back = deriveNow({ contextEvents: await store.listContextEvents(), timeEvents: [], moneyTransactions: [], threads: [], relationships: [], now: clock() });
+  assert.equal(back.needsMe.length, 1);
+  // …until the user says Quiet, which must stick rather than being read as "snooze elapsed" again.
+  await dispatchAction(store, envelope("context_event.quiet", { contextEventId: ev.id }), ctx);
+  const row = await store.getContextEvent(ev.id);
+  assert.equal(row?.attention, "quiet");
+  assert.equal(row?.metadata.snoozedUntil, null);
+  const after = deriveNow({ contextEvents: await store.listContextEvents(), timeEvents: [], moneyTransactions: [], threads: [], relationships: [], now: clock() });
+  assert.equal(after.needsMe.length, 0);
+  assert.equal(after.quiet.length, 1);
 });
 
 Deno.test("context_event.attend brings a quiet item back and clears its snooze", async () => {

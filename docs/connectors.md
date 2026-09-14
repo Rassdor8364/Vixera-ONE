@@ -255,12 +255,19 @@ returns one empty page unless a test hook changed the fixtures.
 | --- | --- | --- |
 | `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links |
 | `checkpoint_invalid` | Graph 410 on a fresh query, corrupted checkpoint the source cannot repair | checkpoint cleared and the capability retried **once** from scratch in the same run; a second failure is recorded as an error |
-| `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run (10 min) retries from the persisted checkpoint |
+| `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run retries from the persisted checkpoint once the backoff below has elapsed |
 | `provider_unavailable` | network failure, 5xx | same as rate limited |
-| `invalid_response` | provider body missing required fields | state `error`; not retried within the run |
+| `invalid_response` | provider body missing required fields | state `error`; not retried within the run, and subject to the same backoff |
 | `unsupported` | capability not implemented by the connector, wrong credential kind, disallowed Plaid endpoint | state `error` |
 | `unknown` | anything else | state `error` |
 | *(missing credential)* | `credentialRef` null or Vault returns nothing | account `needs_reauth`, outcome `errorCode: "credential_missing"` |
+
+**Backoff.** A state in `error` is not retried until `lastAttemptAt +
+backoffMs(consecutiveFailures)`: 10 min after the first failure, doubling,
+capped at 6 h. A state marked `running` within the last 15 min is left alone.
+A user's Sync now (`connector.sync_now`, `POST connector-sync` with `force`)
+ignores both. Re-linking resets the count. The provider's `Retry-After` is not
+yet honoured precisely (the doubling stands in for it).
 
 Every failure is isolated to one (account, capability): `runAll()` and
 `runSync()` never throw because a connector failed; the `SyncReport` lists an

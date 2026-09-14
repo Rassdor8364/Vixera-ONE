@@ -15,7 +15,7 @@ import {
 import { InMemorySpineStore } from "../store/in-memory-spine-store.ts";
 import type { SpineStore } from "../store/spine-store.ts";
 import { ContextLinker } from "../linker/context-linker.ts";
-import { SyncEngine, redactCredential } from "./sync-engine.ts";
+import { SyncEngine, backoffMs, holdReason, redactCredential } from "./sync-engine.ts";
 import { MockConnector, briefWorldFixtures, NORTHWIND_KICKOFF_EVENT_ID } from "../testing/mock-connector.ts";
 import { expiredCredential, fakeCredential, fixedClock, MOCK_NOW, MOCK_SELF_ADDRESS, mockAccountInput, seedMockAccount, tickingClock } from "../testing/fixtures.ts";
 
@@ -206,10 +206,11 @@ describe("SyncEngine failure isolation", () => {
     expect(await w.store.listTimeEvents({ from: "2026-09-01T00:00:00.000Z", to: "2026-09-30T00:00:00.000Z", connectorAccountId: b.id })).toHaveLength(1);
     expect((await w.store.getConnectorAccount(a.id))?.status).toBe("active");
 
-    // Failures accumulate; a later success resets the counter.
-    await engine.runAll();
+    // Failures accumulate on a forced retry (an unforced one is held back by the
+    // backoff, which has its own tests); a later success resets the counter.
+    await engine.runAll({ force: true });
     expect((await w.store.getSyncState(a.id, "calendar"))?.consecutiveFailures).toBe(2);
-    const ok = await w.engine.runAll();
+    const ok = await w.engine.runAll({ force: true });
     expect(ok.errors).toBe(0);
     expect((await w.store.getSyncState(a.id, "calendar"))?.consecutiveFailures).toBe(0);
   });
@@ -324,6 +325,9 @@ describe("SyncEngine credentials", () => {
     // Once reauthorized nothing else needs to change.
     w.connector.clearFailures();
     await w.store.updateConnectorAccount(account.id, { status: "active" });
+    // Re-linking resets the sync state as connector-link does, or the backoff
+    // from the unauthorized failure would hold mail for another cycle.
+    await w.store.upsertSyncState(account.id, "mail", { status: "idle", consecutiveFailures: 0, lastError: null });
     expect((await w.engine.runAll()).ok).toBe(3);
   });
 
@@ -430,5 +434,163 @@ describe("wall-clock budget", () => {
     expect(second.reason).toBeNull();
     expect((await store.getSyncState(account.id, "mail"))?.checkpoint).toEqual({ page: 3 });
     expect(cursor).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resume points must be real progress; the deadline must bound every pass.
+// ---------------------------------------------------------------------------
+type Page = { checkpoint: Checkpoint | null; done: boolean };
+
+/** A mail connector that yields scripted pages and records the checkpoint each pass started from. */
+function scripted(pages: readonly Page[]) {
+  const starts: (Checkpoint | null)[] = [];
+  let served = 0;
+  const connector = {
+    provider: "mock" as const,
+    capabilities: ["mail"] as const,
+    discoverAccount: () => Promise.resolve({ externalAccountId: "x", label: "x", address: null, capabilities: ["mail"] as const }),
+    async *syncMail(_ctx: unknown, checkpoint: Checkpoint | null) {
+      starts.push(checkpoint);
+      for (const page of pages) {
+        served++;
+        yield { batch: { messages: [], deleted: [] }, checkpoint: page.checkpoint, done: page.done };
+      }
+    },
+  };
+  return { connector, starts, served: () => served };
+}
+
+async function mailWorld(connector: unknown, stepMs = 60_000) {
+  const clock = tickingClock(MOCK_NOW, stepMs);
+  const store = new InMemorySpineStore(DEV_USER_ID, { now: clock });
+  const account = await store.createConnectorAccount(mockAccountInput({ capabilities: ["mail"] }));
+  const credentials = new InMemoryCredentialStore();
+  await credentials.put(account.credentialRef!, fakeCredential());
+  const engine = new SyncEngine({
+    store,
+    registry: new ConnectorRegistry().register(connector as never),
+    credentials,
+    linker: new ContextLinker(store, { now: clock, selfAddresses: [] }),
+    now: clock,
+  });
+  return { store, account, engine };
+}
+
+describe("a checkpoint is a resume point only when it moved", () => {
+  it("an echoed cursor under a deadline is an interruption, not progress", async () => {
+    // Pages 1 and 2 echo the cursor the pass started from (as Graph delta and
+    // the Google calendar window do); only page 3 advances it.
+    const s = scripted([
+      { checkpoint: { cursor: "A" }, done: false },
+      { checkpoint: { cursor: "A" }, done: false },
+      { checkpoint: { cursor: "B" }, done: true },
+    ]);
+    const { store, account, engine } = await mailWorld(s.connector);
+    await store.upsertSyncState(account.id, "mail", { checkpoint: { cursor: "A" } });
+
+    const first = await engine.runCapability(account, "mail", MOCK_NOW.getTime() + 1);
+    expect(first.status).toBe("ok");
+    expect(first.pages).toBe(1);
+    expect(first.checkpointAdvanced).toBe(false);
+    expect(first.interrupted).toBe(true);
+    expect(first.reason).toContain("before a resume point");
+    const state = await store.getSyncState(account.id, "mail");
+    expect(state?.checkpoint).toEqual({ cursor: "A" });
+    expect(state?.status).toBe("idle");
+    expect(state?.lastSuccessAt).toBeNull();
+
+    // Without a deadline the pass completes and the real cursor is stored.
+    const second = await engine.runCapability(account, "mail");
+    expect(second).toMatchObject({ status: "ok", pages: 3, checkpointAdvanced: true, interrupted: false, reason: null });
+    expect((await store.getSyncState(account.id, "mail"))?.checkpoint).toEqual({ cursor: "B" });
+    expect((await store.getSyncState(account.id, "mail"))?.lastSuccessAt).not.toBeNull();
+    expect(s.starts).toEqual([{ cursor: "A" }, { cursor: "A" }]);
+  });
+
+  it("key order does not make an unchanged checkpoint look new", async () => {
+    const s = scripted([{ checkpoint: { b: 2, a: 1 }, done: false }, { checkpoint: { a: 1, b: 2 }, done: true }]);
+    const { store, account, engine } = await mailWorld(s.connector);
+    await store.upsertSyncState(account.id, "mail", { checkpoint: { a: 1, b: 2 } });
+    const run = await engine.runCapability(account, "mail", MOCK_NOW.getTime() + 1);
+    expect(run.checkpointAdvanced).toBe(false);
+    expect(run.interrupted).toBe(true);
+  });
+
+  it("null-checkpoint pages are bounded by the deadline instead of running to a hard kill", async () => {
+    const s = scripted([
+      { checkpoint: null, done: false },
+      { checkpoint: null, done: false },
+      { checkpoint: null, done: false },
+      { checkpoint: null, done: false },
+      { checkpoint: { delta: "final" }, done: true },
+    ]);
+    const { store, account, engine } = await mailWorld(s.connector);
+    const run = await engine.runCapability(account, "mail", MOCK_NOW.getTime() + 1);
+    expect(run.pages).toBe(1);
+    expect(run.interrupted).toBe(true);
+    expect(s.served()).toBe(1);
+    const state = await store.getSyncState(account.id, "mail");
+    expect(state?.status).toBe("idle"); // not left `running` for the next cron to skip
+    expect(state?.consecutiveFailures).toBe(0); // not a failure either
+    // Given the time, the same pass completes and lands the final checkpoint.
+    const full = await engine.runCapability(account, "mail");
+    expect(full).toMatchObject({ pages: 5, interrupted: false, checkpointAdvanced: true });
+    expect((await store.getSyncState(account.id, "mail"))?.checkpoint).toEqual({ delta: "final" });
+  });
+});
+
+describe("backoff and the running guard", () => {
+  it("backoffMs doubles from 10 minutes and caps at 6 hours", () => {
+    expect(backoffMs(0)).toBe(0);
+    expect(backoffMs(1)).toBe(10 * 60_000);
+    expect(backoffMs(2)).toBe(20 * 60_000);
+    expect(backoffMs(3)).toBe(40 * 60_000);
+    expect(backoffMs(6)).toBe(320 * 60_000);
+    expect(backoffMs(7)).toBe(6 * 3600_000);
+    expect(backoffMs(50)).toBe(6 * 3600_000);
+  });
+
+  it("a failing capability is held back, a forced run is not, and success clears the hold", async () => {
+    const connector = new MockConnector().failOn("mail", new ConnectorError("invalid_response", "payload rejected", false));
+    const { store, account, engine } = await mailWorld(connector, 1_000);
+    const first = await engine.runCapability(account, "mail");
+    expect(first.status).toBe("error");
+    expect((await store.getSyncState(account.id, "mail"))?.consecutiveFailures).toBe(1);
+
+    // One second later (the clock ticks 1 s per read): inside the 10 min backoff.
+    const held = await engine.runCapability(account, "mail");
+    expect(held.status).toBe("skipped");
+    expect(held.reason).toMatch(/backing off after 1 consecutive failure/);
+    expect(connector.calls.filter((c) => c.capability === "mail")).toHaveLength(1);
+
+    // The user's own Sync now goes through.
+    const forced = await engine.runCapability(account, "mail", undefined, { force: true });
+    expect(forced.status).toBe("error");
+    expect((await store.getSyncState(account.id, "mail"))?.consecutiveFailures).toBe(2);
+    expect(connector.calls.filter((c) => c.capability === "mail")).toHaveLength(2);
+  });
+
+  it("holdReason: recent running → held; stale running → free; errors respect backoff", () => {
+    const base = { userId: DEV_USER_ID, connectorAccountId: "c", capability: "mail" as const, enabled: true, checkpoint: null, lastSuccessAt: null, lastError: null, updatedAt: "2026-09-10T09:00:00.000Z" };
+    const at = MOCK_NOW.getTime();
+    const running = { ...base, status: "running" as const, consecutiveFailures: 0, lastAttemptAt: new Date(at - 5 * 60_000).toISOString() };
+    expect(holdReason(running as never, at)).toMatch(/already running/);
+    const stale = { ...running, lastAttemptAt: new Date(at - 20 * 60_000).toISOString() };
+    expect(holdReason(stale as never, at)).toBeNull();
+    const failing = { ...base, status: "error" as const, consecutiveFailures: 3, lastAttemptAt: new Date(at - 30 * 60_000).toISOString() };
+    expect(holdReason(failing as never, at)).toMatch(/backing off after 3/); // 40 min backoff, 30 elapsed
+    expect(holdReason({ ...failing, lastAttemptAt: new Date(at - 41 * 60_000).toISOString() } as never, at)).toBeNull();
+    expect(holdReason(null, at)).toBeNull();
+  });
+
+  it("a capability another run marked running just now is skipped, not run twice", async () => {
+    const connector = new MockConnector();
+    const { store, account, engine } = await mailWorld(connector, 1_000);
+    await store.upsertSyncState(account.id, "mail", { status: "running", lastAttemptAt: MOCK_NOW.toISOString() });
+    const run = await engine.runCapability(account, "mail");
+    expect(run.status).toBe("skipped");
+    expect(run.reason).toMatch(/already running/);
+    expect(connector.calls).toHaveLength(0);
   });
 });

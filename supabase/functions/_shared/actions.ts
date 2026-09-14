@@ -58,7 +58,7 @@ export interface ActionContext {
   readonly now: () => Date;
   readonly actorDeviceId: string | null;
   /** connector.sync_now: runs the sync engine for the request's user. */
-  readonly runSync: (options: { readonly accountId: string | null }) => Promise<BudgetedSyncReport>;
+  readonly runSync: (options: { readonly accountId: string | null; readonly force?: boolean }) => Promise<BudgetedSyncReport>;
   readonly log?: (message: string, data?: JsonObject) => void;
 }
 
@@ -307,7 +307,9 @@ async function attachToThread(store: SpineStore, threadId: string, entity: Entit
 export const ACTION_HANDLERS: ActionHandlers = {
   "context_event.dismiss": (store, { contextEventId }) => setAttention(store, contextEventId, "dismissed"),
 
-  "context_event.quiet": (store, { contextEventId }) => setAttention(store, contextEventId, "quiet"),
+  // Quiet is the user's decision and outranks an elapsed snooze: clear the
+  // snooze, or NOW reads "quiet + snoozedUntil in the past" as "back in play".
+  "context_event.quiet": (store, { contextEventId }) => setAttention(store, contextEventId, "quiet", { snoozedUntil: null }),
 
   "context_event.snooze": async (store, { contextEventId, until }) => {
     const result = await setAttention(store, contextEventId, "quiet", { snoozedUntil: until });
@@ -447,7 +449,8 @@ export const ACTION_HANDLERS: ActionHandlers = {
 
   "connector.sync_now": async (store, { connectorAccountId }, ctx) => {
     if (connectorAccountId && !(await store.getConnectorAccount(connectorAccountId))) throw new ActionError(`connector account ${connectorAccountId} not found`);
-    const report = await ctx.runSync({ accountId: connectorAccountId ?? null });
+    // A person asked: ignore backoff and a recent running mark.
+    const report = await ctx.runSync({ accountId: connectorAccountId ?? null, force: true });
     return summarizeReport(report);
   },
 
