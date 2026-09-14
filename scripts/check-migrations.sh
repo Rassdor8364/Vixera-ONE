@@ -21,9 +21,10 @@ fail() { echo "::error::$*"; status=1; }
 
 # Definer functions clients are meant to call through PostgREST RPC. Anything
 # else that is SECURITY DEFINER must be revoked from client roles.
-CLIENT_CALLABLE_DEFINERS=(
-  vx_connector_account_disconnect   # user-scoped by auth.uid() inside; migration 3 grants it on purpose
-)
+# Empty on purpose: vx_connector_account_disconnect is service-role only
+# (migration 3 revokes it from client roles), and a future grant to
+# authenticated must fail this check rather than be waved through.
+CLIENT_CALLABLE_DEFINERS=()
 
 shopt -s nullglob
 files=("$DIR"/*.sql)
@@ -87,7 +88,7 @@ while read -r kind fn; do
     fail "security definer function $fn does not pin search_path"
     continue
   fi
-  allowed=0; for a in "${CLIENT_CALLABLE_DEFINERS[@]}"; do [[ "$a" == "$fn" ]] && allowed=1; done
+  allowed=0; for a in ${CLIENT_CALLABLE_DEFINERS[@]+"${CLIENT_CALLABLE_DEFINERS[@]}"}; do [[ "$a" == "$fn" ]] && allowed=1; done
   if [[ $allowed -eq 0 ]] && ! printf '%s\n' "$all_sql" | grep -qiE "revoke[^;]*on function public\.$fn\b[^;]*\b(public|anon|authenticated)\b"; then
     fail "security definer function $fn is not revoked from client roles (or allow-list it in check-migrations.sh with a reason)"
   fi

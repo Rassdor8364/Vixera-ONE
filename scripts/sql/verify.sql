@@ -69,6 +69,14 @@ begin
   raise exception 'authenticated could write credential_ref';
 exception when insufficient_privilege then null;
 end $$;
+-- status is server-owned (link / sync / disconnect): a client must not fake a
+-- disconnect while the credential stays in the Vault, nor re-activate an account.
+do $$
+begin
+  update public.connector_accounts set status = 'disconnected' where id = '00000000-0000-4000-8000-0000c0000001';
+  raise exception 'authenticated could write connector_accounts.status';
+exception when insufficient_privilege then null;
+end $$;
 do $$
 begin
   insert into public.connector_accounts (user_id, provider, external_account_id, label, credential_ref, credential_location)
@@ -219,6 +227,24 @@ begin
   exception when foreign_key_violation then null; end;
   insert into public.handoffs (user_id, source_device_id, focus_type, focus_id)
     values (v_uid, '00000000-0000-4000-8000-0000d0000001', 'document', '00000000-0000-4000-8000-0000f1000001');
+end $$;
+
+-- 6b. Deleting a handoff's focus clears the focus instead of stranding the
+-- handoff behind its own validation trigger (migration 11).
+do $$
+declare v_uid uuid := '00000000-0000-4000-8000-000000000001'; v_doc uuid; v_handoff uuid; v_type public.entity_type; v_state public.handoff_state;
+begin
+  insert into public.documents (user_id, title, mime_type, source, location, metadata)
+    values (v_uid, 'about to vanish', 'application/pdf', 'share', '{"kind":"none"}'::jsonb, '{}'::jsonb) returning id into v_doc;
+  insert into public.handoffs (user_id, source_device_id, focus_type, focus_id)
+    values (v_uid, '00000000-0000-4000-8000-0000d0000001', 'document', v_doc) returning id into v_handoff;
+  delete from public.documents where id = v_doc;
+  select focus_type into v_type from public.handoffs where id = v_handoff;
+  if v_type is not null then raise exception 'handoff still focuses a deleted document'; end if;
+  update public.handoffs set state = 'expired' where id = v_handoff;
+  select state into v_state from public.handoffs where id = v_handoff;
+  if v_state <> 'expired' then raise exception 'handoff with a cleared focus could not be updated'; end if;
+  delete from public.handoffs where id = v_handoff;
 end $$;
 
 -- 7. Credential functions execute for the service role and are bound to accounts.
