@@ -9,7 +9,7 @@
  * is absent: one cached probe).
  */
 import type { JsonObject, ScreenContext, ScreenContextAdapter, StructuredBlock } from "@vixera/domain";
-import type { PraxionConnector } from "@vixera/praxion";
+import { PraxionRequestError, type PraxionConnector } from "@vixera/praxion";
 
 export interface PraxionAdapterOptions {
   /** Cap on structured blocks carried into the ScreenContext. Default 500. */
@@ -46,8 +46,20 @@ export class PraxionStructuredContentAdapter implements ScreenContextAdapter {
     let blocks: readonly StructuredBlock[] | null = null;
     let serverTruncated = false;
     let clientTruncated = false;
+    let contentError: string | null = null;
     if (this.includeContent) {
-      const content = await this.connector.getContent(doc.id);
+      // The document, its location and the selection are the context; the
+      // content is the best part of it, not a condition for it. A content
+      // endpoint that errors (a document Praxion cannot parse) must not turn
+      // the whole ScreenContext into null, or the registry would fall through
+      // to a stale explicit capture and describe the wrong document.
+      let content: Awaited<ReturnType<PraxionConnector["getContent"]>> = null;
+      try {
+        content = await this.connector.getContent(doc.id);
+      } catch (error) {
+        if (!(error instanceof PraxionRequestError)) throw error;
+        contentError = error.code;
+      }
       if (content) {
         serverTruncated = content.truncated;
         clientTruncated = content.blocks.length > this.maxBlocks;
@@ -64,6 +76,7 @@ export class PraxionStructuredContentAdapter implements ScreenContextAdapter {
       blockCount: blocks ? blocks.length : 0,
       contentAvailable: blocks !== null,
       truncated: serverTruncated || clientTruncated,
+      ...(contentError ? { contentError } : {}),
     };
 
     return {

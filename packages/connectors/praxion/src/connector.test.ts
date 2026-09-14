@@ -85,6 +85,23 @@ describe("availability when Praxion is not running", () => {
     await expect(client.availability()).resolves.toMatchObject({ state: "unavailable", reason: "timeout" });
   });
 
+  it("a read that times out returns null and leaves the availability cache alone — a slow Praxion is not an absent one", async () => {
+    const praxion = new InMemoryPraxion({ documents: FIXTURE_DOCUMENTS, current: OPERATING_AGREEMENT.id, now: () => new Date("2026-09-10T12:00:00.000Z") });
+    const clock = fakeClock();
+    let latency = 0;
+    const transport: PraxionTransport = {
+      request: (input) => new InMemoryPraxionTransport(praxion, { latencyMs: latency }).request(input),
+    };
+    const client = new PraxionClient(transport, { clock: clock.now, cacheMs: 60_000, requestTimeoutMs: 100, probeTimeoutMs: 100 });
+    expect((await client.availability()).state).toBe("available");
+    latency = 1_000; // every request now exceeds the read timeout
+    expect(await client.getContent(OPERATING_AGREEMENT.id)).toBeNull();
+    latency = 0;
+    // No re-probe needed: the cache still says available, and the next read goes through.
+    expect((await client.availability()).state).toBe("available");
+    expect(await client.getContent(OPERATING_AGREEMENT.id)).not.toBeNull();
+  });
+
   it("openDocument and requestAction throw PraxionUnavailableError while down", async () => {
     const { praxion, client } = setup();
     praxion.down = true;

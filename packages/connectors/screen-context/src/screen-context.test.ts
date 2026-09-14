@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ScreenContextRegistry } from "@vixera/domain";
-import { FIXTURE_DOCUMENTS, InMemoryPraxion, InMemoryPraxionTransport, OPERATING_AGREEMENT, PraxionClient } from "@vixera/praxion";
+import { FIXTURE_DOCUMENTS, InMemoryPraxion, InMemoryPraxionTransport, OPERATING_AGREEMENT, PraxionClient, PraxionRequestError } from "@vixera/praxion";
 import { ExplicitCaptureAdapter } from "./explicit-capture-adapter.ts";
 import { PraxionStructuredContentAdapter } from "./praxion-adapter.ts";
 import { createScreenContextRegistry } from "./registry.ts";
@@ -50,6 +50,28 @@ describe("PraxionStructuredContentAdapter", () => {
     });
     // No Praxion wire shape leaks through: only domain fields.
     expect(Object.keys(ctx ?? {}).sort()).toEqual(["capturedAt", "document", "location", "metadata", "selection", "source", "structuredContent", "text"]);
+  });
+
+  it("keeps the document, location and selection when the content endpoint errors, and says why", async () => {
+    const { connector } = praxionSetup();
+    // A document Praxion has open but cannot parse: /content answers 500 with a Praxion error envelope.
+    const failing = new Proxy(connector, {
+      get(target, prop, receiver) {
+        if (prop === "getContent") return () => Promise.reject(new PraxionRequestError("/v1/documents/x/content", 500, { error: { code: "parse_failed", message: "encrypted PDF" } }));
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const ctx = await new PraxionStructuredContentAdapter(failing).getCurrentContext();
+    expect(ctx).not.toBeNull();
+    expect(ctx?.document.praxionDocumentId).toBe(OPERATING_AGREEMENT.id);
+    expect(ctx?.location).toEqual(OPERATING_AGREEMENT.location);
+    expect(ctx?.structuredContent).toBeNull();
+    expect(ctx?.metadata).toMatchObject({ contentAvailable: false, contentError: "parse_failed" });
+    // The registry therefore stays on Praxion instead of falling through to a stale capture.
+    const explicit = new ExplicitCaptureAdapter();
+    explicit.provide({ text: "an older capture" });
+    const registry: ScreenContextRegistry = createScreenContextRegistry({ praxion: failing, explicit });
+    expect((await registry.current())?.source).toBe("praxion");
   });
 
   it("returns null when no document is focused", async () => {

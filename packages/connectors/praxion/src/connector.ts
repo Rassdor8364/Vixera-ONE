@@ -258,6 +258,10 @@ export class PraxionClient implements PraxionConnector {
     if (!availability.capabilities.includes(capability)) return null;
     const path = praxionPath(endpoint, id === undefined ? {} : { id });
     const res = await this.transport.request<T | PraxionErrorEnvelope>({ method: endpoint.method, path, timeoutMs: this.requestTimeoutMs });
+    // One slow read says nothing about whether Praxion is running: only a
+    // connection that could not be made, or a contract rejection, changes what
+    // the availability cache says for the rest of cacheMs.
+    if (res.status === 0 && res.failure?.kind === "timeout") return null;
     if (res.status === 0 || res.status === 426) {
       this.noteLost(res);
       return null;
@@ -270,6 +274,8 @@ export class PraxionClient implements PraxionConnector {
   private async write<T>(endpoint: PraxionEndpoint, body: unknown): Promise<T> {
     await this.requireAvailable();
     const res = await this.transport.request<T | PraxionErrorEnvelope>({ method: endpoint.method, path: endpoint.path, body, timeoutMs: this.requestTimeoutMs });
+    // Reported to the caller, not written to the cache: a slow Praxion is not an absent one.
+    if (res.status === 0 && res.failure?.kind === "timeout") throw new PraxionUnavailableError({ state: "unavailable", reason: "timeout", detail: res.failure.message });
     if (res.status === 0 || res.status === 426) {
       const availability = this.noteLost(res);
       throw new PraxionUnavailableError(availability);
