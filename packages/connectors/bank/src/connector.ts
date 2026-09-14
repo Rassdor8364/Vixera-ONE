@@ -117,10 +117,14 @@ export class BankConnector implements Connector {
 }
 
 function mergeTransactions(page: BankTransactionsPage): readonly NormalizedMoneyTransaction[] {
-  if (page.modified.length === 0) return page.added;
+  if (page.modified.length === 0 && page.removed.length === 0) return page.added;
   // Same external id in both lists (unusual): the modified version wins.
   const byId = new Map<string, NormalizedMoneyTransaction>();
   for (const t of page.added) byId.set(t.externalId, t);
   for (const t of page.modified) byId.set(t.externalId, t);
+  // Plaid does not promise `removed` is disjoint from the other two. A removal is the
+  // later fact, so the id leaves the upsert list: the outcome no longer depends on
+  // whether the consumer applies upserts or deletions first.
+  for (const externalId of page.removed) byId.delete(externalId);
   return [...byId.values()];
 }

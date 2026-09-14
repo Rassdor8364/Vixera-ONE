@@ -192,6 +192,16 @@ describe("BankConnector", () => {
     expect(ctx.logs.filter((l) => l.message === "bank.sync.restart").map((l) => l.data?.cursor)).toEqual(["c0", "c0"]);
   });
 
+  it("an id in both added/modified and removed of one page ends up deleted, whatever order the consumer applies", async () => {
+    const [northwind, lindqvist] = page1.added;
+    const ff = plaidRoutes(() => ({
+      json: { added: [northwind, lindqvist], modified: [{ ...lindqvist, name: "LINDQVIST STUDIO AB" }], removed: [{ transaction_id: lindqvist!.transaction_id }], next_cursor: "c1", has_more: false },
+    }));
+    const [page] = await drain(plaidConnector().syncBank(makeContext(ff.fetch), null));
+    expect(page!.batch.transactions.map((t) => t.externalId)).toEqual(["fake-txn-northwind"]);
+    expect(page!.batch.deleted).toEqual([{ externalId: "fake-txn-lindqvist" }]);
+  });
+
   it("keeps the previous checkpoint when Plaid answers with an empty next_cursor (initial update not ready)", async () => {
     const ff = plaidRoutes(() => ({ json: syncBody([], "", false) }));
     const fresh = await drain(plaidConnector().syncBank(makeContext(ff.fetch), null));

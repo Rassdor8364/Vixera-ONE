@@ -271,6 +271,13 @@ never as an error.
 * `PlaidBankProvider.describeItem` throws the mapped error (`unauthorized`
   for `ITEM_LOGIN_REQUIRED`) when `/item/get` reports `item.error`, so an
   Item the user has not repaired is never described as healthy.
+* `src/sync-roundtrip.test.ts` drives `BankConnector` (mock and Plaid with a
+  fake fetch) through `SyncEngine` + `ContextLinker` + `InMemorySpineStore`
+  (`@vixera/sync` is a dev dependency of the package): pending→posted leaves
+  one row, a mutation replay and an interrupted update do not duplicate
+  anything, a second run with the produced checkpoint changes nothing but
+  the balance refresh, and an update-mode relink keeps the row and its
+  checkpoint.
 
 ### Mock — `packages/sync/src/testing/mock-connector.ts`
 
@@ -391,7 +398,8 @@ already synced from that account stay in the spine. The provider-side grant is
    `provider_id` in a new migration (`schema-sync.test.ts` fails if they
    drift). Add a capability only if it is genuinely new.
 2. **Package** `packages/connectors/<name>` depending on `@vixera/domain`
-   only. Implement `Connector`: `discoverAccount`, optional
+   only (`@vixera/sync` as a *dev* dependency for the engine round-trip test
+   in step 6). Implement `Connector`: `discoverAccount`, optional
    `refreshCredential`, one `sync<Capability>` async generator per
    capability. Keep provider JSON in `src/**/types.ts`, normalization in
    `normalize.ts` (pure, unit-tested against fixtures in `__fixtures__/`),
