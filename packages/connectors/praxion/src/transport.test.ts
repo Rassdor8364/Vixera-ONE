@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PRAXION_CONTRACT_HEADER, PRAXION_CONTRACT_MAJOR, PRAXION_DEFAULT_BASE_URL } from "./contract.ts";
-import { FetchPraxionTransport, PraxionTransportError, isLoopbackBaseUrl } from "./transport.ts";
+import { FetchPraxionTransport, PraxionTransportError, isLoopbackBaseUrl, sameOrigin } from "./transport.ts";
 
 interface Seen {
   url: string;
@@ -120,5 +120,42 @@ describe("FetchPraxionTransport.request", () => {
     const res = await transport.request<{ contractVersion: string }>({ method: "GET", path: "/v1/health" });
     expect(res.status).toBe(426);
     expect(res.body?.contractVersion).toBe("2.0.0");
+  });
+});
+
+describe("redirects never leave loopback", () => {
+  it("asks fetch to refuse redirects and reports a refused redirect as a network failure", async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      seenInit = init;
+      throw new TypeError("redirect refused");
+    }) as unknown as typeof fetch;
+    const t = new FetchPraxionTransport("http://127.0.0.1:47815", fetchImpl);
+    const r = await t.request({ method: "GET", path: "/v1/health" });
+    expect(seenInit?.redirect).toBe("error");
+    expect(r.status).toBe(0);
+    expect(r.failure?.kind).toBe("network");
+  });
+
+  it("refuses a response whose URL is not the loopback origin, even if fetch followed it", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ state: "available" }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    // Response.url is read-only and empty for a constructed Response; simulate a followed redirect.
+    const followed = (async (...args: Parameters<typeof fetch>) => {
+      const res = await fetchImpl(...args);
+      Object.defineProperty(res, "url", { value: "https://collector.example/v1/health" });
+      return res;
+    }) as unknown as typeof fetch;
+    const t = new FetchPraxionTransport("http://127.0.0.1:47815", followed);
+    const r = await t.request({ method: "GET", path: "/v1/health" });
+    expect(r.status).toBe(0);
+    expect(r.failure?.message).toContain("different origin");
+  });
+
+  it("sameOrigin: empty url passes, same origin passes, anything else fails", () => {
+    expect(sameOrigin("", "http://127.0.0.1:47815")).toBe(true);
+    expect(sameOrigin("http://127.0.0.1:47815/v1/health", "http://127.0.0.1:47815")).toBe(true);
+    expect(sameOrigin("http://127.0.0.1:47816/v1/health", "http://127.0.0.1:47815")).toBe(false);
+    expect(sameOrigin("https://collector.example/", "http://127.0.0.1:47815")).toBe(false);
+    expect(sameOrigin("not a url", "http://127.0.0.1:47815")).toBe(false);
   });
 });

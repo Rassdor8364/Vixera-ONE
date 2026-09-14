@@ -188,6 +188,13 @@ const connector = new PraxionClient(new FetchPraxionTransport(), { cacheMs: 5000
   `localhost`, `[::1]`) and throws `PraxionTransportError` at construction for
   anything else; a misconfigured base URL can never send document context off
   the machine. The error message never echoes credentials or query strings.
+* Neither transport follows redirects (`redirect: "error"`, and
+  `maxRedirections: 0` for the Tauri HTTP plugin), and a response whose URL is
+  not the loopback origin is refused as a network failure. The loopback check
+  covers the first hop only; without this, anything squatting the port could
+  answer `307 Location: https://elsewhere` and receive every document path and
+  action the Field sends to Praxion, then have its replies trusted as
+  Praxion's. **Praxion must never redirect.**
 * The mock server binds `127.0.0.1` only. Praxion must do the same.
 * No authentication in v1: the loopback boundary is the trust boundary
   (same user session on the same machine). If a platform makes another local

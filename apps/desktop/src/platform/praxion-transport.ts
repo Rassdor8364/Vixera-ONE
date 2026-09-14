@@ -22,6 +22,7 @@ import {
   type PraxionResponse,
   type PraxionTransport,
   type PraxionTransportFailureKind,
+  sameOrigin,
 } from "@vixera/praxion";
 
 export interface TauriPraxionTransportOptions {
@@ -58,13 +59,20 @@ export class TauriPraxionTransport implements PraxionTransport {
       [PRAXION_CONTRACT_HEADER]: String(this.contractMajor),
       accept: "application/json",
     };
-    const init: RequestInit = { method: input.method, headers, signal: controller.signal };
+    // No redirects, same reason as FetchPraxionTransport: the plugin scope is
+    // checked on the initial URL only, and reqwest would follow up to ten hops.
+    // `maxRedirections` is tauri-plugin-http's option; `redirect` is the
+    // standard one — set both so whichever fetch is underneath obeys.
+    const init: RequestInit & { maxRedirections?: number } = { method: input.method, headers, signal: controller.signal, redirect: "error", maxRedirections: 0 };
     if (input.body !== undefined) {
       headers["content-type"] = "application/json";
       init.body = JSON.stringify(input.body);
     }
     try {
       const response = await this.fetchImpl(this.baseUrl + input.path, init);
+      if (!sameOrigin(response.url, this.baseUrl)) {
+        return { status: 0, body: null, failure: { kind: "network", message: "response came from a different origin than the loopback base URL" } };
+      }
       return { status: response.status, body: await parseJson<T>(response) };
     } catch (error) {
       const kind: PraxionTransportFailureKind = controller.signal.aborted ? "timeout" : "network";

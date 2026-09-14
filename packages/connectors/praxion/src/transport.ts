@@ -97,13 +97,20 @@ export class FetchPraxionTransport implements PraxionTransport {
       [PRAXION_CONTRACT_HEADER]: String(this.contractMajor),
       accept: "application/json",
     };
-    const init: RequestInit = { method: input.method, headers, signal: controller.signal };
+    // Never follow a redirect: the loopback guard covers the first hop only, and
+    // a 307 from something squatting the port would otherwise re-send this
+    // request — document paths, action params — to wherever Location points,
+    // then trust the reply as Praxion's.
+    const init: RequestInit = { method: input.method, headers, signal: controller.signal, redirect: "error" };
     if (input.body !== undefined) {
       headers["content-type"] = "application/json";
       init.body = JSON.stringify(input.body);
     }
     try {
       const response = await fetchImpl(this.baseUrl + input.path, init);
+      if (!sameOrigin(response.url, this.baseUrl)) {
+        return { status: 0, body: null, failure: { kind: "network", message: "response came from a different origin than the loopback base URL" } };
+      }
       return { status: response.status, body: await parseJson<T>(response) };
     } catch (error) {
       const kind: PraxionTransportFailureKind = controller.signal.aborted ? "timeout" : "network";
@@ -111,6 +118,16 @@ export class FetchPraxionTransport implements PraxionTransport {
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+/** True when `url` is empty (a fetch that does not populate it) or shares the base URL's origin. */
+export function sameOrigin(url: string | undefined, baseUrl: string): boolean {
+  if (!url) return true;
+  try {
+    return new URL(url).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
   }
 }
 
