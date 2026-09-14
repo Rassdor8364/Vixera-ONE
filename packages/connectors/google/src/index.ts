@@ -35,5 +35,7 @@ export {
   CALENDAR_API,
   type CalendarWindow,
   type CalendarSyncOptions,
+  type CalendarCheckpointEntry,
+  type CalendarPageState,
   type GoogleCalendarCheckpoint,
 } from "./calendar/sync.ts";
