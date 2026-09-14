@@ -258,23 +258,36 @@ never as an error.
 ### Microsoft Graph mail — `packages/connectors/microsoft/src/mail/sync.ts`
 
 ```
-{ deltaLink: string }
+{ deltaLink: string }                                    // a complete delta round
+{ backfill: { nextLink: string, fullResync?: true } }    // initial backfill in progress
 ```
 
 * First run: `GET /me/mailFolders/inbox/messages/delta?$select=…&$filter=receivedDateTime ge <now − backfillDays>`
   (inbox only, bodies as text via `Prefer: outlook.body-content-type="text"`,
   page size 50 via `Prefer: odata.maxpagesize`). Attachment metadata is one
-  extra request per message with `hasAttachments`.
-* Every `@odata.nextLink` page is one `SyncPage` that keeps the **previous**
-  checkpoint (a nextLink is not durable); the final page carries the new
-  `@odata.deltaLink`. A crash mid-round replays the last complete delta
-  round, which the natural keys absorb.
+  extra request per message with `hasAttachments`, fetched 4 wide through
+  the one `GraphApiClient` of the run.
+* **Backfill pages are resume points.** Every intermediate page of the
+  initial backfill carries its `@odata.nextLink` as `backfill.nextLink`
+  (Graph encodes the paging state in the link and documents it as the thing
+  to save and reuse), so a backfill larger than one run's time budget stops
+  at the deadline on a checkpoint and continues from that page next run
+  instead of restarting. The last page drops `backfill` and carries the new
+  `@odata.deltaLink`.
+* Intermediate pages of an **incremental** round keep the previous
+  `deltaLink`: rounds are small and replaying one is cheaper than losing the
+  last complete round. A crash mid-round replays it, which the natural keys
+  absorb.
 * `@removed` tombstones → deletions. **410** on a delta link → restart from
   the initial backfill with `fullResync: true`; a 410 on a fresh query is
-  thrown as `checkpoint_invalid`.
-* `parseMailCheckpoint` refuses a `deltaLink` that is not a
-  `graph.microsoft.com` URL, so a corrupted checkpoint can never send a
-  bearer token elsewhere.
+  thrown as `checkpoint_invalid`. A **400 or 410 on any stored link**
+  (`deltaLink` or `backfill.nextLink`) is a dead checkpoint and takes the
+  same restart, so a rejected link self-heals instead of failing every run
+  as `unknown`; a 400 on a fresh query or on a link Graph issued during the
+  run stays an `unknown` error.
+* `parseMailCheckpoint` refuses a `deltaLink` or `backfill.nextLink` that is
+  not a `graph.microsoft.com` URL, and a checkpoint carrying both shapes, so
+  a corrupted checkpoint can never send a bearer token elsewhere.
 
 ### Microsoft Graph calendar — `packages/connectors/microsoft/src/calendar/sync.ts`
 
@@ -285,10 +298,36 @@ never as an error.
 * `GET /me/calendarView/delta?startDateTime=<now − pastDays>&endDateTime=<now + futureDays>`
   over the default calendar, UTC times (`Prefer: outlook.timezone="UTC"`),
   then the delta link. `isCancelled` and `@removed` → deletions.
+* **No `$select`** (and no `$expand`/`$filter`/`$orderby`/`$search`): Graph
+  documents that a delta call on a calendarView returns the same properties
+  as `GET /calendarView` and "you cannot use `$select` to get only a subset
+  of those properties" ([event: delta → OData query
+  parameters](https://learn.microsoft.com/graph/api/event-delta)). Page size
+  (`Prefer: odata.maxpagesize`) is the only lever on payload; the normalizer
+  reads the fields it needs from the full event.
 * A delta link only tracks the window it was opened with. When the stored
   window is more than `WINDOW_MAX_AGE_DAYS` (7) older than a fresh one would
   be, the source re-opens a new window with `fullResync: true` so upcoming
-  events keep flowing. 410 → same restart.
+  events keep flowing. 410 → same restart, and so is a **400 on the stored
+  delta link** (a link out of our checkpoint that Graph rejects — for
+  instance one issued while `$select` was still being sent — is a dead
+  checkpoint, not a permanent error). A 400 on the fresh window request
+  itself stays an `unknown` error.
+* Intermediate pages keep the previous checkpoint: the window is small
+  enough that a round fits one run, so the mail-style per-page resume point
+  is not needed here.
+* **Time zones.** Timed events arrive in UTC and are stamped as such. If
+  Graph answers in another zone, the name is resolved through `Intl` for
+  IANA zones and through a CLDR Windows → IANA table
+  (`src/calendar/windows-zones.ts`, 139 rows) for Windows names such as
+  "New Zealand Standard Time"; an unknown name keeps the wall time as UTC
+  and sets `metadata.timeZoneUnresolved`. **All-day events** are stored by
+  Graph as midnight in the zone they were created in and converted to UTC
+  like any other time (an Auckland holiday arrives as 11:00Z the day
+  before), so the civil date is the date that instant falls on in
+  `originalStartTimeZone`; only when that zone cannot be resolved does the
+  normalizer fall back to the nearest UTC midnight (wrong at UTC+13/+14 and
+  UTC−12) and flag the event.
 
 ### Plaid — `packages/connectors/bank/src/connector.ts`
 

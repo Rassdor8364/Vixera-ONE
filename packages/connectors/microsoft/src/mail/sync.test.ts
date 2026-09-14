@@ -1,13 +1,20 @@
+import { ConnectorError } from "@vixera/domain";
 import { describe, expect, it } from "vitest";
 import attachmentsFixture from "../__fixtures__/mail-attachments.json";
 import page1 from "../__fixtures__/mail-delta-page1.json";
 import page2 from "../__fixtures__/mail-delta-page2.json";
 import { collect, FAKE_OAUTH, makeContext } from "../testing/context.ts";
-import { createFakeFetch, sequence, type FakeRoute } from "../testing/fake-fetch.ts";
+import { createFakeFetch, sequence, type FakeReply, type FakeRoute } from "../testing/fake-fetch.ts";
 import { parseMailCheckpoint, syncMail, type MailSyncOptions } from "./sync.ts";
 
 const OPTIONS: MailSyncOptions = { oauth: FAKE_OAUTH, backfillDays: 30, pageSize: 50 };
 const DELTA_1 = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-1";
+const DELTA_2 = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-2";
+const SKIP_1 = page1["@odata.nextLink"];
+const REJECTED: FakeReply = { status: 401, json: { error: { code: "InvalidAuthenticationToken", message: "Access token has expired." } } };
+const tokenRoute: FakeRoute = { match: "/oauth2/v2.0/token", reply: { json: { access_token: "fake-access-token-2", refresh_token: "fake-refresh-2", expires_in: 3600 } } };
+/** `count` copies of the fixture message that has attachments, each with its own id. */
+const withAttachments = (count: number) => Array.from({ length: count }, (_, i) => ({ ...page1.value[0], id: `AAMkAGfake-att-${i}` }));
 const attachmentsRoute: FakeRoute = { match: "/me/messages/AAMkAGfake-msg-html/attachments", reply: { json: attachmentsFixture } };
 
 describe("syncMail (Microsoft Graph delta)", () => {
@@ -41,7 +48,8 @@ describe("syncMail (Microsoft Graph delta)", () => {
 
     const [first, second] = pages;
     expect(first?.done).toBe(false);
-    expect(first?.checkpoint).toBeNull(); // no previous delta round to fall back on
+    // An intermediate backfill page is a resume point: the engine persists the nextLink and continues there next run.
+    expect(first?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1 } });
     expect(first?.fullResync).toBeUndefined();
     expect(first?.batch.messages.map((m) => m.externalId)).toEqual(["AAMkAGfake-msg-html", "AAMkAGfake-msg-text"]);
     expect(first?.batch.messages[0]?.attachments).toEqual([{ attachmentId: "att-invoice", filename: "invoice-4711.pdf", mimeType: "application/pdf", sizeBytes: 48213 }]);
@@ -87,7 +95,8 @@ describe("syncMail (Microsoft Graph delta)", () => {
     const pages = await collect(syncMail(ctx, { deltaLink: DELTA_1 }, OPTIONS));
     expect(pages).toHaveLength(2);
     expect(pages.every((p) => p.fullResync === true)).toBe(true);
-    expect(pages[0]?.checkpoint).toBeNull();
+    // The resume point remembers that this backfill replaces an invalidated checkpoint.
+    expect(pages[0]?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1, fullResync: true } });
     expect(pages[1]?.done).toBe(true);
     expect(pages[1]?.checkpoint).toEqual({ deltaLink: "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-2" });
     expect(fake.calls[1]?.url.searchParams.get("$filter")).toMatch(/^receivedDateTime ge /);
@@ -113,6 +122,91 @@ describe("syncMail (Microsoft Graph delta)", () => {
     expect(pages[0]?.batch.messages[0]?.attachments).toEqual([]);
   });
 
+  it("resumes an interrupted backfill at the stored nextLink and keeps its fullResync flag", async () => {
+    const fake = createFakeFetch([{ match: "$skiptoken=fake-skip-1", reply: { json: page2 } }]);
+    const ctx = makeContext(fake.fetch);
+    const pages = await collect(syncMail(ctx, { backfill: { nextLink: SKIP_1 } }, OPTIONS));
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.url.toString()).toBe(SKIP_1);
+    expect(fake.calls[0]?.headers.prefer).toBe('odata.maxpagesize=50, outlook.body-content-type="text"');
+    expect(pages).toEqual([{ batch: { messages: [expect.objectContaining({ externalId: "AAMkAGfake-msg-3" })], deleted: [{ externalId: "AAMkAGfake-msg-gone" }] }, checkpoint: { deltaLink: DELTA_2 }, done: true }]);
+    expect(ctx.logs.find((l) => l.message === "microsoft.mail.backfill.start")?.data).toMatchObject({ resumed: true, fullResync: false });
+
+    const resync = createFakeFetch([{ match: "$skiptoken=fake-skip-1", reply: { json: page2 } }]);
+    const resumed = await collect(syncMail(makeContext(resync.fetch), { backfill: { nextLink: SKIP_1, fullResync: true } }, OPTIONS));
+    expect(resumed.map((p) => p.fullResync)).toEqual([true]);
+  });
+
+  it("restarts the backfill from scratch when Graph rejects a stored link with 400 or 410", async () => {
+    for (const status of [400, 410]) {
+      const fake = createFakeFetch([
+        { match: "$skiptoken=fake-skip-1", reply: sequence({ status, json: { error: { code: "BadRequest", message: "The token is invalid." } } }, { json: page2 }) },
+        { match: /messages\/delta\?\$select=/, reply: { json: page1 } },
+        attachmentsRoute,
+      ]);
+      const ctx = makeContext(fake.fetch);
+      const pages = await collect(syncMail(ctx, { backfill: { nextLink: SKIP_1 } }, OPTIONS));
+      expect(fake.calls[0]?.url.toString()).toBe(SKIP_1);
+      expect(fake.calls[1]?.url.searchParams.get("$filter")).toMatch(/^receivedDateTime ge /);
+      expect(pages.map((p) => [p.done, p.fullResync])).toEqual([[false, true], [true, true]]);
+      expect(pages[1]?.checkpoint).toEqual({ deltaLink: DELTA_2 });
+      expect(ctx.logs.find((l) => l.message === "microsoft.mail.checkpoint.rejected")?.data).toMatchObject({ status });
+    }
+    // A stored deltaLink that Graph answers with 400 is a dead checkpoint too, not a permanent "unknown" error.
+    const fake = createFakeFetch([
+      { match: "$deltatoken=fake-delta-1", reply: { status: 400, json: { error: { code: "ErrorInvalidUrlQuery", message: "Invalid query." } } } },
+      { match: /messages\/delta\?\$select=/, reply: { json: { value: [], "@odata.deltaLink": DELTA_2 } } },
+    ]);
+    const pages = await collect(syncMail(makeContext(fake.fetch), { deltaLink: DELTA_1 }, OPTIONS));
+    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true }]);
+  });
+
+  it("does not treat a 400 on a fresh query or on a Graph-issued nextLink as a checkpoint problem", async () => {
+    const fresh = createFakeFetch([{ match: "/messages/delta", reply: { status: 400, json: { error: { code: "BadRequest", message: "nope" } } } }]);
+    await expect(collect(syncMail(makeContext(fresh.fetch), null, OPTIONS))).rejects.toMatchObject({ code: "unknown" });
+    expect(fresh.calls).toHaveLength(1);
+    const midRun = createFakeFetch([
+      { match: "$skiptoken=fake-skip-1", reply: { status: 400, json: { error: { code: "BadRequest", message: "nope" } } } },
+      { match: "/messages/delta", reply: { json: page1 } },
+      attachmentsRoute,
+    ]);
+    await expect(collect(syncMail(makeContext(midRun.fetch), null, OPTIONS))).rejects.toMatchObject({ code: "unknown" });
+    expect(midRun.callsTo("/messages/delta")).toHaveLength(2);
+  });
+
+  it("shares one refresh when several concurrent attachment requests 401 at once", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fake = createFakeFetch([
+      { match: "/oauth2/v2.0/token", reply: async () => (await gate, tokenRoute.reply as FakeReply) },
+      { match: "/messages/delta", reply: { json: { value: withAttachments(6), "@odata.deltaLink": DELTA_1 } } },
+      { match: "/attachments", reply: ({ call }) => (call.headers.authorization === "Bearer fake-access-token-2" ? { json: attachmentsFixture } : REJECTED) },
+    ]);
+    const ctx = makeContext(fake.fetch);
+    const run = collect(syncMail(ctx, null, OPTIONS));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(1);
+    release();
+    const pages = await run;
+    expect(pages[0]?.batch.messages).toHaveLength(6);
+    expect(pages[0]?.batch.messages.every((m) => m.attachments.length === 1)).toBe(true);
+    expect(fake.callsTo("/oauth2/v2.0/token")).toHaveLength(1);
+    expect(ctx.refreshed).toHaveLength(1);
+    expect(ctx.logs.filter((l) => l.message === "microsoft.mail.message.skipped")).toEqual([]);
+  });
+
+  it("propagates a 429 from the attachment fetch as rate_limited instead of skipping the message", async () => {
+    const fake = createFakeFetch([
+      { match: "/messages/delta", reply: { json: { value: withAttachments(3), "@odata.deltaLink": DELTA_1 } } },
+      { match: "/attachments", reply: { status: 429, headers: { "retry-after": "5" }, json: { error: { code: "TooManyRequests", message: "Throttled" } } } },
+    ]);
+    const ctx = makeContext(fake.fetch);
+    const error = await collect(syncMail(ctx, null, OPTIONS)).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectorError);
+    expect(error).toMatchObject({ code: "rate_limited", retryable: true, retryAfterSeconds: 5 });
+    expect(ctx.logs.filter((l) => l.message === "microsoft.mail.message.skipped")).toEqual([]);
+  });
+
   it("refreshes once on 401 and retries the same delta request", async () => {
     const fake = createFakeFetch([
       { match: "/oauth2/v2.0/token", reply: { json: { access_token: "fake-access-token-2", refresh_token: "fake-refresh-2", expires_in: 3600 } } },
@@ -135,5 +229,15 @@ describe("parseMailCheckpoint", () => {
     expect(parseMailCheckpoint({ deltaLink: 5 })).toBeNull();
     expect(parseMailCheckpoint({ deltaLink: "http://graph.microsoft.com/x" })).toBeNull();
     expect(parseMailCheckpoint({ deltaLink: DELTA_1 })).toEqual({ deltaLink: DELTA_1 });
+  });
+
+  it("accepts an in-progress backfill only with a Graph nextLink and never both shapes at once", () => {
+    expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1 } })).toEqual({ backfill: { nextLink: SKIP_1 } });
+    expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, fullResync: true } })).toEqual({ backfill: { nextLink: SKIP_1, fullResync: true } });
+    expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, fullResync: "yes" } })).toEqual({ backfill: { nextLink: SKIP_1 } });
+    expect(parseMailCheckpoint({ backfill: { nextLink: "https://evil.example/steal?token" } })).toBeNull();
+    expect(parseMailCheckpoint({ backfill: { nextLink: "" } })).toBeNull();
+    expect(parseMailCheckpoint({ backfill: "nope" })).toBeNull();
+    expect(parseMailCheckpoint({ deltaLink: DELTA_1, backfill: { nextLink: SKIP_1 } })).toBeNull();
   });
 });

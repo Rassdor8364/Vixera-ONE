@@ -26,14 +26,13 @@ export {
 } from "./oauth.ts";
 export { GRAPH_API, GraphRateLimitedError, graphUrl, parseRetryAfter } from "./http.ts";
 export { normalizeGraphMessage, normalizeAttachments, MAX_BODY_CHARS } from "./mail/normalize.ts";
-export { parseMailCheckpoint, initialMailDeltaUrl, MAIL_DELTA_SELECT, type MailCheckpoint } from "./mail/sync.ts";
+export { parseMailCheckpoint, initialMailDeltaUrl, MAIL_DELTA_SELECT, type MailBackfillState, type MailCheckpoint } from "./mail/sync.ts";
 export { normalizeGraphEvent, toInstant, toResponse, toStatus, PRIMARY_CALENDAR_ID, UNTITLED_EVENT, type NormalizeEventOptions } from "./calendar/normalize.ts";
 export {
   parseCalendarCheckpoint,
   initialCalendarDeltaUrl,
   isWindowStale,
   openWindow,
-  CALENDAR_DELTA_SELECT,
   WINDOW_MAX_AGE_DAYS,
   type CalendarCheckpoint,
   type CalendarWindow,

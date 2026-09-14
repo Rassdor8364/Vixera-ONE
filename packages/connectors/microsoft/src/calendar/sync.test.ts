@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import calendarDelta from "../__fixtures__/calendar-delta.json";
 import { collect, FAKE_OAUTH, makeContext } from "../testing/context.ts";
-import { createFakeFetch } from "../testing/fake-fetch.ts";
+import { createFakeFetch, type FakeRoute } from "../testing/fake-fetch.ts";
 import { isWindowStale, parseCalendarCheckpoint, syncCalendar, type CalendarSyncOptions } from "./sync.ts";
 
 const OPTIONS: CalendarSyncOptions = { oauth: FAKE_OAUTH, window: { pastDays: 30, futureDays: 90 }, pageSize: 50 };
@@ -9,10 +9,16 @@ const WINDOW = { start: "2026-08-11T12:00:00.000Z", end: "2026-12-09T12:00:00.00
 const DELTA_0 = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=fake-cal-delta-0";
 const DELTA_1 = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=fake-cal-delta-1";
 const NEXT = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$skiptoken=fake-cal-skip";
+const rejectSelect: FakeRoute = {
+  match: (url) => url.pathname.endsWith("/calendarView/delta") && url.search.includes("$select"),
+  reply: { status: 400, json: { error: { code: "ErrorInvalidUrlQuery", message: "The query parameter '$select' is not supported on this resource." } } },
+};
 
 describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
   it("opens a window around now in UTC and stores it with the deltaLink", async () => {
-    const fake = createFakeFetch([{ match: "/me/calendarView/delta", reply: { json: calendarDelta } }]);
+    // Graph documents that calendarView/delta does not support $select (nor $expand, $filter, $orderby, $search):
+    // https://learn.microsoft.com/graph/api/event-delta "OData query parameters". Lock the contract in: such a request is a 400.
+    const fake = createFakeFetch([rejectSelect, { match: "/me/calendarView/delta", reply: { json: calendarDelta } }]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncCalendar(ctx, null, OPTIONS));
     expect(pages).toHaveLength(1);
@@ -20,7 +26,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     const call = fake.calls[0];
     expect(call?.url.searchParams.get("startDateTime")).toBe(WINDOW.start);
     expect(call?.url.searchParams.get("endDateTime")).toBe(WINDOW.end);
-    expect(call?.url.searchParams.get("$select")).toContain("attendees");
+    expect([...(call?.url.searchParams.keys() ?? [])].sort()).toEqual(["endDateTime", "startDateTime"]);
     expect(call?.headers.prefer).toBe('odata.maxpagesize=50, outlook.timezone="UTC"');
 
     const page = pages[0];
@@ -72,6 +78,24 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncCalendar(ctx, { deltaLink: DELTA_0, window: WINDOW }, OPTIONS));
     expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true }]);
+  });
+
+  it("treats a stored deltaLink that Graph rejects with 400 as a dead checkpoint and re-opens the window", async () => {
+    // Delta links issued before the $select parameter was dropped carry it inside their token; Graph may reject those.
+    const fake = createFakeFetch([
+      { match: "$deltatoken=fake-cal-delta-0", reply: { status: 400, json: { error: { code: "ErrorInvalidUrlQuery", message: "The query parameter '$select' is not supported." } } } },
+      rejectSelect,
+      { match: "startDateTime=", reply: { json: { value: [], "@odata.deltaLink": DELTA_1 } } },
+    ]);
+    const ctx = makeContext(fake.fetch);
+    const pages = await collect(syncCalendar(ctx, { deltaLink: DELTA_0, window: WINDOW }, OPTIONS));
+    expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true }]);
+    expect(ctx.logs.find((l) => l.message === "microsoft.calendar.checkpoint.rejected")?.data).toMatchObject({ status: 400 });
+
+    // A 400 on the fresh window request itself is a real error, never a restart loop.
+    const broken = createFakeFetch([{ match: "/me/calendarView/delta", reply: { status: 400, json: { error: { code: "BadRequest", message: "nope" } } } }]);
+    await expect(collect(syncCalendar(makeContext(broken.fetch), null, OPTIONS))).rejects.toMatchObject({ code: "unknown" });
+    expect(broken.calls).toHaveLength(1);
   });
 
   it("skips a malformed event and keeps the page", async () => {

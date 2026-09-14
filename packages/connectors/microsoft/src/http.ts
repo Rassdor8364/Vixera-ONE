@@ -4,10 +4,16 @@
  *
  * Responsibilities:
  *   - attach the bearer token from the `SyncContext` credential
- *   - refresh the credential once (proactively when it is known to be expired,
- *     or reactively on the first 401), hand the new credential to
- *     `ctx.onCredentialRefreshed`, and retry the request once; a second 401
- *     surfaces as `ConnectorError("unauthorized")`
+ *   - refresh the credential (proactively when it is known to be expired, or
+ *     reactively on a 401), hand the new credential to
+ *     `ctx.onCredentialRefreshed`, and retry the request once. Concurrent
+ *     requests share ONE in-flight refresh: the attachment fetch runs 4-wide
+ *     through a single client, so a token that lapses mid-page produces four
+ *     401s at once, and the late ones wait for the refresh the first one
+ *     started instead of failing. A credential that came out of a refresh is
+ *     refreshed again only once its own `expiresAt` has passed (a run that
+ *     outlives one token lifetime); a 401 on a live refreshed credential is
+ *     the account being revoked and surfaces as `ConnectorError("unauthorized")`
  *   - map Graph failures onto `ConnectorError` codes the engine understands:
  *     429 → `rate_limited` (Retry-After is carried as metadata only; nothing
  *     here ever sleeps), 5xx → `provider_unavailable`
@@ -58,7 +64,10 @@ export class GraphRateLimitedError extends ConnectorError {
 
 export class GraphApiClient {
   #credential: ConnectorCredential;
-  #refreshAttempted = false;
+  /** The single in-flight (or settled) refresh; concurrent 401s all wait on it instead of racing. */
+  #refresh: Promise<void> | null = null;
+  /** Access token produced by the last settled refresh; a 401 on it is final unless it has expired by its own clock. */
+  #refreshedToken: string | null = null;
 
   constructor(
     private readonly ctx: ApiContext,
@@ -73,13 +82,16 @@ export class GraphApiClient {
   }
 
   async getJson<T>(url: string | URL, options: GetOptions = {}): Promise<ApiResponse<T>> {
-    if (!this.#refreshAttempted && isExpired(this.#credential, this.ctx.now())) {
-      await this.refresh();
+    let token = accessTokenOf(this.#credential);
+    if (isExpired(this.#credential, this.ctx.now())) {
+      await this.refreshAfter(token);
+      token = accessTokenOf(this.#credential);
     }
-    let response = await this.send(url, options.headers);
-    if (response.status === 401 && !this.#refreshAttempted) {
-      await this.refresh();
-      response = await this.send(url, options.headers);
+    let response = await this.send(url, token, options.headers);
+    if (response.status === 401) {
+      await this.refreshAfter(token);
+      const fresh = accessTokenOf(this.#credential);
+      if (fresh !== token) response = await this.send(url, fresh, options.headers);
     }
     const tolerated = options.tolerate?.includes(response.status) ?? false;
     const body = await parseJson<T & GraphErrorBody>(response);
@@ -87,23 +99,44 @@ export class GraphApiClient {
     throw mapError(response.status, response.headers, body);
   }
 
-  private async send(url: string | URL, extraHeaders: Readonly<Record<string, string>> | undefined): Promise<Response> {
+  private async send(url: string | URL, token: string, extraHeaders: Readonly<Record<string, string>> | undefined): Promise<Response> {
     try {
       return await this.ctx.fetch(url instanceof URL ? url.toString() : url, {
         method: "GET",
-        headers: { ...(extraHeaders ?? {}), authorization: `Bearer ${accessTokenOf(this.#credential)}`, accept: "application/json" },
+        headers: { ...(extraHeaders ?? {}), authorization: `Bearer ${token}`, accept: "application/json" },
       });
     } catch (cause) {
       throw new ConnectorError("provider_unavailable", "Microsoft Graph unreachable", true, { cause });
     }
   }
 
-  private async refresh(): Promise<void> {
-    this.#refreshAttempted = true;
+  /**
+   * Called when `token` was rejected (or is known to be expired). Waits for a
+   * refresh already in flight; does nothing when `token` has already been
+   * replaced; refuses to refresh a credential that a refresh produced while
+   * it is still live by its own clock (the caller then sees the same token and
+   * lets the 401 surface); otherwise starts the one refresh everybody shares.
+   */
+  private async refreshAfter(token: string): Promise<void> {
+    if (this.#refresh) {
+      await this.#refresh;
+      return;
+    }
+    if (accessTokenOf(this.#credential) !== token) return;
+    if (token === this.#refreshedToken && !isExpired(this.#credential, this.ctx.now())) return;
     this.ctx.log?.("microsoft.credential.refresh");
-    const fresh = await refreshAccessToken(this.ctx.fetch, this.oauth, this.#credential, this.ctx.now);
-    this.#credential = fresh;
-    await this.ctx.onCredentialRefreshed?.(fresh);
+    this.#refresh = (async () => {
+      const fresh = await refreshAccessToken(this.ctx.fetch, this.oauth, this.#credential, this.ctx.now);
+      this.#credential = fresh;
+      this.#refreshedToken = accessTokenOf(fresh);
+      await this.ctx.onCredentialRefreshed?.(fresh);
+    })();
+    try {
+      await this.#refresh;
+    } finally {
+      // Settled (either way): the next 401 decides afresh whether another refresh is due.
+      this.#refresh = null;
+    }
   }
 }
 

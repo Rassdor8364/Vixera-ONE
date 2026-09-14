@@ -8,6 +8,9 @@
  *                carries the new `@odata.deltaLink`
  *   HTTP 410     Graph dropped the delta token → re-open a fresh window with
  *                every page marked `fullResync: true`
+ *   HTTP 400     on a STORED delta link → same re-open: a link out of our own
+ *                checkpoint that Graph rejects is a dead checkpoint, not a
+ *                permanent error (a 400 on a fresh window request is)
  *   stale window a delta link only tracks the window it was opened with; once
  *                the stored window is more than 7 days older than the window a
  *                fresh run would open, the source re-opens a new one
@@ -20,6 +23,13 @@
  * Every page is idempotent for the store (natural key = event id).
  * `@removed` tombstones and `isCancelled` events become deletions.
  * Times are requested in UTC (`Prefer: outlook.timezone="UTC"`).
+ *
+ * No `$select`: Graph documents that a delta call on a calendarView "returns
+ * the same properties you'd normally get from a GET /calendarView request.
+ * You cannot use $select to get only a subset of those properties" (nor
+ * $expand, $filter, $orderby, $search) — event: delta, "OData query
+ * parameters", https://learn.microsoft.com/graph/api/event-delta. The page
+ * size is the only lever on payload; the normalizer reads what it needs.
  */
 import { ConnectorError, type CalendarSyncBatch, type Checkpoint, type NormalizedDeletion, type NormalizedTimeEvent, type SyncContext, type SyncPage } from "@vixera/domain";
 import { GRAPH_API, GraphApiClient, graphUrl } from "../http.ts";
@@ -27,27 +37,6 @@ import type { GraphDeltaPage } from "../mail/types.ts";
 import type { MicrosoftOAuthConfig } from "../oauth.ts";
 import { normalizeGraphEvent } from "./normalize.ts";
 import type { GraphEvent, GraphEventDeltaEntry } from "./types.ts";
-
-export const CALENDAR_DELTA_SELECT = [
-  "id",
-  "subject",
-  "bodyPreview",
-  "start",
-  "end",
-  "isAllDay",
-  "isCancelled",
-  "showAs",
-  "location",
-  "organizer",
-  "attendees",
-  "responseStatus",
-  "webLink",
-  "lastModifiedDateTime",
-  "type",
-  "seriesMasterId",
-  "originalStartTimeZone",
-  "onlineMeetingUrl",
-].join(",");
 
 /** A stored window older than this (relative to a fresh one) is re-opened. */
 export const WINDOW_MAX_AGE_DAYS = 7;
@@ -103,7 +92,7 @@ export function isWindowStale(stored: { start: string }, now: Date, window: Cale
 }
 
 export function initialCalendarDeltaUrl(window: { start: string; end: string }): string {
-  return graphUrl(`${GRAPH_API}/me/calendarView/delta`, { startDateTime: window.start, endDateTime: window.end, $select: CALENDAR_DELTA_SELECT });
+  return graphUrl(`${GRAPH_API}/me/calendarView/delta`, { startDateTime: window.start, endDateTime: window.end });
 }
 
 export async function* syncCalendar(
@@ -136,16 +125,19 @@ async function* run(
   const prefer = `odata.maxpagesize=${options.pageSize}, outlook.timezone="UTC"`;
   const window = previous?.window ?? openWindow(ctx.now(), options.window);
   let next: string = previous?.deltaLink ?? initialCalendarDeltaUrl(window);
+  // The first request of a run may carry a link out of our own checkpoint; only that one can be a dead checkpoint.
+  let stored = previous !== null;
   ctx.log?.(previous ? "microsoft.calendar.delta.start" : "microsoft.calendar.window.open", { fullResync, start: window.start, end: window.end });
 
   for (;;) {
-    const res = await client.getJson<GraphDeltaPage<GraphEventDeltaEntry>>(next, { tolerate: [410], headers: { prefer } });
-    if (res.status === 410) {
+    const res = await client.getJson<GraphDeltaPage<GraphEventDeltaEntry>>(next, { tolerate: stored ? [400, 410] : [410], headers: { prefer } });
+    if (res.status === 410 || res.status === 400) {
       if (!previous) throw new ConnectorError("checkpoint_invalid", "Microsoft Graph returned 410 for a fresh calendarView delta query", false);
-      ctx.log?.("microsoft.calendar.delta.expired");
+      ctx.log?.(res.status === 410 ? "microsoft.calendar.delta.expired" : "microsoft.calendar.checkpoint.rejected", { status: res.status });
       yield* run(ctx, client, options, null, true);
       return;
     }
+    stored = false;
     const entries = res.body?.value ?? [];
     const deleted: NormalizedDeletion[] = [];
     const events: NormalizedTimeEvent[] = [];

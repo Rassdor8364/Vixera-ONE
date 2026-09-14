@@ -6,8 +6,8 @@
  *                               (calendarView reads the default calendar)
  *   subject / bodyPreview     → title / description
  *   start / end               → UTC ISO (see "Time zones" below); allDay is the
- *                               civil date as UTC midnight (nearest midnight of the
- *                               zone-converted wall time), end exclusive
+ *                               civil date as UTC midnight (the date the instant
+ *                               falls on in `originalStartTimeZone`), end exclusive
  *   showAs / isCancelled      → status (cancelled > tentative > confirmed)
  *   organizer.emailAddress    → organizer (RSVP taken from the attendee list)
  *   attendees[].status        → accepted, declined, tentativelyAccepted → tentative,
@@ -17,12 +17,22 @@
  *
  * Time zones. The sync source asks Graph for UTC (`Prefer: outlook.timezone="UTC"`),
  * so `timeZone` is normally "UTC" and the wall time is simply stamped with `Z`.
- * If Graph answers in another zone anyway, the connector converts only when the
- * name is an IANA zone `Intl.DateTimeFormat` understands (offset computed from
- * `formatToParts`, one DST correction pass). Windows zone names such as
- * "Pacific Standard Time" are NOT mapped to IANA (no table is shipped): the wall
- * time is then taken as UTC and `metadata.timeZoneUnresolved` is set so the
- * limitation is visible in the data instead of silently wrong.
+ * If Graph answers in another zone anyway, the connector converts when the name
+ * is an IANA zone `Intl.DateTimeFormat` understands or a Windows zone name in
+ * the CLDR table (`windows-zones.ts`, e.g. "Pacific Standard Time" →
+ * America/Los_Angeles); the offset is computed from `formatToParts` with one
+ * DST correction pass. A name that is neither is NOT guessed: the wall time is
+ * then taken as UTC and `metadata.timeZoneUnresolved` is set so the limitation
+ * is visible in the data instead of silently wrong.
+ *
+ * All-day events. Graph stores them as midnight in the zone they were created
+ * in and, when a zone is preferred, converts them like any other time: a
+ * Stockholm all-day event arrives as 22:00 UTC the day before, an Auckland one
+ * as 11:00 UTC the day before. The civil date is the date that instant falls on
+ * in `originalStartTimeZone`, resolved as above. Without a resolvable zone the
+ * nearest UTC midnight is used, which is right only for |offset| < 12 h (it is
+ * a day early at UTC+13/+14 and a day late at UTC−12), so a zone name that
+ * could not be resolved is flagged the same way.
  * `timezone` on the normalized event carries `originalStartTimeZone` (the zone
  * the event was created in, Windows or IANA name, verbatim) when present.
  */
@@ -36,6 +46,7 @@ import {
   type TimeEventStatus,
 } from "@vixera/domain";
 import type { GraphAttendee, GraphDateTimeTimeZone, GraphEvent } from "./types.ts";
+import { windowsZoneToIana } from "./windows-zones.ts";
 
 export const PRIMARY_CALENDAR_ID = "primary";
 export const UNTITLED_EVENT = "(no title)";
@@ -50,9 +61,10 @@ export function normalizeGraphEvent(raw: GraphEvent, options: NormalizeEventOpti
     throw new ConnectorError("invalid_response", "Microsoft Graph event without id", false);
   }
   const allDay = raw.isAllDay === true;
-  const start = toInstant(raw.start, allDay);
+  const originalZone = raw.originalStartTimeZone?.trim() || null;
+  const start = toInstant(raw.start, allDay, originalZone);
   if (!start) throw new ConnectorError("invalid_response", `Microsoft Graph event ${raw.id} has no start`, false);
-  const end = toInstant(raw.end, allDay) ?? start;
+  const end = toInstant(raw.end, allDay, originalZone) ?? start;
   const self = options.selfAddress ? normalizeEmail(options.selfAddress) : null;
   const attendees = (raw.attendees ?? []).filter((a) => a && a.type !== "resource");
   const participants = attendees.map((a) => toParticipant(a, self, raw));
@@ -147,24 +159,30 @@ interface Instant {
   readonly unresolvedZone: boolean;
 }
 
-/** Graph wall time + zone → UTC instant. See the file comment for the zone policy. */
-export function toInstant(value: GraphDateTimeTimeZone | null | undefined, allDay: boolean): Instant | null {
+/**
+ * Graph wall time + zone → UTC instant. See the file comment for the zone
+ * policy. `originalZone` (the event's `originalStartTimeZone`) decides the
+ * civil date of an all-day event.
+ */
+export function toInstant(value: GraphDateTimeTimeZone | null | undefined, allDay: boolean, originalZone: string | null = null): Instant | null {
   const wall = parseWallTime(value?.dateTime);
   if (!wall) return null;
-  if (allDay) {
-    // Graph stores all-day events as midnight in their original zone and converts
-    // them like any other time when a zone is preferred, so a Stockholm all-day
-    // event arrives as 22:00 UTC the day before. Offsets are within ±14h, so the
-    // nearest UTC midnight is the intended civil date; a true midnight is unchanged.
-    const instant = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second, wall.millisecond);
-    return { iso: new Date(Math.round(instant / 86_400_000) * 86_400_000).toISOString(), unresolvedZone: false };
-  }
   const asUtc = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second, wall.millisecond);
   const zone = value?.timeZone?.trim();
-  if (!zone || /^(utc|z|gmt)$/i.test(zone) || wall.explicitUtc) return { iso: new Date(asUtc).toISOString(), unresolvedZone: false };
-  const offsetMinutes = zoneOffsetMinutes(zone, asUtc);
-  if (offsetMinutes === null) return { iso: new Date(asUtc).toISOString(), unresolvedZone: true };
-  return { iso: new Date(asUtc - offsetMinutes * 60_000).toISOString(), unresolvedZone: false };
+  let instant = asUtc;
+  let unresolvedZone = false;
+  if (zone && !/^(utc|z|gmt)$/i.test(zone) && !wall.explicitUtc) {
+    const offsetMinutes = zoneOffsetMinutes(zone, asUtc);
+    if (offsetMinutes === null) unresolvedZone = true;
+    else instant = asUtc - offsetMinutes * 60_000;
+  }
+  if (!allDay) return { iso: new Date(instant).toISOString(), unresolvedZone };
+  // The civil date is the date `instant` falls on in the event's own zone; the
+  // wall time there is midnight, so rounding absorbs a DST gap at midnight.
+  const offsetMinutes = originalZone ? zoneOffsetAt(originalZone, instant) : null;
+  if (originalZone && offsetMinutes === null) unresolvedZone = true;
+  const local = instant + (offsetMinutes ?? 0) * 60_000;
+  return { iso: new Date(Math.round(local / 86_400_000) * 86_400_000).toISOString(), unresolvedZone };
 }
 
 interface WallTime {
@@ -199,15 +217,28 @@ function parseWallTime(text: string | null | undefined): WallTime | null {
 }
 
 /**
- * Offset (minutes east of UTC) of an IANA zone for a wall time, or null when
- * `Intl` does not know the zone (Windows names land here). One correction pass
- * handles DST transitions well enough for calendar context.
+ * Offset (minutes east of UTC) of a zone for a wall time, or null when the zone
+ * is neither a Windows name in the CLDR table nor one `Intl` knows. One
+ * correction pass handles DST transitions well enough for calendar context.
  */
 export function zoneOffsetMinutes(zone: string, wallAsUtcMs: number): number | null {
+  const offsetAt = offsetFunction(zone);
+  if (!offsetAt) return null;
+  const first = offsetAt(wallAsUtcMs);
+  return offsetAt(wallAsUtcMs - first * 60_000);
+}
+
+/** Offset (minutes east of UTC) of a zone at an instant, or null for an unknown zone. */
+export function zoneOffsetAt(zone: string, instantMs: number): number | null {
+  const offsetAt = offsetFunction(zone);
+  return offsetAt ? offsetAt(instantMs) : null;
+}
+
+function offsetFunction(zone: string): ((instantMs: number) => number) | null {
   let formatter: Intl.DateTimeFormat;
   try {
     formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone,
+      timeZone: windowsZoneToIana(zone) ?? zone,
       hourCycle: "h23",
       year: "numeric",
       month: "2-digit",
@@ -219,7 +250,7 @@ export function zoneOffsetMinutes(zone: string, wallAsUtcMs: number): number | n
   } catch {
     return null;
   }
-  const offsetAt = (instantMs: number): number => {
+  return (instantMs) => {
     const parts: Record<string, number> = {};
     for (const part of formatter.formatToParts(new Date(instantMs))) {
       if (part.type !== "literal") parts[part.type] = Number.parseInt(part.value, 10);
@@ -227,7 +258,4 @@ export function zoneOffsetMinutes(zone: string, wallAsUtcMs: number): number | n
     const local = Date.UTC(parts.year ?? 1970, (parts.month ?? 1) - 1, parts.day ?? 1, parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0);
     return Math.round((local - instantMs) / 60_000);
   };
-  const first = offsetAt(wallAsUtcMs);
-  const second = offsetAt(wallAsUtcMs - first * 60_000);
-  return second;
 }

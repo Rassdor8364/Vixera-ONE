@@ -7,14 +7,23 @@
  *                carries the new `@odata.deltaLink`
  *   HTTP 410     Graph dropped the delta token → restart from the initial
  *                backfill with every page marked `fullResync: true`
+ *   HTTP 400/410 on a STORED link (deltaLink or backfill nextLink) → same
+ *                restart: a link that came out of our checkpoint and that Graph
+ *                rejects is a dead checkpoint, not a permanent error
  *
- * Checkpoint (opaque to the engine, owned by this file):
- *   { deltaLink: string }
+ * Checkpoint (opaque to the engine, owned by this file), one of:
+ *   { deltaLink: string }                                   a complete delta round
+ *   { backfill: { nextLink: string, fullResync?: true } }   initial backfill in progress
  *
- * Intermediate pages keep the *previous* checkpoint (or null on a first run):
- * a nextLink is not durable enough to persist, so a crash mid-run simply
- * replays from the last complete delta round. Every page is idempotent for the
- * store (natural key = message id). Tombstones (`@removed`) become deletions.
+ * The initial backfill can be larger than one run's time budget, and the
+ * engine stops at the deadline and restarts the pass next run unless a page
+ * moved the checkpoint. So every intermediate backfill page persists its
+ * `@odata.nextLink` (Graph encodes the paging state in it; the docs say to
+ * save and reuse it) and the next run resumes there. Intermediate pages of an
+ * incremental round keep the previous deltaLink instead: rounds are small and
+ * replaying one is cheaper than losing the last complete round. Every page is
+ * idempotent for the store (natural key = message id). Tombstones (`@removed`)
+ * become deletions.
  *
  * Bodies are requested as text (`Prefer: outlook.body-content-type="text"`);
  * page size goes through `Prefer: odata.maxpagesize` because message delta
@@ -46,9 +55,16 @@ export const MAIL_DELTA_SELECT = [
 export const ATTACHMENT_SELECT = "id,name,contentType,size,isInline";
 const ATTACHMENT_CONCURRENCY = 4;
 
-export interface MailCheckpoint {
-  readonly deltaLink: string;
+export interface MailBackfillState {
+  /** The `@odata.nextLink` of the backfill page to fetch next. */
+  readonly nextLink: string;
+  /** Set when this backfill replaces a checkpoint Graph invalidated. */
+  readonly fullResync?: true;
 }
+
+export type MailCheckpoint =
+  | { readonly deltaLink: string; readonly backfill?: undefined }
+  | { readonly deltaLink?: undefined; readonly backfill: MailBackfillState };
 
 export interface MailSyncOptions {
   readonly oauth: MicrosoftOAuthConfig;
@@ -58,10 +74,22 @@ export interface MailSyncOptions {
 
 export function parseMailCheckpoint(checkpoint: Checkpoint | null): MailCheckpoint | null {
   if (!checkpoint) return null;
-  const deltaLink = checkpoint.deltaLink;
+  const { deltaLink, backfill } = checkpoint;
+  if (deltaLink !== undefined && backfill !== undefined) return null;
+  if (backfill !== undefined) {
+    if (!backfill || typeof backfill !== "object" || Array.isArray(backfill)) return null;
+    const nextLink = backfill.nextLink;
+    if (typeof nextLink !== "string" || !nextLink || !isGraphUrl(nextLink)) return null;
+    return { backfill: { nextLink, ...(backfill.fullResync === true ? { fullResync: true as const } : {}) } };
+  }
   if (typeof deltaLink !== "string" || !deltaLink) return null;
   if (!isGraphUrl(deltaLink)) return null;
   return { deltaLink };
+}
+
+function toCheckpoint(cp: MailCheckpoint): Checkpoint {
+  if (cp.backfill) return { backfill: { nextLink: cp.backfill.nextLink, ...(cp.backfill.fullResync ? { fullResync: true } : {}) } };
+  return { deltaLink: cp.deltaLink };
 }
 
 /** Delta links must point at Graph; anything else is a corrupted checkpoint, not a place to send a bearer token. */
@@ -91,7 +119,7 @@ export async function* syncMail(
     yield* run(ctx, client, options, null, true);
     return;
   }
-  yield* run(ctx, client, options, parsed, false);
+  yield* run(ctx, client, options, parsed, parsed?.backfill?.fullResync === true);
 }
 
 async function* run(
@@ -102,17 +130,21 @@ async function* run(
   fullResync: boolean,
 ): AsyncIterable<SyncPage<MailSyncBatch>> {
   const prefer = `odata.maxpagesize=${options.pageSize}, outlook.body-content-type="text"`;
-  let next: string = previous?.deltaLink ?? initialMailDeltaUrl(ctx.now(), options.backfillDays);
-  ctx.log?.(previous ? "microsoft.mail.delta.start" : "microsoft.mail.backfill.start", { fullResync, backfillDays: options.backfillDays });
+  const round = previous?.deltaLink ?? null;
+  let next: string = round ?? previous?.backfill?.nextLink ?? initialMailDeltaUrl(ctx.now(), options.backfillDays);
+  // The first request of a run may carry a link out of our own checkpoint; only that one can be a dead checkpoint.
+  let stored = previous !== null;
+  ctx.log?.(round ? "microsoft.mail.delta.start" : "microsoft.mail.backfill.start", { fullResync, resumed: previous?.backfill !== undefined, backfillDays: options.backfillDays });
 
   for (;;) {
-    const res = await client.getJson<GraphDeltaPage<GraphMessageDeltaEntry>>(next, { tolerate: [410], headers: { prefer } });
-    if (res.status === 410) {
+    const res = await client.getJson<GraphDeltaPage<GraphMessageDeltaEntry>>(next, { tolerate: stored ? [400, 410] : [410], headers: { prefer } });
+    if (res.status === 410 || res.status === 400) {
       if (!previous) throw new ConnectorError("checkpoint_invalid", "Microsoft Graph returned 410 for a fresh mail delta query", false);
-      ctx.log?.("microsoft.mail.delta.expired");
+      ctx.log?.(round !== null && res.status === 410 ? "microsoft.mail.delta.expired" : "microsoft.mail.checkpoint.rejected", { status: res.status });
       yield* run(ctx, client, options, null, true);
       return;
     }
+    stored = false;
     const entries = res.body?.value ?? [];
     const deleted: NormalizedDeletion[] = [];
     const live: GraphMessage[] = [];
@@ -129,11 +161,16 @@ async function* run(
       throw new ConnectorError("invalid_response", "Microsoft Graph mail delta page has neither nextLink nor deltaLink", false);
     }
     const done = nextLink === null;
-    const checkpoint: Checkpoint | null = done ? { deltaLink: deltaLink as string } : previous ? { deltaLink: previous.deltaLink } : null;
+    if (!done && !isGraphUrl(nextLink)) throw new ConnectorError("invalid_response", "Microsoft Graph nextLink points outside Graph", false);
+    // Done: the new round. Backfill in progress: resume at the next page. Incremental round in progress: keep the last complete round.
+    const checkpoint: MailCheckpoint = done
+      ? { deltaLink: deltaLink as string }
+      : round === null
+        ? { backfill: { nextLink: nextLink as string, ...(fullResync ? { fullResync: true as const } : {}) } }
+        : { deltaLink: round };
     ctx.log?.("microsoft.mail.delta.page", { entries: entries.length, messages: messages.length, deleted: deleted.length, hasMore: !done });
-    yield { batch: { messages, deleted }, checkpoint, done, ...(fullResync ? { fullResync: true } : {}) };
+    yield { batch: { messages, deleted }, checkpoint: toCheckpoint(checkpoint), done, ...(fullResync ? { fullResync: true } : {}) };
     if (done) return;
-    if (!isGraphUrl(nextLink as string)) throw new ConnectorError("invalid_response", "Microsoft Graph nextLink points outside Graph", false);
     next = nextLink as string;
   }
 }
