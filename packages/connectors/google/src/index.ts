@@ -15,7 +15,17 @@ export {
   type GoogleOAuthConfig,
 } from "./oauth.ts";
 export { GoogleApiClient, type ApiContext, type ApiResponse } from "./http.ts";
-export { normalizeGmailMessage, decodeBase64Url, htmlToText, parseRfc2822Date, GMAIL_UNREAD_LABEL, MAX_BODY_CHARS } from "./gmail/normalize.ts";
+export {
+  normalizeGmailMessage,
+  isHiddenGmailMessage,
+  decodeBase64Url,
+  htmlToText,
+  parseRfc2822Date,
+  GMAIL_UNREAD_LABEL,
+  GMAIL_SENT_LABEL,
+  GMAIL_HIDDEN_LABELS,
+  MAX_BODY_CHARS,
+} from "./gmail/normalize.ts";
 export { syncMail, parseGmailCheckpoint, GMAIL_API, type GmailCheckpoint, type GmailBackfillState, type GmailSyncOptions } from "./gmail/sync.ts";
 export { normalizeGoogleEvent, UNTITLED_EVENT } from "./calendar/normalize.ts";
 export {

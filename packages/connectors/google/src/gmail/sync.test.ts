@@ -67,7 +67,8 @@ describe("syncMail initial backfill", () => {
     expect(pages[1]?.done).toBe(true);
 
     const lists = fake.callsTo("/users/me/messages?");
-    expect(lists[0]?.url.searchParams.get("q")).toBe("newer_than:30d");
+    // drafts and chats never reach the spine; messages.list already excludes SPAM/TRASH by default
+    expect(lists[0]?.url.searchParams.get("q")).toBe("newer_than:30d -in:drafts -in:chats");
     expect(lists[0]?.url.searchParams.get("maxResults")).toBe("100");
     expect(lists[1]?.url.searchParams.get("pageToken")).toBe("page-2");
     expect(fake.callsTo("format=full")).toHaveLength(4);
@@ -157,6 +158,67 @@ describe("syncMail incremental history", () => {
     expect(resumed?.backfill?.fullResync).toBe(true);
   });
 
+  it("applies Gmail label semantics: Trash/Spam are deletions, hidden labels are never fetched, restored mail is re-fetched", async () => {
+    const fake = createFakeFetch([
+      {
+        match: `${GMAIL_API}/history`,
+        reply: {
+          json: {
+            history: [
+              // user trashed a stored invoice: a deletion, without fetching it
+              { id: "900001", labelsAdded: [{ message: { id: "trashed1" }, labelIds: ["TRASH"] }] },
+              // Gmail moved a stored message to spam later on
+              { id: "900002", labelsAdded: [{ message: { id: "spammed1" }, labelIds: ["SPAM"] }] },
+              // an arrival whose history ref carries no labels: fetched, then dropped on its (SPAM) labels
+              { id: "900003", messagesAdded: [{ message: { id: "spam-new" } }] },
+              // born hidden (a draft being written, mail filed as spam on arrival): never fetched at all
+              { id: "900004", messagesAdded: [{ message: { id: "draft1", labelIds: ["DRAFT"] } }, { message: { id: "spam-born", labelIds: ["SPAM", "UNREAD"] } }] },
+              // a message the user took out of the trash: fetched again
+              { id: "900005", labelsRemoved: [{ message: { id: "restored1" }, labelIds: ["TRASH"] }] },
+              // an ordinary arrival
+              { id: "900006", messagesAdded: [{ message: { id: "fresh1", labelIds: ["INBOX", "UNREAD"] } }] },
+            ],
+            historyId: "900010",
+          },
+        },
+      },
+      {
+        match: /\/users\/me\/messages\/[^?]+\?format=full/,
+        reply: ({ call }) => {
+          const id = call.url.pathname.split("/").pop() ?? "";
+          if (id === "spam-new") return { json: { ...messageWithId(id), labelIds: ["SPAM", "UNREAD"] } };
+          return { json: messageWithId(id) };
+        },
+      },
+    ]);
+    const pages = await collect(syncMail(makeContext(fake.fetch), { historyId: "884000" }, options));
+
+    expect(pages).toHaveLength(1);
+    const page = pages[0]!;
+    expect(page.batch.messages.map((m) => m.externalId).sort()).toEqual(["fresh1", "restored1"]);
+    expect(page.batch.deleted.map((d) => d.externalId).sort()).toEqual(["spam-new", "spammed1", "trashed1"]);
+    expect(page.checkpoint).toEqual({ historyId: "900010" });
+    for (const neverFetched of ["trashed1", "spammed1", "draft1", "spam-born"]) expect(fake.callsTo(`/messages/${neverFetched}?`)).toHaveLength(0);
+    expect(fake.callsTo("format=full")).toHaveLength(3);
+  });
+
+  it("drops a backfilled message that was trashed between list and get, as a deletion", async () => {
+    const fake = createFakeFetch([
+      { match: `${GMAIL_API}/profile`, reply: { json: profile } },
+      { match: (url) => url.pathname.endsWith("/users/me/messages"), reply: { json: { messages: [{ id: "keep" }, { id: "binned" }] } } },
+      {
+        match: /\/users\/me\/messages\/[^?]+\?format=full/,
+        reply: ({ call }) => {
+          const id = call.url.pathname.split("/").pop() ?? "";
+          return { json: id === "binned" ? { ...messageWithId(id), labelIds: ["TRASH"] } : messageWithId(id) };
+        },
+      },
+    ]);
+    const pages = await collect(syncMail(makeContext(fake.fetch), null, options));
+    expect(pages[0]?.batch.messages.map((m) => m.externalId)).toEqual(["keep"]);
+    expect(pages[0]?.batch.deleted).toEqual([{ externalId: "binned" }]);
+  });
+
   it("never turns a 200 with an empty or non-JSON messages.get body into a deletion", async () => {
     for (const bad of [{ text: "" }, { text: "<html>upstream hiccup</html>" }]) {
       const fake = createFakeFetch([
@@ -200,6 +262,26 @@ describe("planHistory", () => {
     ]);
     expect([...toFetch]).toEqual(["y"]);
     expect([...deleted]).toEqual(["x"]);
+  });
+
+  it("folds Trash/Spam label changes in order: the last move wins, a purge always wins", () => {
+    const { toFetch, deleted } = planHistory([
+      // arrived, then trashed: never fetched
+      { id: "1", messagesAdded: [{ message: { id: "a" } }] },
+      { id: "2", labelsAdded: [{ message: { id: "a" }, labelIds: ["TRASH"] }] },
+      // trashed, then taken out again: re-fetched, not deleted
+      { id: "3", labelsAdded: [{ message: { id: "b" }, labelIds: ["TRASH"] }] },
+      { id: "4", labelsRemoved: [{ message: { id: "b" }, labelIds: ["TRASH"] }] },
+      // spam, restored, then purged for good
+      { id: "5", labelsAdded: [{ message: { id: "c" }, labelIds: ["SPAM"] }] },
+      { id: "6", labelsRemoved: [{ message: { id: "c" }, labelIds: ["SPAM"] }] },
+      { id: "7", messagesDeleted: [{ message: { id: "c" } }] },
+      // born hidden: no fetch, no deletion either (it was never stored)
+      { id: "8", messagesAdded: [{ message: { id: "d", labelIds: ["DRAFT"] } }] },
+      { id: "9", messagesAdded: [{ message: { id: "e", labelIds: ["CHAT"] } }] },
+    ]);
+    expect([...toFetch].sort()).toEqual(["b"]);
+    expect([...deleted].sort()).toEqual(["a", "c"]);
   });
 });
 

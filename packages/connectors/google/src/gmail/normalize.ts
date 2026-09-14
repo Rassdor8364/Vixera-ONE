@@ -10,7 +10,18 @@ import { ConnectorError, parseAddressList, type JsonObject, type MailAttachmentM
 import type { GmailHeader, GmailMessage, GmailPart } from "./types.ts";
 
 export const GMAIL_UNREAD_LABEL = "UNREAD";
+export const GMAIL_SENT_LABEL = "SENT";
+/**
+ * Messages carrying any of these labels never reach the spine: Spam and Trash
+ * are not mail the user received, drafts are not mail at all, and chats are
+ * Hangouts history. A stored message that gains one of them is deleted.
+ */
+export const GMAIL_HIDDEN_LABELS: readonly string[] = ["TRASH", "SPAM", "DRAFT", "CHAT"];
 export const MAX_BODY_CHARS = 20_000;
+
+export function isHiddenGmailMessage(labelIds: readonly string[] | undefined): boolean {
+  return (labelIds ?? []).some((l) => GMAIL_HIDDEN_LABELS.includes(l));
+}
 
 export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage {
   if (!raw || typeof raw.id !== "string" || !raw.id) {
@@ -29,12 +40,17 @@ export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage 
   const labels = raw.labelIds ?? [];
   const body = extractBody(raw.payload);
   const attachments = collectAttachments(raw.payload);
+  // Mail the user sent is their own context (who they wrote to, about what),
+  // but it was not received FROM anyone: no sender means the linker never
+  // creates a person for the user's own address or marks them as the sender.
+  const sent = labels.includes(GMAIL_SENT_LABEL);
 
   const metadata: JsonObject = {};
   if (raw.historyId) metadata.gmailHistoryId = raw.historyId;
   if (typeof raw.sizeEstimate === "number") metadata.sizeEstimate = raw.sizeEstimate;
   const messageId = header(headers, "Message-ID")?.trim();
   if (messageId) metadata.rfcMessageId = messageId;
+  metadata.direction = sent ? "sent" : "received";
 
   return {
     externalId: raw.id,
@@ -42,7 +58,7 @@ export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage 
     subject,
     snippet: raw.snippet ? decodeEntities(raw.snippet).trim() || null : null,
     bodyText: body,
-    from,
+    from: sent ? null : from,
     to,
     cc,
     sentAt,

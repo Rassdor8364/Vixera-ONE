@@ -40,7 +40,7 @@ describe("normalizeGmailMessage (multipart with PDF)", () => {
   it("maps UNREAD to isUnread and keeps labels", () => {
     expect(m.isUnread).toBe(true);
     expect(m.labels).toEqual(["INBOX", "UNREAD", "IMPORTANT"]);
-    expect(m.metadata).toEqual({ gmailHistoryId: "884211", sizeEstimate: 48211, rfcMessageId: "<invoice-4800@mail.example.com>" });
+    expect(m.metadata).toEqual({ gmailHistoryId: "884211", sizeEstimate: 48211, rfcMessageId: "<invoice-4800@mail.example.com>", direction: "received" });
   });
 
   it("does not carry provider-only structure or a user id", () => {
@@ -66,6 +66,31 @@ describe("normalizeGmailMessage (html only, read, inline image)", () => {
     expect(m.sentAt).toBeNull();
     expect(m.receivedAt).toBe("2026-09-09T06:40:00.000Z");
     expect(m.snippet).toBe("Hello there, Your order 'A-1' has shipped & will arrive on Monday.");
+  });
+});
+
+describe("normalizeGmailMessage (sent by the user)", () => {
+  const sent = normalizeGmailMessage({
+    ...raw,
+    id: "sent001",
+    labelIds: ["SENT"],
+    payload: {
+      ...raw.payload,
+      headers: [
+        { name: "From", value: "Me <me@example.com>" },
+        { name: "To", value: "Eric Lindqvist <eric.lindqvist@example.com>" },
+        { name: "Subject", value: "Re: Invoice #4800" },
+        { name: "Date", value: "Tue, 8 Sep 2026 17:00:00 +0200" },
+      ],
+    },
+  });
+
+  it("is the user's own context, not mail received from the user: no sender, direction sent, recipients kept", () => {
+    expect(sent.from).toBeNull();
+    expect(sent.metadata?.direction).toBe("sent");
+    expect(sent.to).toEqual([{ email: "eric.lindqvist@example.com", name: "Eric Lindqvist" }]);
+    expect(sent.labels).toEqual(["SENT"]);
+    expect(sent.isUnread).toBe(false);
   });
 });
 
