@@ -267,8 +267,14 @@ async function fetchMessages(
   const results = await mapConcurrent(ids, options.concurrency, async (id) => {
     const res = await client.getJson<GmailMessage>(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, { tolerate: [404] });
     if (res.status === 404) {
-      missing.push(id);
-      return null;
+      // Gmail's not-found always carries its JSON error body; a 404 without one
+      // (an HTML page from a proxy, an empty body) is not Gmail saying the
+      // message is gone, and must not delete the stored row.
+      if ((res.body as { error?: { code?: number } } | null)?.error?.code === 404) {
+        missing.push(id);
+        return null;
+      }
+      throw new ConnectorError("invalid_response", `Gmail returned HTTP 404 without its error body for message ${id}`, true);
     }
     // Only a 404 means "gone". A 2xx whose body did not parse (empty, truncated,
     // an HTML error page from a proxy) is a failed fetch: reporting it as

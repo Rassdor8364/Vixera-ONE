@@ -86,9 +86,22 @@ An account's `capabilities` array says what it feeds; a Google account feeds
 mail **and** calendar with one credential — or only one of them: Google's
 consent screen lets the user untick scopes, and `discoverAccount` derives the
 capabilities from the scopes actually granted (`capabilitiesForScopes`:
-`gmail.readonly` or broader → `mail`, `calendar.readonly` or broader →
-`calendar`; a grant covering neither fails the link with `unsupported`). Each
-capability has its own `connector_sync_states` row (ADR-004).
+`gmail.readonly`, `gmail.modify` or `https://mail.google.com/` → `mail`;
+`calendar.readonly` or `calendar` → `calendar`. `gmail.metadata` and
+`calendar.events*` grant nothing, because the sync cannot run under them —
+no `q` filter or `format=full` on Gmail, no calendarList read on Calendar —
+and claiming a capability that fails every cycle is what this exists to
+avoid. A grant covering neither fails the link with a `400` that names the
+problem). Each capability has its own `connector_sync_states` row (ADR-004).
+
+Known limitation: a calendar checkpoint written before series tracking
+existed (a `syncToken` and no `series`) does not fan out a cancelled
+recurring master to its stored instances until that calendar re-lists (a
+`410`, or a rejected page token). No production account has synced yet, so
+no such checkpoint exists; if one ever does, clearing the calendar's token
+once re-lists it idempotently. Gmail's `metadata.direction` (`sent` /
+`received`) is recorded on every message and read by nothing yet; the linker
+still scores sent mail as received-mail attention (roadmap).
 
 ## Multi-account model
 
@@ -354,7 +367,7 @@ returns one empty page unless a test hook changed the fixtures.
 | `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run retries from the persisted checkpoint once the backoff below has elapsed |
 | `provider_unavailable` | network failure, 5xx | same as rate limited |
 | `invalid_response` | provider body missing required fields | state `error`; not retried within the run, and subject to the same backoff |
-| `unsupported` | capability not implemented by the connector, wrong credential kind, disallowed Plaid endpoint, Google 403 `insufficientPermissions` / `ACCESS_TOKEN_SCOPE_INSUFFICIENT` (a scope the user declined: limits one capability, the account stays active) | state `error` |
+| `unsupported` | capability not implemented by the connector, wrong credential kind, disallowed Plaid endpoint, any Google 403 that is not a quota (`insufficientPermissions` / `ACCESS_TOKEN_SCOPE_INSUFFICIENT` for a scope the user declined; `forbidden` for a Workspace user without a Gmail licence or an API the admin turned off — Google answers 401, not 403, for a dead credential): limits one capability, the account stays active and its other capabilities keep syncing (engine-tested) | state `error` |
 | `unknown` | anything else; Google token endpoint 400/401 other than `invalid_grant` (`invalid_client`, `unauthorized_client`, … — our OAuth client configuration, retryable so accounts recover once it is fixed) | state `error` |
 | *(missing credential)* | `credentialRef` null or Vault returns nothing | account `needs_reauth`, outcome `errorCode: "credential_missing"` |
 

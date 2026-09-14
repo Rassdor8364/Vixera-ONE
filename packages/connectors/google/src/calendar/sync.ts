@@ -125,13 +125,20 @@ interface CalendarState {
   series: Map<string, Set<string>>;
 }
 
-function loadState(prior: CalendarCheckpointEntry | undefined, pastEdgeMs: number): CalendarState {
+/** Instances kept per master, newest first by the date in their id; a daily series over a year is 365. */
+const MAX_SERIES_INSTANCES = 500;
+
+function loadState(prior: CalendarCheckpointEntry | undefined, pastEdgeMs: number, futureEdgeMs: number): CalendarState {
   const series = new Map<string, Set<string>>();
   for (const [master, ids] of Object.entries(prior?.series ?? {})) {
-    const kept = ids.filter((id) => {
+    // Bounded on both edges: sync-token pages carry no timeMax, so without the
+    // future edge every far-future instance Google ever returned would stay
+    // until it aged out of the past window. Undatable ids stay, under the cap.
+    const dated = ids.filter((id) => {
       const startMs = instanceStartMs(id);
-      return startMs === null || startMs >= pastEdgeMs;
+      return startMs === null || (startMs >= pastEdgeMs && startMs <= futureEdgeMs);
     });
+    const kept = dated.length > MAX_SERIES_INSTANCES ? dated.sort((a, b) => (instanceStartMs(b) ?? Infinity) - (instanceStartMs(a) ?? Infinity)).slice(0, MAX_SERIES_INSTANCES) : dated;
     if (kept.length) series.set(master, new Set(kept));
   }
   return { syncToken: prior?.syncToken ?? null, page: prior?.page ?? null, series };
@@ -196,7 +203,8 @@ export async function* syncCalendar(
   const calendars = selectCalendars(await listCalendars(client));
   // State carried forward: only for calendars that still exist for this account.
   const states = new Map<string, CalendarState>();
-  for (const c of calendars) states.set(c.id, loadState(parsed?.calendars[c.id], pastEdgeMs));
+  const futureEdgeMs = now.getTime() + options.window.futureDays * 86_400_000;
+  for (const c of calendars) states.set(c.id, loadState(parsed?.calendars[c.id], pastEdgeMs, futureEdgeMs));
   ctx.log?.("calendar.sync.start", {
     calendars: calendars.length,
     withSyncToken: [...states.values()].filter((s) => s.syncToken !== null).length,

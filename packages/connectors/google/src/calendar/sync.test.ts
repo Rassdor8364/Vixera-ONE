@@ -90,6 +90,41 @@ describe("syncCalendar resuming an initial listing", () => {
     expect(pages[1]?.done).toBe(true);
   });
 
+  it("a sync-token response that pages checkpoints its page token without a window, and the resume carries both", async () => {
+    const fake = createFakeFetch([
+      { match: `${CALENDAR_API}/users/me/calendarList`, reply: { json: { items: [{ id: PRIMARY, primary: true, accessRole: "owner" }] } } },
+      {
+        match: eventsUrl(PRIMARY),
+        reply: ({ call }) =>
+          call.url.searchParams.get("pageToken") === "inc2"
+            ? { json: { items: [{ id: "i2", status: "confirmed", summary: "Second", start: { date: "2026-09-21" }, end: { date: "2026-09-22" } }], nextSyncToken: "fake-sync-token-primary-3" } }
+            : { json: { items: [{ id: "i1", status: "confirmed", summary: "First", start: { date: "2026-09-20" }, end: { date: "2026-09-21" } }], nextPageToken: "inc2" } },
+      },
+    ]);
+    const checkpoint = { calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-2" } } };
+    const pages = await collect(syncCalendar(makeContext(fake.fetch), checkpoint, options));
+    const calls = fake.callsTo(eventsUrl(PRIMARY));
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url.searchParams.get("syncToken")).toBe("fake-sync-token-primary-2");
+    expect(calls[0]?.url.searchParams.get("timeMin")).toBeNull();
+    // The intermediate page keeps the token it was issued under and the page token, no window.
+    expect(pages[0]?.checkpoint).toEqual({ calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-2", page: { token: "inc2" } } } });
+    expect(calls[1]?.url.searchParams.get("syncToken")).toBe("fake-sync-token-primary-2");
+    expect(calls[1]?.url.searchParams.get("pageToken")).toBe("inc2");
+    expect(pages[1]?.checkpoint).toEqual({ calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-3" } } });
+
+    // A run resumed from that checkpoint sends both parameters.
+    const resumed = createFakeFetch([
+      { match: `${CALENDAR_API}/users/me/calendarList`, reply: { json: { items: [{ id: PRIMARY, primary: true, accessRole: "owner" }] } } },
+      { match: eventsUrl(PRIMARY), reply: { json: { items: [], nextSyncToken: "fake-sync-token-primary-3" } } },
+    ]);
+    await collect(syncCalendar(makeContext(resumed.fetch), { calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-2", page: { token: "inc2" } } } }, options));
+    const call = resumed.callsTo(eventsUrl(PRIMARY))[0];
+    expect(call?.url.searchParams.get("syncToken")).toBe("fake-sync-token-primary-2");
+    expect(call?.url.searchParams.get("pageToken")).toBe("inc2");
+    expect(call?.url.searchParams.get("timeMin")).toBeNull();
+  });
+
   it("keeps the fullResync marker on resumed pages of a re-list", async () => {
     const fake = createFakeFetch([
       { match: `${CALENDAR_API}/users/me/calendarList`, reply: { json: { items: [{ id: PRIMARY, primary: true, accessRole: "owner" }] } } },
@@ -215,7 +250,8 @@ describe("syncCalendar recurring series", () => {
       calendars: {
         [PRIMARY]: {
           syncToken: "fake-sync-token-primary-1",
-          series: { weekly: ["weekly_20260701T120000Z", "weekly_20260811T113000Z", "weekly_20260811T120000Z", "weekly_20260904"], odd: ["odd_first", "odd_20260101T000000Z"] },
+          // futureDays is 90: 2026-12-09T12:00Z is the far edge, so a 2027 instance is dropped too
+          series: { weekly: ["weekly_20260701T120000Z", "weekly_20260811T113000Z", "weekly_20260811T120000Z", "weekly_20260904", "weekly_20270105T120000Z"], odd: ["odd_first", "odd_20260101T000000Z"] },
         },
       },
     };

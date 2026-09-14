@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ConnectorError } from "@vixera/domain";
 import { mapConcurrent } from "./http.ts";
 
 describe("mapConcurrent", () => {
@@ -36,5 +37,20 @@ describe("mapConcurrent", () => {
     expect(started).toEqual([0, 1, 2, 3]);
     // the promise only settles once the other workers finished their current item
     expect(inFlight).toBe(0);
+  });
+
+  it("reports a non-retryable failure from an item already in flight over an earlier retryable one", async () => {
+    const items = [0, 1, 2, 3];
+    const error = await mapConcurrent(items, 4, async (n) => {
+      await new Promise((r) => setTimeout(r, n === 1 ? 1 : 5));
+      if (n === 1) throw new ConnectorError("invalid_response", "hiccup", true);
+      if (n === 2) throw new ConnectorError("unauthorized", "token rejected", false);
+      return n;
+    }).then(
+      () => null,
+      (e: unknown) => e as ConnectorError,
+    );
+    // The hiccup came first, but the rejected token is what the engine must act on.
+    expect(error?.code).toBe("unauthorized");
   });
 });

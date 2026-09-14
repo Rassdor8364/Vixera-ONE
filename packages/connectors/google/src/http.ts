@@ -134,7 +134,10 @@ function mapError(status: number, body: GoogleErrorBody | null): ConnectorError 
     // whole account (needs_reauth) and stop the capabilities that do work.
     const scope = reasons.some((r) => /insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(r));
     if (scope) return new ConnectorError("unsupported", `Google grant does not cover this API (${detail}); re-link to allow it`, false);
-    return new ConnectorError("unauthorized", `Google denied access (${detail})`, false);
+    // Any other 403 (a Workspace user without a Gmail licence, an API the admin
+    // turned off, a calendar the user cannot read) is still not a dead
+    // credential — Google answers 401 for those. It limits this capability.
+    return new ConnectorError("unsupported", `Google denied this API (${detail})`, false);
   }
   if (status >= 500) return new ConnectorError("provider_unavailable", `Google API error ${status} (${detail})`, true);
   return new ConnectorError("unknown", `Google API error ${status} (${detail})`, false);
@@ -160,11 +163,21 @@ export async function mapConcurrent<T, R>(
       try {
         results[index] = await fn(items[index] as T, index);
       } catch (error) {
-        queue.failure ??= { error };
+        // The first failure stops the queue; a later, non-retryable one from an
+        // item already in flight (a rejected token) is the one worth reporting,
+        // since the engine acts on it and would otherwise only see a hiccup.
+        // Re-read through an assertion: the loop condition narrowed `queue.failure`
+        // to null, and another worker may have failed during the await.
+        const current = queue.failure as { error: unknown } | null;
+        if (current === null || (isRetryable(current.error) && !isRetryable(error))) queue.failure = { error };
       }
     }
   });
   await Promise.all(workers);
   if (queue.failure) throw queue.failure.error;
   return results;
+}
+
+function isRetryable(error: unknown): boolean {
+  return error instanceof ConnectorError && error.retryable;
 }

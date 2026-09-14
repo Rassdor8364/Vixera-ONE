@@ -49,7 +49,7 @@ describe("syncMail initial backfill", () => {
           await new Promise((r) => setTimeout(r, 2));
           inFlight--;
           const id = call.url.pathname.split("/").pop() ?? "";
-          return ids.includes(id) ? { json: messageWithId(id) } : { status: 404, json: {} };
+          return ids.includes(id) ? { json: messageWithId(id) } : { status: 404, json: { error: { code: 404, message: "Requested entity was not found." } } };
         },
       },
     ]);
@@ -235,6 +235,26 @@ describe("syncMail incremental history", () => {
         }
       })();
       // the run fails (retried by the next run from the same historyId) and no page — so no deletion — was emitted
+      expect(error).toMatchObject({ code: "invalid_response", retryable: true });
+      expect(pages).toEqual([]);
+    }
+  });
+
+  it("a 404 without Gmail's error body is a failed fetch, not a deletion", async () => {
+    for (const bad of [{ text: "" }, { text: "<html>not found</html>" }, { json: {} }]) {
+      const fake = createFakeFetch([
+        { match: `${GMAIL_API}/history`, reply: { json: { history: [{ id: "900001", messagesAdded: [{ message: { id: "flaky" } }] }], historyId: "900010" } } },
+        { match: /\/users\/me\/messages\/flaky\?format=full/, reply: { status: 404, ...bad } },
+      ]);
+      const pages: unknown[] = [];
+      const error = await (async () => {
+        try {
+          for await (const page of syncMail(makeContext(fake.fetch), { historyId: "884000" }, options)) pages.push(page);
+          return null;
+        } catch (e) {
+          return e as { code?: string; retryable?: boolean };
+        }
+      })();
       expect(error).toMatchObject({ code: "invalid_response", retryable: true });
       expect(pages).toEqual([]);
     }

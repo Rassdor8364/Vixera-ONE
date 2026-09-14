@@ -41,13 +41,17 @@ interface GoogleUserInfo {
  * Which capabilities a set of granted scopes covers. Google's consent screen
  * lets the user untick individual scopes, so the grant can be narrower than
  * `GOOGLE_SCOPES`; broader scopes (full mail, read/write calendar) count too.
+ * Only scopes the sync can actually run under count: `gmail.metadata` forbids
+ * the `q` filter on messages.list and `format=full` on messages.get, and
+ * `calendar.events*` does not authorize the calendarList read every calendar
+ * run starts with — claiming a capability under those would fail every cycle.
  * Returns null when the credential carries no scope information at all.
  */
 export function capabilitiesForScopes(scopes: readonly string[]): ConnectorCapability[] | null {
   if (scopes.length === 0) return null;
   const out: ConnectorCapability[] = [];
-  if (scopes.some((s) => /^https:\/\/mail\.google\.com\/?$/.test(s) || /\/auth\/gmail\.(readonly|modify|metadata)$/.test(s))) out.push("mail");
-  if (scopes.some((s) => /\/auth\/calendar(\.readonly|\.events|\.events\.readonly)?$/.test(s))) out.push("calendar");
+  if (scopes.some((s) => /^https:\/\/mail\.google\.com\/?$/.test(s) || /\/auth\/gmail\.(readonly|modify)$/.test(s))) out.push("mail");
+  if (scopes.some((s) => /\/auth\/calendar(\.readonly)?$/.test(s))) out.push("calendar");
   return out;
 }
 

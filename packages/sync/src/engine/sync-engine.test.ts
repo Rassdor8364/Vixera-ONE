@@ -386,6 +386,36 @@ describe("SyncEngine report shape", () => {
   });
 });
 
+describe("a capability the grant does not cover", () => {
+  it("errors that capability only: the account stays active and the others keep syncing", async () => {
+    const store = new InMemorySpineStore(DEV_USER_ID, { now: tickingClock() });
+    const account = await store.createConnectorAccount(mockAccountInput({ capabilities: ["mail", "calendar"] }));
+    const credentials = new InMemoryCredentialStore();
+    await credentials.put(account.credentialRef!, fakeCredential());
+    const connector = {
+      provider: "mock" as const,
+      capabilities: ["mail", "calendar"] as const,
+      discoverAccount: () => Promise.resolve({ externalAccountId: "x", label: "x", address: null, capabilities: ["mail", "calendar"] as const }),
+      // eslint-disable-next-line require-yield
+      async *syncMail() {
+        throw new ConnectorError("unsupported", "Google grant does not cover this API", false);
+      },
+      async *syncCalendar() {
+        yield { batch: { events: [], deleted: [] }, checkpoint: { token: "c1" }, done: true };
+      },
+    };
+    const clock = tickingClock(MOCK_NOW, 1000);
+    const engine = new SyncEngine({ store, registry: new ConnectorRegistry().register(connector as never), credentials, linker: new ContextLinker(store, { now: clock, selfAddresses: [] }), now: clock });
+    const outcomes = await engine.runAccount(account.id);
+    expect(outcomes.map((o) => [o.capability, o.status, o.errorCode ?? null])).toEqual([
+      ["mail", "error", "unsupported"],
+      ["calendar", "ok", null],
+    ]);
+    expect((await store.getConnectorAccount(account.id))?.status).toBe("active");
+    expect((await store.getSyncState(account.id, "calendar"))?.checkpoint).toEqual({ token: "c1" });
+  });
+});
+
 describe("wall-clock budget", () => {
   it("stops at a checkpoint instead of paging on, and resumes from there", async () => {
     const store = new InMemorySpineStore(DEV_USER_ID, { now: tickingClock() });

@@ -50,6 +50,12 @@ describe("GoogleConnector identity", () => {
     // broader scopes than the ones we ask for still grant the capability
     const broad = await discover(["https://mail.google.com/", "https://www.googleapis.com/auth/calendar"]);
     expect(broad.capabilities).toEqual(["mail", "calendar"]);
+    // Scopes the sync cannot run under grant nothing: gmail.metadata forbids the
+    // q filter and format=full; calendar.events* cannot read the calendar list.
+    const metadataOnly = await discover(["https://www.googleapis.com/auth/gmail.metadata", "https://www.googleapis.com/auth/calendar.readonly"]);
+    expect(metadataOnly.capabilities).toEqual(["calendar"]);
+    const eventsOnly = await discover(["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"]);
+    expect(eventsOnly.capabilities).toEqual(["mail"]);
     // Google omitted `scope` entirely: nothing to derive from, keep the connector's full set
     const unknown = await discover([]);
     expect(unknown.capabilities).toEqual(["mail", "calendar"]);
@@ -189,8 +195,11 @@ describe("GoogleConnector error mapping", () => {
   it("429 -> rate_limited (retryable)", () => expectCode({ status: 429, json: { error: { message: "Too many" } } }, "rate_limited", true));
   it("403 quota -> rate_limited (retryable)", () =>
     expectCode({ status: 403, json: { error: { message: "Quota", errors: [{ reason: "userRateLimitExceeded" }] } } }, "rate_limited", true));
-  it("403 forbidden (not a scope problem) -> unauthorized", () =>
-    expectCode({ status: 403, json: { error: { message: "Forbidden", errors: [{ reason: "forbidden" }] } } }, "unauthorized", false));
+  // Google answers 401 for a dead credential; a 403 of any other kind (no Gmail
+  // licence, an API the admin disabled) limits this capability and leaves the
+  // account — and its other capabilities — active.
+  it("403 forbidden (neither quota nor scope) -> unsupported, not unauthorized", () =>
+    expectCode({ status: 403, json: { error: { message: "Forbidden", errors: [{ reason: "forbidden" }] } } }, "unsupported", false));
   // A scope the user declined is a per-capability limit, not a dead credential:
   // the account must stay active so its other capabilities keep syncing.
   it("403 insufficientPermissions (legacy body) -> unsupported, not unauthorized", () =>

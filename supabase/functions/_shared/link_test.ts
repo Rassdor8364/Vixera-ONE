@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ConnectorRegistry, DEV_USER_ID, InMemoryCredentialStore, type Connector, type ConnectorCredential, type UserId } from "@vixera/domain";
+import { ConnectorError, ConnectorRegistry, DEV_USER_ID, InMemoryCredentialStore, type Connector, type ConnectorCredential, type UserId } from "@vixera/domain";
 import { InMemorySpineStore, MOCK_NOW, MockConnector, tickingClock } from "@vixera/sync";
 import type { FunctionEnv } from "./env.ts";
 import { HttpError } from "./http.ts";
@@ -103,6 +103,18 @@ Deno.test("callback: bad / expired state and provider errors are 400s and never 
   const { token } = await signLinkState("state-secret", { userId: DEV_USER_ID, provider: "google" }, w.clock());
   await assert.rejects(() => completeOAuthCallback(w.deps, { code: null, state: token, error: "access_denied" }), (e: unknown) => e instanceof HttpError && e.status === 400);
   assert.deepEqual(w.exchanges, []);
+});
+
+Deno.test("callback: a grant the connector cannot use is a 400 with the connector's message, and nothing is persisted", async () => {
+  const w = world();
+  const refusing: Connector = { provider: "google", capabilities: ["mail", "calendar"], discoverAccount: () => Promise.reject(new ConnectorError("unsupported", "Google grant includes neither Gmail nor Calendar access; re-link and allow at least one", false)) };
+  const deps: LinkDeps = { ...w.deps, registry: new ConnectorRegistry().register(refusing) };
+  const { token } = await signLinkState("state-secret", { userId: DEV_USER_ID, provider: "google" }, w.clock());
+  const err = await completeOAuthCallback(deps, { code: "code-1", state: token, error: null }).catch((e: unknown) => e as HttpError);
+  assert.ok(err instanceof HttpError);
+  assert.equal(err.status, 400);
+  assert.match(err.message, /neither Gmail nor Calendar/);
+  assert.equal((await w.store.listConnectorAccounts()).length, 0);
 });
 
 Deno.test("disconnect: only the user's own accounts; re-link after disconnect re-enables sync states", async () => {

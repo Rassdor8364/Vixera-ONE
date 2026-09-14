@@ -18,6 +18,7 @@
  * refreshes its credential and reactivates it; checkpoints are kept.
  */
 import {
+  ConnectorError,
   type Connector,
   type ConnectorAccount,
   type ConnectorCredential,
@@ -105,7 +106,16 @@ export async function completeOAuthCallback(deps: LinkDeps, input: OAuthCallback
   const connector = requireProvider(deps, state.provider);
 
   const credential = await (deps.exchangeCode ?? defaultExchange(deps))(state.provider, input.code);
-  const discovered = await connector.discoverAccount({ credential, fetch: deps.fetch, now: deps.now, ...(deps.log ? { log: deps.log } : {}) });
+  let discovered;
+  try {
+    discovered = await connector.discoverAccount({ credential, fetch: deps.fetch, now: deps.now, ...(deps.log ? { log: deps.log } : {}) });
+  } catch (err) {
+    // A grant the connector cannot use (neither Gmail nor Calendar allowed) is
+    // something the person can fix by linking again, so it is a 400 with the
+    // connector's message — which names scopes, never a token — not a 500.
+    if (err instanceof ConnectorError && !err.retryable) throw new HttpError(400, "bad_request", err.message);
+    throw err;
+  }
   const account = await persistLinkedAccount(deps, state.userId, state.provider, discovered, credential);
   return { provider: state.provider, account };
 }
