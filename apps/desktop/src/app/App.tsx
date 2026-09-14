@@ -23,7 +23,21 @@ export function App({ shell }: { shell: AppShell }) {
     if (!shell.supabase) return <p className="notice">No session and no Supabase client.</p>;
     return <Auth client={shell.supabase} defaultEmail={shell.config.devUserEmail} />;
   }
-  const signOut = shell.supabase ? async () => { await shell.supabase?.auth.signOut(); } : undefined;
+  // Local scope: signing out here must not revoke the phone's session too. If
+  // the server call fails (offline), the local session is still dropped, and the
+  // provider is told so the Field never stays open after "Sign out".
+  const signOut = shell.supabase
+    ? async () => {
+        try {
+          const { error } = await shell.supabase!.auth.signOut({ scope: "local" });
+          if (error) console.warn("sign out: server call failed, local session dropped", error.message);
+        } catch (error) {
+          console.warn("sign out: failed, dropping the local session", error instanceof Error ? error.message : String(error));
+        } finally {
+          shell.session?.setSession(null);
+        }
+      }
+    : undefined;
   return (
     <SpineProvider key={runtime.userId} runtime={runtime}>
       <Field onSignOut={signOut} />

@@ -151,6 +151,24 @@ user JWT and read the report; `POST action-dispatch` twice with the same
 idempotency key and confirm `replayed: true`; `GET
 connector-link/callback?state=bad` and confirm the "Not connected" page.
 
+## Auth
+
+The door (`docs/field.md`) is email + password against Supabase Auth and nothing
+else; no OAuth provider is configured on the project and the social row is not
+rendered. What the code assumes about the project's Auth settings:
+
+| Setting | Value the app is written for | Why |
+| --- | --- | --- |
+| Providers | Email only | the door offers nothing else |
+| Sign-ups | allowed | "Create account" calls `signUp`; `vx_handle_new_auth_user` copies the name into `public.users` |
+| Confirm email | on (live project: `mailer_autoconfirm` off) | `signUp` returns no session and the door says "open the link, then sign in"; with it off the person is signed in at once, which the door also handles |
+| Reset Password template | **must include `{{ .Token }}`** | recovery is by code: `resetPasswordForEmail` with no redirect, then `verifyOtp({ type: "recovery" })`. Supabase's default template carries `{{ .ConfirmationURL }}` and no code, which a desktop app has nowhere to receive — with the default template the recover screen can only ever say "that code is not right". Add a line such as `Your code: {{ .Token }}` (keep the link if a web client ever exists). **Not verified on the live project from this repository**; do it in the dashboard (Auth → Email Templates) before anyone needs it |
+| Email sender | Supabase built-in, a few messages per hour | fine for one person; the door names this quota when it is hit; real SMTP before a launch |
+| Refresh token rotation | default (on) | supabase-js refreshes in the background; sign-out is `scope: "local"` so one device's revocation leaves the others signed in |
+
+`auth.users` is not read by the app; `public.users` (kept in step by trigger) is
+the row RLS policies and graph edges hang off.
+
 ## Storage
 
 Bucket `artifacts` is created by migration 4 (and declared in `config.toml` for

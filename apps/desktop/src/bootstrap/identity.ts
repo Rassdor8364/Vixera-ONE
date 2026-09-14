@@ -30,7 +30,8 @@ export class SessionCurrentUserProvider implements CurrentUserProvider {
   async start(): Promise<Session | null> {
     const { data } = await this.client.auth.getSession();
     if (data.session && !keepSignedIn()) {
-      await this.client.auth.signOut();
+      // This device only: the checkbox is about this machine, not every device.
+      await this.client.auth.signOut({ scope: "local" });
       this.setSession(null);
     } else {
       this.setSession(data.session ?? null);

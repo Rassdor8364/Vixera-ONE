@@ -65,6 +65,7 @@ describe("SessionCurrentUserProvider", () => {
     const provider = new SessionCurrentUserProvider(client);
     await provider.start();
     expect(auth.signOut).toHaveBeenCalledTimes(1);
+    expect(auth.signOut).toHaveBeenCalledWith({ scope: "local" }); // this device, not every device
     expect(() => provider.get()).toThrow(NoCurrentUserError);
   });
 

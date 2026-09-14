@@ -9,7 +9,7 @@ import { useMemo, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { setKeepSignedIn } from "../bootstrap/session-preference.ts";
 
-type Mode = "signin" | "register" | "forgot";
+type Mode = "signin" | "register" | "forgot" | "recover";
 
 export function Auth({ client, defaultEmail }: { client: SupabaseClient; defaultEmail: string | null }) {
   const [mode, setMode] = useState<Mode>("signin");
@@ -22,8 +22,10 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Set when the next step is out in the world: a confirmation or reset email. */
-  const [sent, setSent] = useState<{ kind: "confirm" | "reset"; address: string } | null>(null);
+  /** The recovery code from the reset email (the "recover" mode). */
+  const [code, setCode] = useState("");
+  /** Set when the next step is out in the world: a confirmation email. */
+  const [sent, setSent] = useState<{ kind: "confirm"; address: string } | null>(null);
 
   const copy = COPY[mode];
   const strength = useMemo(() => passwordStrength(password), [password]);
@@ -63,9 +65,24 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
         if (!data.session) setSent({ kind: "confirm", address });
         return;
       }
-      const { error: err } = await client.auth.resetPasswordForEmail(address);
-      if (err) throw err;
-      setSent({ kind: "reset", address });
+      if (mode === "forgot") {
+        // No redirect link: a desktop app has no page for one to land on. The
+        // email carries a code instead (the Reset Password template must
+        // include {{ .Token }}, see docs/supabase.md) and the next screen takes it.
+        const { error: err } = await client.auth.resetPasswordForEmail(address);
+        if (err) throw err;
+        setMode("recover");
+        setPassword("");
+        return;
+      }
+      // recover: the code proves the mailbox, then the new password is set. verifyOtp
+      // signs the user in, so the session listener swaps this screen for the Field.
+      if (password.length < 8) throw new Error("Use at least 8 characters.");
+      const { error: verifyErr } = await client.auth.verifyOtp({ email: address, token: code.trim(), type: "recovery" });
+      if (verifyErr) throw verifyErr;
+      const { error: updateErr } = await client.auth.updateUser({ password });
+      if (updateErr) throw updateErr;
+      setKeepSignedIn(keepSigned);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -76,15 +93,9 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
   if (sent) {
     return (
       <Shell>
-        <Header kicker="CHECK YOUR EMAIL" heading={sent.kind === "confirm" ? "Confirm your address" : "Reset link sent"} />
+        <Header kicker="CHECK YOUR EMAIL" heading="Confirm your address" />
         <p className="auth__sub">
-          {sent.kind === "confirm"
-            ? "We sent a confirmation link to "
-            : "If an account exists for "}
-          <strong className="auth__strong">{sent.address}</strong>
-          {sent.kind === "confirm"
-            ? ". Open it, then come back and sign in."
-            : ", a reset link is on its way."}
+          We sent a confirmation link to <strong className="auth__strong">{sent.address}</strong>. Open it, then come back and sign in.
         </p>
         <button type="button" className="auth__primary" onClick={() => go("signin")}>
           Back to sign in
@@ -121,9 +132,15 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
           />
         </Field2>
 
+        {mode === "recover" && (
+          <Field2 label="CODE FROM THE EMAIL">
+            <input className="auth__input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="123456" autoComplete="one-time-code" inputMode="numeric" required autoFocus />
+          </Field2>
+        )}
+
         {mode !== "forgot" && (
           <Field2
-            label="PASSWORD"
+            label={mode === "recover" ? "NEW PASSWORD" : "PASSWORD"}
             aside={
               mode === "signin" ? (
                 <button type="button" className="auth__link auth__link--small" onClick={() => go("forgot")}>
@@ -138,16 +155,16 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={mode === "register" ? "At least 8 characters" : "••••••••"}
-                autoComplete={mode === "register" ? "new-password" : "current-password"}
+                placeholder={mode === "register" || mode === "recover" ? "At least 8 characters" : "••••••••"}
+                autoComplete={mode === "register" || mode === "recover" ? "new-password" : "current-password"}
                 required
-                minLength={mode === "register" ? 8 : undefined}
+                minLength={mode === "register" || mode === "recover" ? 8 : undefined}
               />
               <button type="button" className="auth__reveal" onClick={() => setShowPassword((v) => !v)}>
                 {showPassword ? "HIDE" : "SHOW"}
               </button>
             </span>
-            {mode === "register" && password.length > 0 && (
+            {(mode === "register" || mode === "recover") && password.length > 0 && (
               <span className="auth__strength">
                 <span className="auth__strength-track">
                   <span className="auth__strength-fill" style={{ width: `${strength.score * 25}%`, background: strength.color }} />
@@ -203,7 +220,8 @@ export function Auth({ client, defaultEmail }: { client: SupabaseClient; default
 const COPY: Record<Mode, { kicker: string; heading: string; sub?: string; primaryLabel: string; busyLabel: string }> = {
   signin: { kicker: "WELCOME BACK", heading: "Sign in", sub: "Your context is where you left it.", primaryLabel: "Sign in", busyLabel: "Signing in…" },
   register: { kicker: "GET STARTED", heading: "Create your account", sub: "One workspace for everything that connects.", primaryLabel: "Create account", busyLabel: "Creating…" },
-  forgot: { kicker: "RECOVER", heading: "Reset your password", sub: "We will email you a link to set a new one.", primaryLabel: "Send reset link", busyLabel: "Sending…" },
+  forgot: { kicker: "RECOVER", heading: "Reset your password", sub: "We will email you a code to set a new one.", primaryLabel: "Send code", busyLabel: "Sending…" },
+  recover: { kicker: "RECOVER", heading: "Set a new password", sub: "Enter the code from the email and choose a new password.", primaryLabel: "Set password", busyLabel: "Setting…" },
 };
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -302,6 +320,7 @@ function friendlyError(err: unknown): string {
   if (/user already registered/i.test(message)) return "An account already exists for that email. Try signing in.";
   if (/for security purposes/i.test(message)) return "Too many attempts just now. Wait a minute and try again.";
   if (/email not confirmed/i.test(message)) return "Confirm your email address first — check your inbox for the link.";
+  if (/token has expired|otp_expired|invalid otp|token.*invalid/i.test(message)) return "That code is not right or has expired. Request a new one.";
   // The project's mail quota, not anything this person did. Worth naming the way
   // out, since on a single-user project the person reading this owns the project.
   if (/email rate limit|over_email_send_rate_limit/i.test(message))

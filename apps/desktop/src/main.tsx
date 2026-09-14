@@ -19,12 +19,18 @@ createShell(loadConfig())
   })
   .catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
+    const isConfig = error instanceof Error && error.name === "ConfigError";
+    // A keychain or device-identity failure is not a .env problem; say which it was.
     root.render(
       <div className="signin">
         <div className="signin__box">
           <div className="signin__brand">Vixera One</div>
           <p className="error">{message}</p>
-          <p className="notice">Check .env (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY) or set VITE_VIXERA_DEV_FIXTURES=true.</p>
+          <p className="notice">
+            {isConfig
+              ? "Check .env (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY) or set VITE_VIXERA_DEV_FIXTURES=true."
+              : `Vixera One could not start (${error instanceof Error ? error.name : "error"}). Credential store or device identity failed; see docs/credentials.md.`}
+          </p>
         </div>
       </div>,
     );

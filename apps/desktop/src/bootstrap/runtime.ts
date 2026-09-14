@@ -121,12 +121,7 @@ export function createSessionRuntime(shell: AppShell, userId: UserId): SessionRu
   const functions = createHttpFunctionsClient({
     baseUrl: functionsBaseUrl(shell.config.supabaseUrl),
     anonKey: shell.config.supabaseAnonKey,
-    accessToken: async () => {
-      const cached = session.currentSession();
-      if (cached?.access_token && (cached.expires_at ?? Infinity) * 1000 > Date.now() + 30_000) return cached.access_token;
-      const { data } = await supabase.auth.getSession();
-      return data.session?.access_token ?? null;
-    },
+    accessToken: boundAccessToken(userId, () => session.currentSession(), async () => (await supabase.auth.getSession()).data.session),
   });
   return {
     ...common,
@@ -141,6 +136,25 @@ export function createSessionRuntime(shell: AppShell, userId: UserId): SessionRu
     async registerDevice(praxionAvailable) {
       await store.upsertDevice({ id: shell.device.deviceId, platform: platformOf(shell.device), name: shell.device.name, praxionAvailable, lastSeenAt: new Date().toISOString() });
     },
+  };
+}
+
+type TokenSession = { readonly access_token?: string; readonly expires_at?: number; readonly user: { readonly id: string } } | null;
+
+/**
+ * A bearer-token resolver that belongs to ONE user. A runtime is discarded when
+ * the account changes, but an in-flight call from the old runtime would resolve
+ * its token at send time — and find the new user's session. Any session whose
+ * user is not this runtime's user yields no token at all: the request fails
+ * closed rather than being sent as somebody else.
+ */
+export function boundAccessToken(userId: UserId, cached: () => TokenSession, fresh: () => Promise<TokenSession>): () => Promise<string | null> {
+  const own = (s: TokenSession) => (s && s.user.id === userId ? s : null);
+  return async () => {
+    const hot = own(cached());
+    if (hot?.access_token && (hot.expires_at ?? Infinity) * 1000 > Date.now() + 30_000) return hot.access_token;
+    const cold = own(await fresh());
+    return cold?.access_token ?? null;
   };
 }
 

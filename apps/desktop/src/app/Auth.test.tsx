@@ -41,6 +41,14 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}) {
       calls.push({ method: "resetPasswordForEmail", args });
       return { data: {}, error: null };
     }),
+    verifyOtp: vi.fn(async (args: unknown) => {
+      calls.push({ method: "verifyOtp", args });
+      return { data: { session: { user: { id: "u1" } } }, error: null };
+    }),
+    updateUser: vi.fn(async (args: unknown) => {
+      calls.push({ method: "updateUser", args });
+      return { data: { user: { id: "u1" } }, error: null };
+    }),
     ...overrides,
   };
   return { client: { auth } as never, calls, auth };
@@ -131,7 +139,7 @@ describe("Auth", () => {
     expect(text()).toContain("accept the terms");
   });
 
-  it("sends a reset link from the forgot-password mode", async () => {
+  it("forgot → code → new password: the recovery actually completes inside the app", async () => {
     const { client, auth } = fakeClient();
     render(client);
     act(() => byText("FORGOT?").click());
@@ -140,7 +148,28 @@ describe("Auth", () => {
       host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
     expect(auth.resetPasswordForEmail).toHaveBeenCalledWith("daniel@vixera.ai");
-    expect(text()).toContain("Reset link sent");
+    // No dead end: the next screen takes the emailed code and a new password.
+    expect(text()).toContain("Set a new password");
+    type('input[autocomplete="one-time-code"]', " 482913 ");
+    type('input[type="password"]', "brand-new-password");
+    await act(async () => {
+      host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(auth.verifyOtp).toHaveBeenCalledWith({ email: "daniel@vixera.ai", token: "482913", type: "recovery" });
+    expect(auth.updateUser).toHaveBeenCalledWith({ password: "brand-new-password" });
+  });
+
+  it("a wrong code is reported and the password is not changed", async () => {
+    const { client, auth } = fakeClient({ verifyOtp: vi.fn(async () => ({ data: {}, error: new Error("Token has expired or is invalid") })) });
+    render(client);
+    act(() => byText("FORGOT?").click());
+    type('input[type="email"]', "daniel@vixera.ai");
+    await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    type('input[autocomplete="one-time-code"]', "000000");
+    type('input[type="password"]', "brand-new-password");
+    await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    expect(text()).toContain("not right or has expired");
+    expect(auth.updateUser).not.toHaveBeenCalled();
   });
 
   it("names the way out of the project's email quota instead of echoing the code", async () => {

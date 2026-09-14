@@ -14,8 +14,8 @@ area itself, and the One Command bar at the bottom. One column below 720 px.
 ## The door
 
 `apps/desktop/src/app/Auth.tsx` is the only screen before the Field, and the
-only onboarding there is. Three modes on one surface: sign in, create account,
-reset password. It follows the Vixera One Auth design — two panels on a wide
+only onboarding there is. Four modes on one surface: sign in, create account,
+request a reset code, set a new password with it. It follows the Vixera One Auth design — two panels on a wide
 screen, the brand left and the form right, collapsing to the form alone under
 860px so the Android companion gets the same screen.
 
@@ -29,9 +29,24 @@ before signing in. Confirmation mail goes through Supabase's built-in sender,
 which is rate-limited to a handful per hour — fine for one person, not for a
 launch. Point the project at real SMTP before that matters.
 
+Password recovery is by code, not by link, because a desktop app has no page
+for a reset link to land on. "Forgot?" calls `resetPasswordForEmail` with no
+redirect; the next screen takes the code from the email and the new password,
+verifies the code with `verifyOtp({ type: "recovery" })` — which signs the
+person in — and then calls `updateUser({ password })`. This works only when the
+project's *Reset Password* email template includes `{{ .Token }}`; Supabase's
+default template carries a link and no code (`docs/supabase.md` → Auth).
+Implemented and fixture-tested (`Auth.test.tsx` walks forgot → code → new
+password against a fake client, and a wrong code leaves the password alone);
+not yet run against the live project.
+
 "Keep me signed in" is a real preference, not decoration. The session always
 lives in the OS keychain; the flag decides whether a restored session survives
-the *next* launch, and `identity.ts` signs out at startup when it is off.
+the *next* launch, and `identity.ts` signs out at startup when it is off. That
+sign-out, and the one behind the Field's "sign out" mark, is `scope: "local"`:
+this device's session is dropped and its refresh token revoked, and the phone
+stays signed in. If the server call fails (offline) the local session is still
+dropped, so the Field never stays open after "Sign out".
 
 Two deliberate departures from the design file. The social sign-in row is
 omitted because no OAuth provider is configured on the project, and a button
@@ -191,16 +206,16 @@ certain grammar match. The executor is the same typed `CommandExecutor` for
 both branches; no router can make it do anything the grammar could not.
 
 The composition root wires `HybridIntentRouter(rules, null)`: the classifier
-is meant to be `Intelligence.classifyIntent` behind an Edge Function
-(`docs/intelligence.md`), which does not exist yet, so today the hybrid router
-is exactly the rule-based one. Implemented and fixture-tested; no model has
-ever routed a real command.
+is meant to be `Intelligence.classifyIntent` behind an Edge Function. The
+package exists (`docs/intelligence.md`); the Edge Function and a real provider
+adapter do not, so today the hybrid router is exactly the rule-based one.
+Implemented and fixture-tested; no model has ever routed a real command.
 
 ## Dev-fixture mode vs production
 
 | | Production (`VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`) | Dev fixtures (`VITE_VIXERA_DEV_FIXTURES=true`) |
 | --- | --- | --- |
-| Identity | Supabase session via `SessionCurrentUserProvider`; sign-in form (email + password, no sign-up) | `DEV_USER_ID` (`VITE_DEV_USER_ID`) installed as a static provider |
+| Identity | Supabase session via `SessionCurrentUserProvider`; the door (sign in, create account, recover by code) | `DEV_USER_ID` (`VITE_DEV_USER_ID`) installed as a static provider |
 | Session storage | `TauriCredentialStore` (Windows Credential Manager / Android Keystore) under `supabase.session`; memory in a browser | none |
 | Reader | `SupabaseSpineStore(client, userId)` (RLS + explicit filter) | `InMemorySpineStore(DEV_USER_ID)` |
 | Data | whatever the spine holds; empty state without connectors | `MockConnector` synced once at startup (Eric's invoice mail with PDF, Priya's agenda, Northwind kickoff, checking account with two transactions) plus a seeded "Brand" thread with a conclusion |

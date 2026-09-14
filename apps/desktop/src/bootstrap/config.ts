@@ -29,8 +29,18 @@ export interface RawEnv {
   readonly VITE_VIXERA_DEV_FIXTURES?: string;
 }
 
-export function parseConfig(env: RawEnv): AppConfig {
+export interface ParseConfigOptions {
+  /** A production bundle (Vite `import.meta.env.PROD`). Dev fixtures are refused there. */
+  readonly production?: boolean;
+}
+
+export function parseConfig(env: RawEnv, options: ParseConfigOptions = {}): AppConfig {
   const devFixtures = (env.VITE_VIXERA_DEV_FIXTURES ?? "").trim().toLowerCase() === "true";
+  if (devFixtures && options.production) {
+    // The fixture world has no auth and a fixed user id. release-verify refuses
+    // a build that baked the flag; this refuses to run one that slipped through.
+    throw new ConfigError("VITE_VIXERA_DEV_FIXTURES is not allowed in a production build");
+  }
   const supabaseUrl = (env.VITE_SUPABASE_URL ?? "").trim();
   const supabaseAnonKey = (env.VITE_SUPABASE_ANON_KEY ?? "").trim();
   const mode: AppMode = devFixtures ? "dev-fixtures" : "supabase";
@@ -56,7 +66,7 @@ export class ConfigError extends Error {
 
 /** The configuration of this build. */
 export function loadConfig(): AppConfig {
-  return parseConfig(import.meta.env as unknown as RawEnv);
+  return parseConfig(import.meta.env as unknown as RawEnv, { production: Boolean(import.meta.env.PROD) });
 }
 
 /** Edge Function base: `<supabaseUrl>/functions/v1`. */

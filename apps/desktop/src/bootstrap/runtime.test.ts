@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { UserId } from "@vixera/domain";
 import { FetchPraxionTransport, PRAXION_DEFAULT_BASE_URL, PraxionClient } from "@vixera/praxion";
 import { parseConfig } from "./config.ts";
-import { createSessionRuntime, createShell } from "./runtime.ts";
+import { boundAccessToken, createSessionRuntime, createShell } from "./runtime.ts";
 
 function fakeSupabase() {
   return {
@@ -53,5 +53,29 @@ describe("createSessionRuntime binding", () => {
     // The One Command reader is the same user-bound store, so a command can never
     // reach the other user's rows.
     expect(ra.command).not.toBe(rb.command);
+  });
+});
+
+describe("boundAccessToken", () => {
+  const a = "aaaaaaaa-0000-4000-8000-000000000001" as UserId;
+  const future = Math.floor(Date.now() / 1000) + 3600;
+  const session = (id: string, token: string) => ({ access_token: token, expires_at: future, user: { id } });
+
+  it("returns this user's cached token", async () => {
+    const get = boundAccessToken(a, () => session(a, "tok-a"), async () => null);
+    expect(await get()).toBe("tok-a");
+  });
+
+  it("never returns another user's token — after an account switch a stale runtime fails closed", async () => {
+    const b = "bbbbbbbb-0000-4000-8000-000000000002";
+    const get = boundAccessToken(a, () => session(b, "tok-b"), async () => session(b, "tok-b"));
+    expect(await get()).toBeNull();
+  });
+
+  it("falls through to a fresh session when the cached one is expiring, still for the same user only", async () => {
+    const stale = { access_token: "old", expires_at: Math.floor(Date.now() / 1000) + 5, user: { id: a } };
+    expect(await boundAccessToken(a, () => stale, async () => session(a, "fresh"))()).toBe("fresh");
+    expect(await boundAccessToken(a, () => stale, async () => session("someone-else", "theirs"))()).toBeNull();
+    expect(await boundAccessToken(a, () => null, async () => null)()).toBeNull();
   });
 });
