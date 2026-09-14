@@ -231,7 +231,18 @@ never as an error.
 * `BankConnector.syncBank`: page 1 = all accounts of the item with balances
   (`/accounts/get`, always refreshed) + the first `/transactions/sync` page
   (500 per page); following pages carry transaction changes only. `added` and
-  `modified` are upserted, `removed` ids become deletions.
+  `modified` are upserted, `removed` ids become deletions; an id that appears
+  in both `added`/`modified` and `removed` of one page is deleted, whichever
+  order the linker applies the batch in.
+* Dates: Plaid's `date` and `authorized_date` are civil dates (no timezone)
+  and `authorized_datetime` is populated only where the institution provides
+  a time (rarely, for US items). `postedOn` is `date`; `authorizedAt` is
+  `authorized_datetime` or **null** — never `authorized_date` stamped with
+  `T00:00:00Z`, which would be the previous local day west of Greenwich —
+  and the civil `authorized_date` travels in `metadata.authorized_date`. The
+  linker's `occurredAt` falls back to `postedOn` at UTC midnight when
+  `authorizedAt` is null; that is a date rendered as an instant by
+  convention, not a claim about the time of day.
 * Plaid's `/transactions/sync` contract: the pages up to `has_more: false`
   are one update; only that final `next_cursor` is guaranteed (for a year),
   and a failure mid-update means the whole update is requested again from

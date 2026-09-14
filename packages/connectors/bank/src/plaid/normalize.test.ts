@@ -83,20 +83,38 @@ describe("Plaid transaction normalization", () => {
       authorizedAt: "2026-09-08T09:12:00Z",
       pending: false,
       category: ["INCOME", "INCOME_OTHER_INCOME"],
-      metadata: { payment_channel: "other", pending_transaction_id: null },
+      metadata: { payment_channel: "other", pending_transaction_id: null, authorized_date: "2026-09-08" },
     });
   });
 
-  it("handles missing category, missing currency, pending and authorized_date fallback", () => {
+  it("handles missing category, missing currency and pending", () => {
     const pending = normalizeTransaction(find("fake-txn-coffee-pending"));
     expect(pending.category).toEqual([]);
     expect(pending.currency).toBe("USD");
     expect(pending.pending).toBe(true);
     expect(pending.authorizedAt).toBeNull();
-    const lindqvist = normalizeTransaction(find("fake-txn-lindqvist"));
-    expect(lindqvist.authorizedAt).toBe("2026-09-09T00:00:00.000Z");
+    expect(pending.metadata).toEqual({ payment_channel: "in store", pending_transaction_id: null, authorized_date: null });
     const posted = normalizeTransaction((page2.added as readonly PlaidTransaction[])[0] as PlaidTransaction);
-    expect(posted.metadata).toEqual({ payment_channel: "in store", pending_transaction_id: "fake-txn-coffee-pending" });
+    expect(posted.metadata).toEqual({ payment_channel: "in store", pending_transaction_id: "fake-txn-coffee-pending", authorized_date: "2026-09-10" });
+  });
+
+  it("never turns the civil authorized_date into an instant: authorizedAt is authorized_datetime or null", () => {
+    // authorized_date only (the common case for US institutions): a UTC-midnight instant would land on the
+    // previous local day for every user west of Greenwich, so the date stays a date and authorizedAt stays null.
+    const lindqvist = normalizeTransaction(find("fake-txn-lindqvist"));
+    expect(lindqvist.authorizedAt).toBeNull();
+    expect(lindqvist.postedOn).toBe("2026-09-09");
+    expect(lindqvist.metadata?.authorized_date).toBe("2026-09-09");
+    // A real authorization instant passes through untouched.
+    const northwind = normalizeTransaction(find("fake-txn-northwind"));
+    expect(northwind.authorizedAt).toBe("2026-09-08T09:12:00Z");
+    // `datetime` is the posting instant, not the authorization: it does not masquerade as authorizedAt either.
+    const postedOnly = normalizeTransaction({ ...find("fake-txn-lindqvist"), authorized_date: null, authorized_datetime: null, datetime: "2026-09-09T18:00:00Z" });
+    expect(postedOnly.authorizedAt).toBeNull();
+    expect(postedOnly.metadata?.authorized_date).toBeNull();
+    for (const t of [...added, ...(page2.added as readonly PlaidTransaction[]), ...(page2.modified as readonly PlaidTransaction[])]) {
+      expect(normalizeTransaction(t).authorizedAt).toBe(t.authorized_datetime ?? null);
+    }
   });
 
   it("never emits a number for money", () => {

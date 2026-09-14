@@ -5,6 +5,12 @@
  * Sign convention: Plaid reports a positive `amount` for money leaving the
  * account. Vixera's `MoneyTransaction.amount` is negative when money leaves,
  * so every amount is negated — as a string, never as a float.
+ *
+ * Dates: `date` and `authorized_date` are civil dates (YYYY-MM-DD) with no
+ * timezone; `authorized_datetime` is a real instant that most (US)
+ * institutions leave null. `authorizedAt` is only ever the instant — a date
+ * stamped with T00:00:00Z would be the previous day for every user west of
+ * Greenwich — and the civil date travels in `metadata.authorized_date`.
  */
 import type { IsoDateTime, JsonObject, MoneyAccountType, NormalizedMoneyAccount, NormalizedMoneyTransaction } from "@vixera/domain";
 import { decimalFromNumber, negateDecimal } from "../decimal.ts";
@@ -73,12 +79,13 @@ export function normalizeTransaction(txn: PlaidTransaction): NormalizedMoneyTran
     description: txn.name,
     merchantName: txn.merchant_name ?? null,
     postedOn: txn.date,
-    authorizedAt: txn.authorized_datetime ?? (txn.authorized_date ? `${txn.authorized_date}T00:00:00.000Z` : null),
+    authorizedAt: txn.authorized_datetime ?? null,
     pending: txn.pending,
     category,
     metadata: {
       payment_channel: txn.payment_channel ?? null,
       pending_transaction_id: txn.pending_transaction_id ?? null,
+      authorized_date: txn.authorized_date ?? null,
     },
   };
 }
