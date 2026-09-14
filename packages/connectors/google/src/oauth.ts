@@ -132,7 +132,17 @@ async function postToken(fetchImpl: typeof fetch, body: URLSearchParams): Promis
   // Neither contains our secret or the user's tokens, so both are safe to surface.
   const reason = [json.error, json.error_description].filter(Boolean).join(": ") || `HTTP ${response.status}`;
   if (response.status === 400 || response.status === 401) {
-    throw new ConnectorError("unauthorized", `Google token request rejected (${reason})`, false);
+    // Only invalid_grant says something about the USER's grant (revoked,
+    // expired, wrong account): that account needs re-linking. Everything else
+    // Google sends with 400/401 (invalid_client, unauthorized_client,
+    // invalid_request, ...) is about OUR client configuration; the refresh
+    // token is still good, so the account stays active and the next run
+    // retries once the configuration is fixed instead of every account being
+    // marked needs_reauth by a rotated secret.
+    if (json.error === "invalid_grant") {
+      throw new ConnectorError("unauthorized", `Google token request rejected (${reason})`, false);
+    }
+    throw new ConnectorError("unknown", `Google rejected the OAuth client configuration (${reason})`, true);
   }
   if (response.status === 429) throw new ConnectorError("rate_limited", `Google token endpoint rate limited (${reason})`, true);
   if (response.status >= 500) throw new ConnectorError("provider_unavailable", `Google token endpoint failed (${reason})`, true);

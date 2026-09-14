@@ -64,6 +64,29 @@ describe("refreshAccessToken", () => {
     expect(body.get("refresh_token")).toBe("fake-refresh-token");
   });
 
+  it("maps invalid_grant (revoked or expired user grant) to a non-retryable unauthorized error", async () => {
+    const fake = createFakeFetch([{ match: GOOGLE_TOKEN_ENDPOINT, reply: { status: 400, json: { error: "invalid_grant", error_description: "Token has been expired or revoked." } } }]);
+    await expect(refreshAccessToken(fake.fetch, FAKE_OAUTH, FAKE_CREDENTIAL, now)).rejects.toMatchObject({ code: "unauthorized", retryable: false });
+  });
+
+  it("does not report a rejected client configuration as the user's fault: invalid_client / unauthorized_client are retryable and not unauthorized", async () => {
+    for (const body of [
+      { status: 401, json: { error: "invalid_client", error_description: "The OAuth client was not found." } },
+      { status: 400, json: { error: "unauthorized_client", error_description: "Unauthorized" } },
+      { status: 400, json: { error: "invalid_request", error_description: "Missing required parameter: client_id" } },
+    ]) {
+      const fake = createFakeFetch([{ match: GOOGLE_TOKEN_ENDPOINT, reply: body }]);
+      const error = await refreshAccessToken(fake.fetch, FAKE_OAUTH, FAKE_CREDENTIAL, now).then(
+        () => null,
+        (e: unknown) => e as { code?: string; retryable?: boolean; message?: string },
+      );
+      expect(error?.code).not.toBe("unauthorized");
+      expect(error?.retryable).toBe(true);
+      expect(error?.message).toContain(body.json.error);
+      expect(error?.message).not.toContain(FAKE_OAUTH.clientSecret);
+    }
+  });
+
   it("refuses to refresh a credential without a refresh token", async () => {
     const fake = createFakeFetch([]);
     await expect(refreshAccessToken(fake.fetch, FAKE_OAUTH, { kind: "access_token", accessToken: "x" }, now)).rejects.toMatchObject({ code: "unauthorized" });
