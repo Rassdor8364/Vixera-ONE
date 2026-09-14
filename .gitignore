@@ -24,6 +24,7 @@ apps/desktop/src-tauri/gen/android/app/src/main/java/**/generated/
 .env
 .env.*
 !.env.example
+!.env.*.example
 supabase/.env
 supabase/.temp/
 supabase/.branches/

@@ -38,7 +38,9 @@ for p in "${patterns[@]}"; do
 done
 
 # The signing directory and keystores must never be tracked, whatever they contain.
-if tracked="$(git ls-files -- .signing '*.keystore' '*.jks' '*.pfx' '*.p12' 'apps/desktop/src-tauri/gen/android/key.properties' '.env' '.env.*' ':!.env.example' ':!*.example' 2>/dev/null)" && [[ -n "$tracked" ]]; then
+# `:(glob)**/` so a nested env file (apps/desktop/.env.production) is seen: a
+# bare '.env.*' pathspec only matches at the repository root.
+if tracked="$(git ls-files -- .signing '*.keystore' '*.jks' '*.pfx' '*.p12' 'apps/desktop/src-tauri/gen/android/key.properties' ':(glob)**/.env' ':(glob)**/.env.*' ':(glob,exclude)**/*.example' 2>/dev/null)" && [[ -n "$tracked" ]]; then
   echo "::error::signing material or environment files are tracked:"
   echo "$tracked" | sed 's/^/  /'
   status=1
