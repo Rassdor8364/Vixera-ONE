@@ -134,20 +134,31 @@ function mapError(status: number, body: GoogleErrorBody | null): ConnectorError 
   return new ConnectorError("unknown", `Google API error ${status} (${detail})`, false);
 }
 
-/** Runs `fn` over `items` with at most `limit` in flight; results keep input order. */
+/**
+ * Runs `fn` over `items` with at most `limit` in flight; results keep input
+ * order. The first failure stops the queue: no further item is started, the
+ * items already in flight are allowed to settle, and only then does the
+ * promise reject with that first error. A sync that just hit a 429 or a dead
+ * token must not keep hammering the provider from workers nobody awaits.
+ */
 export async function mapConcurrent<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = new Array<R>(items.length);
-  let next = 0;
+  const queue: { next: number; failure: { error: unknown } | null } = { next: 0, failure: null };
   const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index] as T, index);
+    while (queue.failure === null && queue.next < items.length) {
+      const index = queue.next++;
+      try {
+        results[index] = await fn(items[index] as T, index);
+      } catch (error) {
+        queue.failure ??= { error };
+      }
     }
   });
   await Promise.all(workers);
+  if (queue.failure) throw queue.failure.error;
   return results;
 }
