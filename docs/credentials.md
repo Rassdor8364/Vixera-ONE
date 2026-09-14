@@ -139,7 +139,21 @@ Chunks are written **before** the manifest, so an interrupted write leaves the
 previous value readable rather than publishing a half-written session. A torn
 value — manifest present, a chunk missing — reads as absent rather than as an
 error, because for every caller it means what a missing credential means: sign in
-again.
+again. A manifest claiming zero chunks (which `set` never writes) is treated the
+same way; a manifest whose count is not a number is a `Backend` error, since it
+is corruption rather than a torn write. A count larger than reality stops at the
+first missing chunk, so a bogus "four billion" never means four billion lookups.
+
+Keys too long to take a `:cN` suffix (over 125 bytes) still store values that
+fit; only a value that would need chunks under such a key is refused, and it is
+refused before anything is written, never torn.
+
+Tested (`cargo test -p vixera-platform`): round-trips at, over and far over the
+cap; the cap counted in UTF-16 units, not bytes or chars; splits landing inside
+a surrogate pair and between a base letter and a combining mark; a crash before
+the manifest; stale chunks after shrinking; deletion; corrupt, zero and huge
+manifests; an entry written before chunking existed; and that an error never
+carries a value.
 
 It wraps all three desktop targets rather than sitting behind a Windows `cfg`, so
 macOS and Linux exercise the same code path the tests cover. Android is not

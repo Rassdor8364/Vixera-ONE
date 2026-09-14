@@ -133,7 +133,9 @@ impl<S: CredentialStore> ChunkedCredentialStore<S> {
     /// never leaves a longer previous one half-present.
     fn delete_chunks_from(&self, key: &str, from: usize) -> Result<(), CredentialError> {
         for index in from.. {
-            let chunk = self.chunk_key(key, index)?;
+            // A key too long to take a ":cN" suffix never had chunks: nothing to do,
+            // and not an error — a short value under such a key must still store.
+            let Ok(chunk) = self.chunk_key(key, index) else { return Ok(()) };
             match self.inner.get(&chunk)? {
                 Some(_) => self.inner.delete(&chunk)?,
                 None => break,
@@ -151,6 +153,11 @@ impl<S: CredentialStore> CredentialStore for ChunkedCredentialStore<S> {
         let count: usize = count
             .parse()
             .map_err(|_| CredentialError::Backend { key: key.to_owned(), message: "unreadable chunk manifest".into() })?;
+        // `set` never writes a manifest for zero chunks (an empty value fits and is
+        // stored whole), so this is corruption, and corruption reads as absent.
+        if count == 0 {
+            return Ok(None);
+        }
 
         let mut value = String::new();
         for index in 0..count {
@@ -468,6 +475,104 @@ mod tests {
         for part in split_utf16(&value, 7) {
             assert!(utf16_len(part) <= 7);
         }
+    }
+
+    #[test]
+    fn a_corrupt_manifest_is_an_error_not_a_guess() {
+        let inner = InMemoryCredentialStore::new();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:not-a-number").unwrap();
+        let store = ChunkedCredentialStore::with_limit(inner, 10);
+        assert!(matches!(store.get(KEY_SUPABASE_SESSION), Err(CredentialError::Backend { .. })));
+    }
+
+    #[test]
+    fn a_manifest_claiming_zero_chunks_reads_as_absent() {
+        let inner = InMemoryCredentialStore::new();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:0").unwrap();
+        let store = ChunkedCredentialStore::with_limit(inner, 10);
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap(), None);
+    }
+
+    #[test]
+    fn a_manifest_claiming_a_huge_count_stops_at_the_first_missing_chunk() {
+        let inner = InMemoryCredentialStore::new();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:c0"), "aaaaaaaaaa").unwrap();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:c1"), "bbbbbbbbbb").unwrap();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:4000000000").unwrap();
+        let store = ChunkedCredentialStore::with_limit(inner, 10);
+        // Returns promptly (two reads and a miss), not after four billion lookups.
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap(), None);
+    }
+
+    #[test]
+    fn exactly_the_limit_is_stored_whole_and_one_more_is_chunked() {
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
+        store.set(KEY_DEVICE_KEY, &"x".repeat(10)).unwrap();
+        assert_eq!(store.inner.len(), 1);
+        store.set(KEY_DEVICE_KEY, &"x".repeat(11)).unwrap();
+        assert_eq!(store.inner.len(), 3); // manifest + 2 chunks
+        assert_eq!(store.get(KEY_DEVICE_KEY).unwrap().as_deref(), Some("x".repeat(11).as_str()));
+    }
+
+    #[test]
+    fn the_limit_counts_utf16_units_not_bytes_or_chars() {
+        // "é" is 1 char, 2 UTF-8 bytes, 1 UTF-16 unit; "𝄞" is 1 char, 4 bytes, 2 units.
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 4);
+        store.set(KEY_DEVICE_KEY, "éééé").unwrap(); // 4 units: whole
+        assert_eq!(store.inner.len(), 1);
+        store.set(KEY_DEVICE_KEY, "𝄞𝄞𝄞").unwrap(); // 6 units: chunked
+        assert_eq!(store.get(KEY_DEVICE_KEY).unwrap().as_deref(), Some("𝄞𝄞𝄞"));
+        assert!(store.inner.len() > 1);
+    }
+
+    #[test]
+    fn combining_characters_survive_a_split_at_their_boundary() {
+        // "e" + U+0301 (combining acute): two scalar values, one grapheme. A limit of
+        // 1 forces a split between them; concatenation must restore the original.
+        let value = "e\u{301}e\u{301}e\u{301}";
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 1);
+        store.set(KEY_DEVICE_KEY, value).unwrap();
+        assert_eq!(store.get(KEY_DEVICE_KEY).unwrap().as_deref(), Some(value));
+    }
+
+    #[test]
+    fn a_crash_before_the_manifest_leaves_the_previous_value_readable() {
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
+        // "old" fits (3 ≤ 10), so it is stored whole with no manifest.
+        store.set(KEY_SUPABASE_SESSION, "old").unwrap();
+        // Simulate `set` dying after writing the chunks of a new, larger value but
+        // before the manifest: the chunks are in place, the primary still says "old",
+        // and because it is not a manifest, `get` returns it unchanged.
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:c0"), "new-sessio").unwrap();
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:c1"), "n-value-xx").unwrap();
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some("old"));
+        // And the next successful write cleans up the orphaned chunks after it.
+        store.set(KEY_SUPABASE_SESSION, "tiny").unwrap();
+        assert_eq!(store.inner.len(), 1);
+    }
+
+    #[test]
+    fn a_key_too_long_for_chunk_suffixes_still_stores_values_that_fit() {
+        let long_key = "k".repeat(126); // 126 + ":c0" = 129 > 128
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
+        store.set(&long_key, "short").unwrap();
+        assert_eq!(store.get(&long_key).unwrap().as_deref(), Some("short"));
+        store.delete(&long_key).unwrap();
+        // …but a value that would need chunks under that key is refused, not torn.
+        assert!(matches!(store.set(&long_key, &"x".repeat(50)), Err(CredentialError::InvalidKey(_))));
+        assert_eq!(store.get(&long_key).unwrap(), None);
+    }
+
+    #[test]
+    fn chunk_keys_cannot_collide_with_a_real_key_written_whole() {
+        // A value stored whole under "supabase.session:c0" is a legitimate (if odd)
+        // key; a chunked write to "supabase.session" must not read it as its chunk 0
+        // — the manifest count is what bounds the read, and set() cleans up what it owns.
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
+        store.set(KEY_SUPABASE_SESSION, &"a".repeat(25)).unwrap();
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some("a".repeat(25).as_str()));
+        store.set(KEY_SUPABASE_SESSION, "small").unwrap();
+        assert_eq!(store.get(&format!("{KEY_SUPABASE_SESSION}:c0")).unwrap(), None);
     }
 
     #[test]
