@@ -10,7 +10,9 @@
  * persisted or logged.
  *
  * Error policy (shared by every request via `GraphApiClient`):
- *   401 → refresh the credential once and retry; still 401 → `unauthorized`
+ *   401 → refresh the credential and retry; concurrent 401s share the one
+ *         in-flight refresh; still 401 on the refreshed credential → `unauthorized`
+ *   403 → `unauthorized`
  *   429 → `rate_limited` (Retry-After exposed as metadata, never slept on)
  *   5xx → `provider_unavailable`
  */
