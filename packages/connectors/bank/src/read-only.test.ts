@@ -1,8 +1,11 @@
 /**
  * The brief forbids payment execution. These tests pin that down at the
  * package surface: no exported class or object carries a method that could
- * move money, and a full link + sync cycle only ever reaches the read
- * endpoints of the provider.
+ * move money, and a full link + sync cycle through the package's own link
+ * functions only ever reaches the read endpoints of the provider. (The
+ * `connector-link` Edge Function's start step still issues its Hosted Link
+ * token through its own client — audit BANK-003 — so that path is outside
+ * this guarantee until it moves onto `beginBankLink`.)
  */
 import { describe, expect, it } from "vitest";
 import accountsFixture from "./__fixtures__/plaid-accounts.json";

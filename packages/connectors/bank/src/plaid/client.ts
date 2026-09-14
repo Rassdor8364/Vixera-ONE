@@ -46,17 +46,30 @@ export type PlaidProduct = "transactions";
 export interface CreateLinkTokenInput {
   /** The Vixera user id. Opaque to Plaid; it only has to be stable per user. */
   readonly userId: string;
-  readonly products: readonly PlaidProduct[];
+  /** Products for a new Item. Required unless `accessToken` puts Link in update mode. */
+  readonly products?: readonly PlaidProduct[];
   readonly clientName: string;
   readonly countryCodes: readonly string[];
   readonly language: string;
   readonly redirectUri?: string;
+  /**
+   * Plaid Link **update mode**: the access_token of an existing Item whose
+   * login the user has to repair (ITEM_LOGIN_REQUIRED). The session renews
+   * that Item's consent in place — same item_id, same account_ids, same
+   * access_token — instead of creating a second Item. Sent as `access_token`;
+   * `products` is omitted (Plaid: the Item keeps the products it has).
+   */
+  readonly accessToken?: string;
+  /** Ask Plaid for a Hosted Link session (`hosted_link: {}`) so a system browser can run Link without a web widget. */
+  readonly hostedLink?: boolean;
 }
 
 export interface LinkToken {
   readonly linkToken: string;
   /** ISO timestamp after which the link token can no longer open Plaid Link. */
   readonly expiration: string;
+  /** The Hosted Link URL, only when `hostedLink` was requested and Plaid granted it. */
+  readonly hostedLinkUrl?: string;
 }
 
 export interface ExchangedToken {
@@ -105,17 +118,21 @@ export class PlaidClient {
 
   async createLinkToken(input: CreateLinkTokenInput): Promise<LinkToken> {
     if (!input.userId) throw new ConnectorError("unsupported", "createLinkToken requires the Vixera user id", false);
+    if (!input.accessToken && !input.products?.length) throw new ConnectorError("unsupported", "createLinkToken requires products, or an access token for update mode", false);
     const body: Record<string, unknown> = {
       user: { client_user_id: input.userId },
       client_name: input.clientName,
-      products: input.products,
       country_codes: input.countryCodes,
       language: input.language,
     };
+    // Update mode repairs an existing Item; naming products would ask for a new one instead.
+    if (input.accessToken) body.access_token = input.accessToken;
+    else body.products = input.products;
     if (input.redirectUri) body.redirect_uri = input.redirectUri;
+    if (input.hostedLink) body.hosted_link = {};
     const res = await this.#post<PlaidLinkTokenCreateResponse>("/link/token/create", body);
     if (!res.link_token) throw new ConnectorError("invalid_response", "Plaid returned no link_token", false);
-    return { linkToken: res.link_token, expiration: res.expiration };
+    return { linkToken: res.link_token, expiration: res.expiration, ...(res.hosted_link_url ? { hostedLinkUrl: res.hosted_link_url } : {}) };
   }
 
   async exchangePublicToken(publicToken: string): Promise<ExchangedToken> {

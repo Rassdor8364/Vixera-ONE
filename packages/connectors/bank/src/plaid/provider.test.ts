@@ -26,6 +26,14 @@ describe("PlaidBankProvider", () => {
     expect(JSON.parse(ff.calls[0]!.body ?? "{}")).toMatchObject({ access_token: "access-sandbox-fake-token-1" });
   });
 
+  it("surfaces an item Plaid still flags with an error instead of describing it as healthy", async () => {
+    const broken = { ...itemFixture, item: { ...itemFixture.item, error: { error_type: "ITEM_ERROR", error_code: "ITEM_LOGIN_REQUIRED", error_message: "login changed" } } };
+    const ff = createFakeFetch([{ match: "/item/get", reply: { json: broken } }]);
+    await expect(provider.describeItem(toProviderContext(makeContext(ff.fetch)))).rejects.toMatchObject({ name: "ConnectorError", code: "unauthorized", retryable: false });
+    const healthy = createFakeFetch([{ match: "/item/get", reply: { json: { ...itemFixture, item: { ...itemFixture.item, error: null } } } }]);
+    await expect(provider.describeItem(toProviderContext(makeContext(healthy.fetch)))).resolves.toMatchObject({ externalAccountId: "fake-item-id-1" });
+  });
+
   it("lists normalized accounts with balances", async () => {
     const ff = createFakeFetch([{ match: "/accounts/get", reply: { json: accountsFixture } }]);
     const accounts = await provider.listAccounts(toProviderContext(makeContext(ff.fetch)));

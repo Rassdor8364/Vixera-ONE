@@ -41,11 +41,13 @@ export {
   bankLinkFlow,
   beginBankLink,
   completeBankLink,
+  completeBankRelink,
   createPlaidBankConnector,
   type BankLinkFlow,
   type BeginBankLinkInput,
   type CompleteBankLinkDeps,
   type CompleteBankLinkInput,
+  type CompleteBankRelinkInput,
   type CompletedBankLink,
 } from "./link.ts";
 export { canonicalDecimal, decimalFromNumber, negateDecimal } from "./decimal.ts";

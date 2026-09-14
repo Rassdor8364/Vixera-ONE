@@ -89,8 +89,12 @@ mail **and** calendar with one credential. Each capability has its own
 One user → many `connector_accounts`, possibly several per provider (personal
 Gmail + Workspace Gmail + two Plaid items). The natural key is
 `(user_id, provider, external_account_id)`; re-linking the same provider
-identity updates the existing row instead of creating a second one. There is
-no `user.hasGoogle`: code asks the store for accounts and their capabilities.
+identity updates the existing row instead of creating a second one. For Plaid
+the identity is the Item id, and only a Link **update mode** session keeps
+it: a fresh Link session for the same bank creates a second Item (new
+item_id, account_ids and transaction_ids) and therefore a second row with a
+full backfill — see the Plaid link flow below. There is no `user.hasGoogle`:
+code asks the store for accounts and their capabilities.
 
 ```
 connector_accounts            one row per linked provider identity
@@ -258,7 +262,15 @@ never as an error.
   cursor Plaid may have discarded.
 * `PlaidClient` allow-lists read endpoints (`PLAID_READ_ENDPOINTS`); any
   other endpoint throws `unsupported`. There is no method on `BankProvider`
-  that can move money.
+  that can move money. Caveat: the `connector-link` Edge Function's link-time
+  calls (`/link/token/create` with `hosted_link`, `/link/token/get`) still go
+  through its own `plaidPost` in `supabase/functions/_shared/link.ts`, outside
+  this allowlist and outside the package's read-only test (audit BANK-003,
+  open); the package now offers `beginBankLink({ hostedLink: true })` so the
+  start step can move onto `PlaidClient`.
+* `PlaidBankProvider.describeItem` throws the mapped error (`unauthorized`
+  for `ITEM_LOGIN_REQUIRED`) when `/item/get` reports `item.error`, so an
+  Item the user has not repaired is never described as healthy.
 
 ### Mock — `packages/sync/src/testing/mock-connector.ts`
 
@@ -272,7 +284,7 @@ returns one empty page unless a test hook changed the fixtures.
 
 | Code | Raised by | Engine (`SyncEngine.runCapability`) |
 | --- | --- | --- |
-| `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links |
+| `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links (Plaid: through Link update mode, `beginBankLink({ accessToken })` + `completeBankRelink` — a fresh link would duplicate the Item) |
 | `checkpoint_invalid` | Graph 410 on a fresh query, corrupted checkpoint the source cannot repair | checkpoint cleared and the capability retried **once** from scratch in the same run; a second failure is recorded as an error |
 | `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run retries from the persisted checkpoint once the backoff below has elapsed |
 | `provider_unavailable` | network failure, 5xx | same as rate limited |
@@ -345,6 +357,24 @@ Linking happens **server-side** so provider tokens never reach a device
    `access_token` credential, `discoverAccount` (`/item/get` → item id,
    institution name), `persistLinkedAccount`. A caller that ran Plaid Link
    itself can send `publicToken` instead of `linkToken`.
+4. **Repairing a `needs_reauth` Item (Link update mode).** Plaid's
+   `ITEM_LOGIN_REQUIRED` is fixed by re-authenticating the *existing* Item,
+   never by linking again: a fresh Link session issues a new item_id and
+   duplicates every account and transaction. The package side:
+   `beginBankLink(client, { userId, accessToken, hostedLink: true })` sends
+   `access_token` (no `products`) to `/link/token/create`, which opens Link
+   in update mode; when the user is done there is no public token to
+   exchange — `completeBankRelink({ client, connector, fetch }, { credential })`
+   re-describes the Item with the account's existing Vault credential
+   (`/item/get`; still `item.error` → `unauthorized`, leave the account in
+   `needs_reauth`) and returns the same `externalAccountId`, so
+   `persistLinkedAccount` finds the existing row, sets it `active` and keeps
+   its checkpoint. Edge Function wiring (pending): `start` accepts
+   `connectorAccountId` for a Plaid account in `needs_reauth`, loads its
+   credential from Vault and calls `beginBankLink` with it; `complete` with
+   that `connectorAccountId` reads the finished hosted session as today, then
+   calls `completeBankRelink` instead of `completeBankLink`; the Field offers
+   "Reconnect" on such an account instead of "Connect bank".
 
 ### Disconnect
 

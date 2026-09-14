@@ -15,6 +15,8 @@ export interface PlaidErrorBody {
 export interface PlaidLinkTokenCreateResponse {
   readonly link_token: string;
   readonly expiration: string;
+  /** Present when the token was created with `hosted_link` and the Plaid client has Hosted Link. */
+  readonly hosted_link_url?: string | null;
   readonly request_id?: string;
 }
 

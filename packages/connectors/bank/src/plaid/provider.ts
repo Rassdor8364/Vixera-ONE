@@ -13,7 +13,7 @@
  */
 import { ConnectorError, type ConnectorCredential, type NormalizedMoneyAccount } from "@vixera/domain";
 import type { BankItemDescription, BankProvider, BankProviderContext, BankTransactionsPage } from "../provider.ts";
-import { DEFAULT_TRANSACTIONS_PAGE_SIZE, PlaidClient, type PlaidConfig } from "./client.ts";
+import { DEFAULT_TRANSACTIONS_PAGE_SIZE, PlaidClient, mapPlaidError, type PlaidConfig } from "./client.ts";
 import { normalizeAccount, normalizeTransaction } from "./normalize.ts";
 
 export interface PlaidBankProviderOptions {
@@ -39,6 +39,10 @@ export class PlaidBankProvider implements BankProvider {
   async describeItem(ctx: BankProviderContext): Promise<BankItemDescription> {
     const token = accessTokenOf(ctx.credential);
     const { item } = await this.client(ctx).getItem(token);
+    // /item/get answers 200 for an Item in an error state and reports it in `item.error`
+    // (ITEM_LOGIN_REQUIRED until the user repairs it through Link update mode). Describing
+    // such an Item as healthy would let a re-link flip the account back to active too early.
+    if (item.error?.error_code) throw mapPlaidError(200, item.error, "/item/get");
     const institutionName = item.institution_name?.trim() || null;
     return {
       externalAccountId: item.item_id,

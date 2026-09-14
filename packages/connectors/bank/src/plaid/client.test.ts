@@ -47,6 +47,23 @@ describe("PlaidClient", () => {
     await client.createLinkToken({ userId: "u", products: ["transactions"], clientName: "Vixera One", countryCodes: ["US"], language: "en" });
     expect(ff.calls[0]!.url.host).toBe("production.plaid.com");
     expect(JSON.parse(ff.calls[0]!.body ?? "{}")).not.toHaveProperty("redirect_uri");
+    expect(JSON.parse(ff.calls[0]!.body ?? "{}")).not.toHaveProperty("hosted_link");
+  });
+
+  it("sends access_token for Link update mode and hosted_link for a Hosted Link session", async () => {
+    const ff = createFakeFetch([{ match: "/link/token/create", reply: { json: { link_token: "link-sandbox-update", expiration: "x", hosted_link_url: "https://hosted.plaid.com/link/fake" } } }]);
+    const client = new PlaidClient(ff.fetch, FAKE_PLAID_CONFIG);
+    const token = await client.createLinkToken({ userId: "u", clientName: "Vixera One", countryCodes: ["US"], language: "en", accessToken: "access-sandbox-fake-token-1", hostedLink: true });
+    expect(token).toEqual({ linkToken: "link-sandbox-update", expiration: "x", hostedLinkUrl: "https://hosted.plaid.com/link/fake" });
+    const body = JSON.parse(ff.calls[0]!.body ?? "{}");
+    expect(body).toMatchObject({ access_token: "access-sandbox-fake-token-1", hosted_link: {} });
+    expect(body).not.toHaveProperty("products");
+    // Not an update and no Hosted Link: neither key is sent, and a hosted URL Plaid did not return is absent, not null.
+    const plain = await client.createLinkToken({ userId: "u", products: ["transactions"], clientName: "Vixera One", countryCodes: ["US"], language: "en" });
+    expect(plain).toEqual({ linkToken: "link-sandbox-update", expiration: "x", hostedLinkUrl: "https://hosted.plaid.com/link/fake" });
+    expect(JSON.parse(ff.calls[1]!.body ?? "{}")).not.toHaveProperty("access_token");
+    expect(JSON.parse(ff.calls[1]!.body ?? "{}")).not.toHaveProperty("hosted_link");
+    await expect(client.createLinkToken({ userId: "u", clientName: "Vixera One", countryCodes: ["US"], language: "en" })).rejects.toMatchObject({ code: "unsupported" });
   });
 
   it("exchanges a public token and sends the cursor + count on transactions/sync", async () => {
