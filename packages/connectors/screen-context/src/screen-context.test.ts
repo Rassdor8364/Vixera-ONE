@@ -63,7 +63,7 @@ describe("PraxionStructuredContentAdapter", () => {
     });
     const ctx = await new PraxionStructuredContentAdapter(failing).getCurrentContext();
     expect(ctx).not.toBeNull();
-    expect(ctx?.document.praxionDocumentId).toBe(OPERATING_AGREEMENT.id);
+    expect(ctx?.document?.praxionDocumentId).toBe(OPERATING_AGREEMENT.id);
     expect(ctx?.location).toEqual(OPERATING_AGREEMENT.location);
     expect(ctx?.structuredContent).toBeNull();
     expect(ctx?.metadata).toMatchObject({ contentAvailable: false, contentError: "parse_failed" });
