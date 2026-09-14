@@ -31,6 +31,14 @@ import { useSpine, useSpineQuery, type QueryState } from "./spine-provider.tsx";
 
 const DAY = 86_400_000;
 const iso = (t: number) => new Date(t).toISOString();
+/** The zone all-day events are judged in. Undefined (→ UTC) only where Intl cannot say. */
+function localTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface NowData {
   readonly now: NowResult;
@@ -50,7 +58,8 @@ export function useNow(): QueryState<NowData> {
       reader.listThreads({ limit: 200 }),
       reader.listRelationships({ limit: 5000 }),
     ]);
-    const now = deriveNow({ contextEvents, timeEvents, moneyTransactions, threads, relationships, now: new Date(t) });
+    const timeZone = localTimeZone();
+    const now = deriveNow({ contextEvents, timeEvents, moneyTransactions, threads, relationships, now: new Date(t), ...(timeZone ? { timeZone } : {}) });
     const upcomingWeek = timeEvents.filter((e) => e.status !== "cancelled" && Date.parse(e.endsAt) >= t).sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
     return { now, contextEvents, threads, upcomingWeek };
   }, []);

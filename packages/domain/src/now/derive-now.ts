@@ -41,6 +41,12 @@ export interface NowInput {
   readonly now: Date;
   /** Events older than this (hours) are not "changed" anymore. Default 48. */
   readonly changedWindowHours?: number;
+  /**
+   * The user's IANA zone. All-day events are stored as UTC midnight of their
+   * civil date; their real boundaries are local midnight in this zone. Falls
+   * back to the event's own `timezone`, then UTC.
+   */
+  readonly timeZone?: string;
 }
 
 export interface NowResult {
@@ -70,7 +76,10 @@ export function deriveNow(input: NowInput): NowResult {
 
   for (const ev of input.contextEvents) {
     const occurred = Date.parse(ev.occurredAt);
-    const ageMs = now - occurred;
+    // An unparseable timestamp must not read as "just now": NaN compares false
+    // with everything, which used to skip both the recency bonus and the age
+    // penalty. Treat it as older than any window.
+    const ageMs = Number.isNaN(occurred) ? Number.POSITIVE_INFINITY : now - occurred;
     const threadIds = threadIndex.get(refKey(ev.subject)) ?? [];
     const reasons: string[] = [];
     let score = clamp(ev.importance, 0, 100);
@@ -89,18 +98,25 @@ export function deriveNow(input: NowInput): NowResult {
 
     // Time events are appointments, not deadlines: once they end they are over.
     const timeEvent = ev.subject.type === "time_event" ? timeById.get(ev.subject.id) : undefined;
-    const endsAt = timeEvent ? Date.parse(timeEvent.endsAt) : ev.kind.startsWith("time.") && ev.dueAt ? Date.parse(ev.dueAt) + HOUR : null;
+    const bounds = timeEvent ? eventBounds(timeEvent, input.timeZone) : null;
+    const endsAt = bounds ? bounds.end : ev.kind.startsWith("time.") && ev.dueAt ? Date.parse(ev.dueAt) + HOUR : null;
+    const startsAt = bounds ? bounds.start : ev.dueAt ? Date.parse(ev.dueAt) : null;
     const isTimeLike = ev.subject.type === "time_event" || ev.kind.startsWith("time.");
+    const over = isTimeLike && endsAt !== null && now > endsAt;
+    let overdue = false;
 
-    if (isTimeLike && endsAt !== null && now > endsAt) {
+    if (over) {
       score -= 20;
       reasons.push("already happened");
-    } else if (isTimeLike && ev.dueAt && Date.parse(ev.dueAt) <= now) {
+    } else if (isTimeLike && startsAt !== null && startsAt <= now) {
       score += 20;
       reasons.push("happening now");
-    } else if (ev.dueAt) {
-      const untilDue = Date.parse(ev.dueAt) - now;
+    } else if (startsAt !== null) {
+      // For an appointment the "due" instant is its effective start (local
+      // midnight for all-day events), never the raw stored UTC midnight.
+      const untilDue = startsAt - now;
       if (untilDue <= 0) {
+        overdue = true;
         score += 30;
         reasons.push("overdue");
       } else if (untilDue <= 24 * HOUR) {
@@ -118,7 +134,9 @@ export function deriveNow(input: NowInput): NowResult {
     if (ageMs >= 0 && ageMs <= 6 * HOUR) {
       score += 10;
       reasons.push("recent");
-    } else if (ageMs > windowMs) {
+    } else if (ageMs > windowMs && !overdue) {
+      // Age is not a reason to forget something that is past due: the longer an
+      // invoice is overdue the MORE it deserves attention, not less.
       score -= 15;
       reasons.push("older than window");
     }
@@ -135,6 +153,10 @@ export function deriveNow(input: NowInput): NowResult {
     } else if (ev.attention === "quiet" && !snoozeElapsed) {
       bucket = "quiet";
       reasons.push("user marked quiet");
+    } else if (over) {
+      // An appointment that has ended is over, whatever its importance: it can
+      // sort high inside Quiet but never competes with what is still ahead.
+      bucket = "quiet";
     } else if (score >= NOW_THRESHOLDS.needsMe) {
       bucket = "needs_me";
     } else if (score >= NOW_THRESHOLDS.changed && ageMs <= windowMs) {
@@ -164,11 +186,10 @@ export function deriveNow(input: NowInput): NowResult {
   const upcoming = input.timeEvents
     .filter((t) => t.status !== "cancelled")
     .filter((t) => {
-      const start = Date.parse(t.startsAt);
-      const end = Date.parse(t.endsAt);
+      const { start, end } = eventBounds(t, input.timeZone);
       return end >= now && start <= now + 24 * HOUR;
     })
-    .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
+    .sort((a, b) => eventBounds(a, input.timeZone).start - eventBounds(b, input.timeZone).start);
 
   const byScore = (a: NowItem, b: NowItem) => b.score - a.score || Date.parse(b.occurredAt) - Date.parse(a.occurredAt);
 
@@ -198,6 +219,39 @@ function buildThreadIndex(relationships: readonly Relationship[], threads: reado
     if (r.from.type === "thread" && r.to.type !== "thread") add(r.to, r.from.id);
   }
   return index;
+}
+
+/**
+ * When an event really starts and ends, as instants. Timed events are what
+ * they say. All-day events are stored as UTC midnight of their civil dates
+ * (exclusive end), so their true boundaries are local midnight in the user's
+ * zone: an all-day offsite on the 10th is "happening now" from 00:00 local on
+ * the 10th, not from 17:00 the evening before for someone in Los Angeles.
+ */
+export function eventBounds(event: TimeEvent, timeZone: string | undefined): { readonly start: number; readonly end: number } {
+  if (!event.allDay) return { start: Date.parse(event.startsAt), end: Date.parse(event.endsAt) };
+  const zone = timeZone ?? event.timezone ?? "UTC";
+  return { start: zonedMidnight(event.startsAt.slice(0, 10), zone), end: zonedMidnight(event.endsAt.slice(0, 10), zone) };
+}
+
+/** The instant of 00:00 on `ymd` in `zone`; `Intl` only, DST-safe by iterating once. */
+export function zonedMidnight(ymd: string, zone: string): number {
+  const utcMidnight = Date.parse(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(utcMidnight)) return Number.NaN;
+  let guess = utcMidnight;
+  for (let i = 0; i < 2; i++) guess = utcMidnight - zoneOffsetMs(guess, zone);
+  return guess;
+}
+
+function zoneOffsetMs(instant: number, zone: string): number {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(instant));
+  } catch {
+    return 0; // unknown zone: behave as UTC rather than throw inside NOW
+  }
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+  return Date.UTC(n("year"), n("month") - 1, n("day"), n("hour") % 24, n("minute"), n("second")) - instant;
 }
 
 function parseIso(value: unknown): number | null {

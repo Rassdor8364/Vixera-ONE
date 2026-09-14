@@ -160,7 +160,7 @@ async function executeDev(store: SpineStore, envelope: ActionEnvelope, now: () =
     }
     case "context_event.quiet": {
       const p = envelope.payload as ActionPayloads["context_event.quiet"];
-      const ev = await store.setContextEventAttention(p.contextEventId, "quiet");
+      const ev = await store.setContextEventAttention(p.contextEventId, "quiet", { snoozedUntil: null });
       return { contextEventId: ev.id, attention: ev.attention };
     }
     case "context_event.snooze": {

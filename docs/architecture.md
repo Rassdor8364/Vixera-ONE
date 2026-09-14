@@ -147,14 +147,23 @@ which finds-or-creates a person by normalized identity. No per-provider duplicat
 `packages/domain/src/now/derive-now.ts` is a pure, deterministic function:
 
 ```
-deriveNow({ contextEvents, timeEvents, moneyTransactions, threads, relationships, now })
-  → { needsMe, changed, canWait, quiet }
+deriveNow({ contextEvents, timeEvents, moneyTransactions, threads, relationships, now, timeZone? })
+  → { needsMe, changed, canWait, quiet, upcoming, generatedAt }
 ```
 
 Score = importance (0–100, set by linker rules) + time-sensitivity boost (due/starts within
-24h/48h) + recency + thread attachment. `context_events.attention` separates
-`needs_attention` from `quiet`; the user can move an item to Quiet (server action
-`context_event.quiet`). No learned model in Phase 1.
+24h/48h, overdue) + recency + thread attachment. Rules that decide the bucket regardless of
+score: an appointment that has ended is Quiet whatever its importance ("already happened"
+stays in the reasons); an overdue item never takes the "older than window" penalty, so a
+debt does not fade with age; an unparseable `occurredAt` counts as old, not new. All-day
+events are stored as UTC midnight of their civil date and are judged at local midnight in
+`timeZone` (the Field passes the device zone; connectors' own `timezone` is the fallback,
+then UTC) — an offsite tomorrow is not "happening now" at 17:00 tonight in Los Angeles.
+
+`context_events.attention` separates `needs_attention` from `quiet`. Snooze is
+`quiet` plus `metadata.snoozedUntil`; when it elapses the item competes again. The
+`context_event.quiet` action clears `snoozedUntil`, so a Quiet the user chooses after a
+snooze elapsed sticks instead of being read as "snooze elapsed" forever. No learned model.
 
 ## 7. One Command
 
