@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ENTITY_TYPES, RELATIONSHIP_KINDS, RELATIONSHIP_SOURCES } from "./relationship.ts";
@@ -23,17 +23,32 @@ import {
 } from "../entities/index.ts";
 
 /**
- * Seam guard: every PostgreSQL enum in the spine migration must equal the
+ * Seam guard: every PostgreSQL enum across ALL migrations must equal the
  * runtime constant that defines the matching TypeScript union. Adding a value
- * on either side without the other fails here.
+ * on either side without the other fails here — including a value a later
+ * migration adds with `alter type … add value`, which a guard that read only
+ * the first migration could not see.
  */
-const MIGRATION = resolve(__dirname, "../../../../supabase/migrations/20260910000100_spine.sql");
-const sql = readFileSync(MIGRATION, "utf8");
+const MIGRATIONS_DIR = resolve(__dirname, "../../../../supabase/migrations");
+const sql = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .map((f) => readFileSync(resolve(MIGRATIONS_DIR, f), "utf8"))
+  .join("\n");
 
 function sqlEnum(name: string): string[] {
   const m = sql.match(new RegExp(`create type public\\.${name} as enum \\(([^;]*)\\);`, "s"));
-  if (!m) throw new Error(`enum ${name} not found in migration`);
-  return [...(m[1] ?? "").matchAll(/'([^']+)'/g)].map((x) => x[1] as string);
+  if (!m) throw new Error(`enum ${name} not found in any migration`);
+  const values = [...(m[1] ?? "").matchAll(/'([^']+)'/g)].map((x) => x[1] as string);
+  // Later additions, in migration order: alter type public.<name> add value [if not exists] '<v>' [before|after '<w>'].
+  for (const add of sql.matchAll(new RegExp(`alter type public\\.${name} add value(?: if not exists)? '([^']+)'(?: (before|after) '([^']+)')?`, "gi"))) {
+    const value = add[1] as string;
+    if (values.includes(value)) continue;
+    const anchor = add[3] ? values.indexOf(add[3]) : -1;
+    if (anchor === -1) values.push(value);
+    else values.splice(add[2]?.toLowerCase() === "before" ? anchor : anchor + 1, 0, value);
+  }
+  return values;
 }
 
 const MIRRORS: Record<string, readonly string[]> = {

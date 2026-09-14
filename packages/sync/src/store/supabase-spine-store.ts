@@ -921,7 +921,9 @@ export class SupabaseSpineStore implements SpineStore {
   private async upsertChunked<TRow>(table: string, rows: readonly object[], onConflict: string, ignoreDuplicates = false): Promise<TRow[]> {
     const saved: TRow[] = [];
     for (const chunk of chunks(rows, CHUNK)) {
-      saved.push(...(await this.rows<TRow>(this.from(table).upsert(chunk, { onConflict, ignoreDuplicates }).select(), `upsert ${table}`)));
+      // The returned rows go through the same select list as a read, so a
+      // numeric column comes back as text here too, never through a double.
+      saved.push(...(await this.rows<TRow>(this.from(table).upsert(chunk, { onConflict, ignoreDuplicates }).select(this.selectList(table)), `upsert ${table}`)));
     }
     return saved;
   }

@@ -322,6 +322,22 @@ describe("filter helpers", () => {
   });
 });
 
+describe("money upserts", () => {
+  it("read the rows they return through the text-cast select list, never as JSON numbers", async () => {
+    const account = "22222222-2222-4222-8222-222222222222";
+    const { client, calls } = fakeClient((call) =>
+      call.target === "money_accounts" && op(call, "upsert")
+        ? { data: [{ id: "a1", user_id: DEV_USER_ID, connector_account_id: account, external_id: "acc-1", name: "Checking", official_name: null, type: "checking", currency: "USD", balance_current: "1234.5600", balance_available: null, balance_as_of: "2026-09-09T10:00:00.000Z", mask: null, metadata: {}, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" }], error: null }
+        : { data: [], error: null },
+    );
+    const store = new SupabaseSpineStore(client, DEV_USER_ID);
+    const result = await store.upsertMoneyAccounts(account, [{ externalId: "acc-1", name: "Checking", officialName: null, type: "checking", currency: "USD", balanceCurrent: "1234.56", balanceAvailable: null, balanceAsOf: "2026-09-09T10:00:00.000Z", mask: null, metadata: {} }]);
+    const upsert = calls.find((c) => c.target === "money_accounts" && op(c, "upsert"))!;
+    expect(String(op(upsert, "select")?.args[0])).toContain("balance_current::text");
+    expect(result.rows[0]?.balanceCurrent).toBe("1234.56");
+  });
+});
+
 describe("upserts keyed by id", () => {
   it("conflict on (user_id, id), never on id alone: a foreign id under the service role is a primary-key error, not an overwrite", async () => {
     const { client, calls } = fakeClient(() => ({ data: { ...PERSON_ROW }, error: null }));
