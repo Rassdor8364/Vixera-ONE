@@ -120,12 +120,12 @@ repository deliberately does not hold.
 SUPABASE_ACCESS_TOKEN=sbp_...  scripts/deploy-functions.sh uhdlacchajiblhmgasjg
 ```
 
-The script bundles each function (the workspace packages live outside
-`supabase/functions`, so the CLI cannot follow those imports on its own),
-leaves `@supabase/supabase-js` as an npm specifier for the Edge Runtime, and
-deploys with the same JWT gates as `config.toml`. The bundles have been built
-and run locally: a bundled function boots, answers an unauthenticated `POST`
-with `401 {"error":{"code":"unauthorized"}}`, and a CORS preflight with `204`.
+The script type-checks each function with Deno and deploys the raw sources with
+the same JWT gates as `config.toml`; the CLI bundles them itself, following the
+workspace imports through `supabase/functions/deno.json`. (An earlier version
+of the script bundled into `dist/functions` first — dead work, since the CLI
+resolves functions from the repository's own `supabase/` folder; the 2026-09-11
+deployment below went out exactly this way.)
 
 ### Schema changes after this point
 

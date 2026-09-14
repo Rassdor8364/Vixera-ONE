@@ -24,6 +24,9 @@ for ((i = 1; i <= $#; i++)); do [[ "${!i}" == "--version" ]] && { j=$((i + 1)); 
 # shellcheck source=release-identity.env
 source "$ROOT/scripts/release-identity.env"
 REQUIRE_SIGNING="${VIXERA_REQUIRE_SIGNING:-1}"
+# A release built from a dirty tree is not reproducible from any commit; refuse
+# unless explicitly allowed (a local trial build, never something published).
+ALLOW_DIRTY="${VIXERA_ALLOW_DIRTY:-0}"
 
 status=0; checks=0
 ok()   { checks=$((checks + 1)); printf '  \e[32m✓\e[0m %s\n' "$*"; }
@@ -64,10 +67,15 @@ manifest_check() {
   commit="$(node -p "require('$m').git.commit")"; dirty="$(node -p "String(require('$m').git.dirty)")"
   local shell; shell="$(node -p "(require('$m').envFromShell || []).join(' ')")"
   [[ -n "$shell" ]] && note "$platform manifest: built with shell overrides for $shell (not from the env files alone)"
-  [[ "$url" =~ ^https://[a-z]{20}\.supabase\.co$ ]] && ok "$platform manifest: Supabase URL baked ($url)" || bad "$platform manifest: VITE_SUPABASE_URL is '$url' (expected a project URL — was .env.production present?)"
+  [[ "$url" == "$SUPABASE_PROJECT_URL" ]] && ok "$platform manifest: built for $url" || bad "$platform manifest: VITE_SUPABASE_URL is '$url', expected $SUPABASE_PROJECT_URL (release-identity.env) — a dev or staging env was baked in"
   [[ "$fixtures" == "true" ]] && bad "$platform manifest: VITE_VIXERA_DEV_FIXTURES=true was baked in" || ok "$platform manifest: dev fixtures off"
   [[ "$clean" == "true" ]] && ok "$platform manifest: fixture world absent from entry chunk" || bad "$platform manifest: entry chunk contains the fixture world"
-  [[ "$dirty" == "true" ]] && note "$platform manifest: built from a DIRTY tree at $commit" || ok "$platform manifest: built from clean tree at $commit"
+  if [[ "$dirty" == "true" ]]; then
+    if [[ "$ALLOW_DIRTY" == "1" ]]; then note "$platform manifest: built from a DIRTY tree at $commit (VIXERA_ALLOW_DIRTY=1)"; else bad "$platform manifest: built from a DIRTY tree at $commit — not reproducible from any commit (VIXERA_ALLOW_DIRTY=1 for a local trial)"; fi
+  else ok "$platform manifest: built from clean tree at $commit"; fi
+  # Every artifact of a release comes from one commit; a leftover from an earlier
+  # build of the same version would otherwise be re-summed and blessed with it.
+  commits+=("$platform=$commit")
   # The binary embeds the content-hashed asset names of the exact vite output it
   # was built from. Every one must be in the manifest, or dist/ was rebuilt.
   local missing=0 n
@@ -81,7 +89,7 @@ manifest_check() {
 # The artifact names are fully determined by the version, so each platform is
 # a file that is there or is not — a literal path in an array was never a glob,
 # and made "skipped" unreachable while a missing installer crashed pe-info.
-artifacts=(); platforms=0
+artifacts=(); platforms=0; commits=()
 
 # ---------------------------------------------------------------- windows ---
 exe="$DIR/VixeraOne-$EXPECT-windows-x64-setup.exe"
@@ -163,6 +171,11 @@ if [[ -f "$DIR/SHA256SUMS.txt" ]]; then
   for f in ${artifacts[@]+"${artifacts[@]}"}; do grep -q " $(basename "$f")\$" "$DIR/SHA256SUMS.txt" || bad "$(basename "$f") is not listed in SHA256SUMS.txt"; done
 else bad "no SHA256SUMS.txt"; fi
 ((platforms > 0)) || bad "no installer for $EXPECT in $DIR — nothing was verified"
+if ((${#commits[@]} > 1)); then
+  if [[ "$(printf '%s\n' "${commits[@]}" | sed 's/^[^=]*=//' | sort -u | wc -l)" == 1 ]]; then ok "all artifacts were built from the same commit"; else bad "artifacts were built from different commits: ${commits[*]} — one of them is a leftover from an earlier build"; fi
+fi
+head_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+for c in ${commits[@]+"${commits[@]}"}; do [[ "${c#*=}" == "$head_commit" ]] || { note "${c%%=*}: built from ${c#*=}, this checkout is at ${head_commit:-?}"; break; }; done
 
 echo
 if [[ $status -eq 0 ]]; then echo "release-verify: $checks checks passed — $EXPECT is what it says it is"; else echo "release-verify: FAILED — do not ship"; fi

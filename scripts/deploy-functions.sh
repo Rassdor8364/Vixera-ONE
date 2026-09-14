@@ -2,10 +2,8 @@
 # Deploys the four Vixera One Edge Functions to a Supabase project.
 #
 # The functions import workspace packages (@vixera/domain, @vixera/sync, the
-# connectors) that live OUTSIDE supabase/functions, so they are bundled first:
-# one self-contained file per function, with @supabase/supabase-js left as an
-# npm specifier for the Edge Runtime to resolve. That keeps each bundle around
-# 50-130 KB instead of ~1 MB.
+# connectors) that live OUTSIDE supabase/functions; the CLI follows those
+# imports through supabase/functions/deno.json and bundles them itself.
 #
 # Usage:
 #   SUPABASE_ACCESS_TOKEN=sbp_...  scripts/deploy-functions.sh <project-ref>
@@ -17,7 +15,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REF="${1:-${SUPABASE_PROJECT_REF:-}}"
 DENO="${DENO:-$(command -v deno || echo "$HOME/.deno/bin/deno")}"
-OUT="$ROOT/dist/functions"
 FUNCTIONS=(action-dispatch connector-link connector-sync ingest-process)
 
 # connector-sync authenticates cron callers with X-Vixera-Sync-Secret and users
@@ -31,27 +28,23 @@ NO_JWT=(connector-sync connector-link)
 command -v supabase >/dev/null || { echo "supabase CLI not found"; exit 1; }
 [[ -x "$DENO" ]] || { echo "deno not found (set DENO=/path/to/deno)"; exit 1; }
 
-echo "==> bundling"
-rm -rf "$OUT"
+# The CLI resolves each function from this repository's supabase/functions and
+# bundles it itself (eszip over supabase/functions/deno.json, whose import map
+# reaches the workspace packages by relative path). An earlier version of this
+# script bundled into dist/functions first, but `supabase functions deploy`
+# never read that directory: it walks up from the working directory to the
+# nearest supabase/ folder and deploys those sources. Type-check first so a
+# broken import fails here rather than at boot.
+echo "==> deno check"
 for fn in "${FUNCTIONS[@]}"; do
-  mkdir -p "$OUT/$fn"
-  "$DENO" bundle \
-    --config "$ROOT/supabase/functions/deno.json" \
-    --platform deno --minify \
-    --external "@supabase/supabase-js" \
-    -o "$OUT/$fn/index.js" \
-    "$ROOT/supabase/functions/$fn/index.ts" >/dev/null
-  cat > "$OUT/$fn/deno.json" <<'JSON'
-{ "imports": { "@supabase/supabase-js": "npm:@supabase/supabase-js@2.116.0" } }
-JSON
-  printf '    %-16s %s KB\n' "$fn" "$(( $(wc -c < "$OUT/$fn/index.js") / 1024 ))"
+  "$DENO" check --config "$ROOT/supabase/functions/deno.json" "$ROOT/supabase/functions/$fn/index.ts"
 done
 
 echo "==> deploying to $REF"
 for fn in "${FUNCTIONS[@]}"; do
   args=(functions deploy "$fn" --project-ref "$REF" --use-api)
   for n in "${NO_JWT[@]}"; do [[ "$n" == "$fn" ]] && args+=(--no-verify-jwt); done
-  ( cd "$OUT" && supabase "${args[@]}" )
+  ( cd "$ROOT" && supabase "${args[@]}" )
 done
 
 cat <<EOF
