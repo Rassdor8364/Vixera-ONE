@@ -109,6 +109,13 @@ activity) and the two share intent-filters. No permissions are needed: the
 sending app grants a temporary read permission on the content URI, and the
 plugin copies the bytes immediately.
 
+On the `<application>` element set `android:allowBackup="false"` and
+`android:fullBackupContent="false"` (the generator emits `allowBackup="true"`).
+The session lives in `EncryptedSharedPreferences`, whose ciphertext a device
+backup would otherwise carry to another device with the Keystore key that cannot
+follow it — useless there, but a copy of a credential blob is still a copy — and
+the share cache under `cacheDir` has no business in a backup either.
+
 Re-apply this edit whenever you delete and regenerate `gen/android`.
 
 ## How a share flows
@@ -117,7 +124,11 @@ Re-apply this edit whenever you delete and regenerate `gen/android`.
    `ACTION_SEND_MULTIPLE`.
 2. `ai.vixera.one.share.SharePlugin` (Kotlin) reads `EXTRA_STREAM` content URIs,
    resolves display name / MIME / size through the `ContentResolver`, copies each
-   into `<cacheDir>/vixera-shares/<uuid>.<ext>`; `EXTRA_TEXT` becomes a `url`
+   into `<cacheDir>/vixera-shares/<uuid>.<ext>`. Only `content://` URIs are
+   accepted — a `file://` URI could name this app's own private files, and the
+   temporary grant Android hands over covers `content://` and nothing else —
+   and the copy is bounded at 100 MiB (`MAX_SHARE_BYTES`), abandoned and
+   deleted past that rather than filling the cache; `EXTRA_TEXT` becomes a `url`
    item when it parses as http(s), else `text`; `EXTRA_SUBJECT` becomes `title`.
 3. Items are queued in `ShareInbox` and the plugin emits the `share` event.
 4. The Field calls `getPendingShares()` on start-up and subscribes with

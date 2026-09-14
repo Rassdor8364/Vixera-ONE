@@ -59,6 +59,18 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     private const val TAG = "VixeraShare"
     private const val CACHE_DIR = "vixera-shares"
     private const val SECURE_PREFS = "ai.vixera.one.secure"
+    private const val MAX_SHARE_BYTES = 100L * 1024 * 1024
+
+    /**
+     * The keys the Field may store. Mirrors apps/desktop/src/platform/credentials.ts
+     * and the Rust `is_vixera_credential_key`: the secure store is not a general
+     * cache for whatever runs in the webview.
+     */
+    fun isVixeraCredentialKey(key: String): Boolean {
+      if (key.isEmpty() || key.length > 128 || key.contains(':')) return false
+      return key == "supabase.session" || key.startsWith("supabase.session-") && key.length > "supabase.session-".length ||
+        key == "device.key" || key.startsWith("connector.") && key.length > "connector.".length
+    }
     private const val EVENT_SHARE = "share"
   }
 
@@ -131,6 +143,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun cacheStream(uri: Uri, intentType: String?, title: String?, now: String): ShareItem {
+    // Only content providers. A file:// URI could point into this app's own
+    // sandbox (or anywhere the caller can name); the share sheet hands us
+    // content:// grants, and that is all we read.
+    require(uri.scheme == "content") { "only content:// streams are accepted (got ${uri.scheme ?: "none"})" }
     val resolver = activity.contentResolver
     val mime = resolver.getType(uri) ?: intentType?.takeIf { !it.contains('*') } ?: "application/octet-stream"
     val displayName = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/')
@@ -142,11 +158,24 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     val id = UUID.randomUUID().toString()
     val target = File(dir, "$id.$ext")
     var size = 0L
-    resolver.openInputStream(uri).use { input ->
-      requireNotNull(input) { "content provider returned no stream" }
-      FileOutputStream(target).use { output ->
-        size = input.copyTo(output)
+    try {
+      resolver.openInputStream(uri).use { input ->
+        requireNotNull(input) { "content provider returned no stream" }
+        FileOutputStream(target).use { output ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            size += n
+            // Storage caps artifacts at 100 MiB; do not fill the cache with what could never upload.
+            require(size <= MAX_SHARE_BYTES) { "shared file exceeds ${MAX_SHARE_BYTES / (1024 * 1024)} MiB" }
+            output.write(buffer, 0, n)
+          }
+        }
       }
+    } catch (e: Exception) {
+      target.delete()
+      throw e
     }
 
     val kind = if (mime.startsWith("image/")) "image" else "file"
@@ -251,6 +280,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun secureGet(invoke: Invoke) {
     val args = invoke.parseArgs(SecureKeyArgs::class.java)
+    if (!isVixeraCredentialKey(args.key)) {
+      invoke.reject("key is outside the Vixera credential namespace", "invalid_key")
+      return
+    }
     try {
       val result = JSObject()
       result.put("value", securePrefs.getString(args.key, null))
@@ -263,6 +296,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun secureSet(invoke: Invoke) {
     val args = invoke.parseArgs(SecureSetArgs::class.java)
+    if (!isVixeraCredentialKey(args.key)) {
+      invoke.reject("key is outside the Vixera credential namespace", "invalid_key")
+      return
+    }
     try {
       val ok = securePrefs.edit().putString(args.key, args.value).commit()
       if (ok) invoke.resolve() else invoke.reject("secure storage write failed for key ${args.key}", "secure_storage")
@@ -274,6 +311,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun secureDelete(invoke: Invoke) {
     val args = invoke.parseArgs(SecureKeyArgs::class.java)
+    if (!isVixeraCredentialKey(args.key)) {
+      invoke.reject("key is outside the Vixera credential namespace", "invalid_key")
+      return
+    }
     try {
       securePrefs.edit().remove(args.key).commit()
       invoke.resolve()
