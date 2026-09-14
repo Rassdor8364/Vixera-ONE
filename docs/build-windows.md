@@ -83,6 +83,18 @@ Commands (`apps/desktop/src-tauri/src/commands.rs`, bindings in
 built-in `tauri://drag-drop` window event (`dragDropEnabled: true`); the Field
 listens to it directly.
 
+What the WebView may touch is `capabilities/default.json`: reads (`fs:allow-read-file`,
+`stat`, `exists`) are scoped to `$HOME/**` plus the app's data, cache and temp
+directories — wide enough for a file dropped from anywhere in the profile, not
+the whole disk; writes and `mkdir` are confined to those three app directories,
+so nothing in the WebView can write into Documents or Downloads. A file picked
+through the dialog is allowed individually by the dialog plugin at pick time
+(`tauri-plugin-dialog` adds it to the fs scope), so a pick from another drive
+works where a drop from one would be refused with a scope error. The opener's
+`open-path` carries a `**` scope because a permission without one denies every
+call; the real guard there is that the WebView only ever loads bundled content
+under the CSP, never a remote page.
+
 ## Troubleshooting
 
 * **`error: linker link.exe not found`** — install the C++ build tools and open a

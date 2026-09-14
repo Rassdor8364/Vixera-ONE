@@ -16,7 +16,14 @@
     "core:window:allow-set-focus",
     "core:event:default",
     "opener:default",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
     "opener:allow-open-url",
     "dialog:default",
     "notification:default",
@@ -29,6 +36,9 @@
       "identifier": "fs:scope",
       "allow": [
         {
+          "path": "$HOME/**"
+        },
+        {
           "path": "$APPDATA/**"
         },
         {
@@ -36,15 +46,6 @@
         },
         {
           "path": "$TEMP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
         }
       ]
     },
