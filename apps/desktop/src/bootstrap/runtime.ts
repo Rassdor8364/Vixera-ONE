@@ -10,7 +10,7 @@
  * the action seam. Dev-fixture mode swaps in the in-memory world.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { CommandExecutor, CommandHistory, OneCommand, RuleBasedIntentRouter } from "@vixera/command";
+import { CommandExecutor, CommandHistory, HybridIntentRouter, OneCommand, RuleBasedIntentRouter } from "@vixera/command";
 import { type ScreenContextRegistry, type UserId } from "@vixera/domain";
 import type { PraxionClient } from "@vixera/praxion";
 import type { ExplicitCaptureAdapter } from "@vixera/screen-context";
@@ -83,8 +83,16 @@ export async function createShell(config: AppConfig, options: ShellOptions = {})
 
 export function createSessionRuntime(shell: AppShell, userId: UserId): SessionRuntime {
   const common = { shell, userId, device: shell.device, praxion: shell.praxion, screenContext: shell.screenContext, explicitCapture: shell.explicitCapture };
+  // Rules first; a model only when the rules are unsure. No model router is
+  // wired on the device: model inference is server-side (an Edge Function in
+  // front of `Intelligence.classifyIntent`), and that function does not exist
+  // yet. Passing null here keeps the seam visible where it will be filled.
   const commandFor = (reader: SpineReader) =>
-    new OneCommand({ router: new RuleBasedIntentRouter(reader), executor: new CommandExecutor(reader), history: new CommandHistory() });
+    new OneCommand({
+      router: new HybridIntentRouter(new RuleBasedIntentRouter(reader), null),
+      executor: new CommandExecutor(reader),
+      history: new CommandHistory(),
+    });
 
   if (shell.mode === "dev-fixtures") {
     const world = shell.devWorld;

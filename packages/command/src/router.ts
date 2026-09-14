@@ -18,8 +18,10 @@ export interface RoutedIntent {
   readonly intent: Intent;
   /** 0..1. Rule-based: 1 for an unambiguous phrase, lower when a name had to be guessed, 0 for unknown. */
   readonly confidence: number;
-  /** Name of the grammar rule that matched, null for unknown. */
+  /** Name of the grammar rule that matched, null for unknown; `model.<type>` from a model router. */
   readonly matchedRule: string | null;
+  /** Which router produced this; set by `HybridIntentRouter` and `ModelIntentRouter`. */
+  readonly source?: "rules" | "model";
 }
 
 export interface IntentRouter {

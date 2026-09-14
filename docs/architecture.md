@@ -45,8 +45,9 @@ Praxion is treated as a third-party local connector.
 │             identity, opener, share/capture bridge) + Kotlin plugin      │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ Command /   packages/command (One Command intent routing + execution)    │
-│ Intelligence packages/intelligence (model abstraction; NOW derivation    │
-│             lives in domain because it is deterministic)                 │
+│ Intelligence packages/intelligence (providers behind a seam, allow-listed │
+│             context selection, typed tasks, content-free audit; NOW      │
+│             derivation lives in domain because it is deterministic)      │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ Connectors  packages/connectors/* (google, microsoft, bank/plaid,        │
 │             praxion, screen-context) — provider specifics stop here      │
@@ -157,10 +158,14 @@ Score = importance (0–100, set by linker rules) + time-sensitivity boost (due/
 
 ## 7. One Command
 
-`packages/command`: `IntentRouter` interface → `RuleBasedIntentRouter` (deterministic grammar
-over the user's own names: people, threads) → `CommandExecutor` runs typed queries against
-`SpineReader` and returns a `CommandResult` (navigation target + result set). A model-backed
-router can implement the same interface later.
+`packages/command`: `IntentRouter` interface → `HybridIntentRouter`, which runs the
+`RuleBasedIntentRouter` (deterministic grammar over the user's own names: people, threads)
+and consults a `ModelIntentRouter` only when the rules are unsure (ADR-015). Any intent
+that did not come from the grammar crosses `parseIntent`, which accepts exactly the `Intent`
+union. `CommandExecutor` runs typed queries against `SpineReader` and returns a
+`CommandResult` (navigation target + result set); it is the same executor for both routers,
+so a model can only choose among intents the grammar already has. The model router is wired
+with `null` until a server-side classifier exists (`docs/intelligence.md`).
 
 ## 8. Praxion
 

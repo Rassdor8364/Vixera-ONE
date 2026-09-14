@@ -83,3 +83,21 @@ a device. Consequence: Plaid Hosted Link must be enabled for the Plaid client.
 `VITE_VIXERA_DEV_FIXTURES=true` swaps in `InMemorySpineStore` + `MockConnector`
 (the brief's Eric / Priya / Northwind world) behind a dynamic import. Production
 has no demo rows and shows a useful empty state until a connector is linked.
+
+## ADR-015 · Rules route first; a model only when the rules are unsure
+One Command keeps its deterministic grammar. `HybridIntentRouter` consults a
+`ModelIntentRouter` only below a confidence threshold, uses its answer only if
+it is more confident, and caps model confidence below a certain grammar match.
+Model output is untrusted JSON until `parseIntent` accepts it as the `Intent`
+union; the executor never sees another shape. A model therefore cannot execute,
+mutate, or widen what a command can do — it can only pick among the intents the
+grammar already has. The classifier receives no names, ids or context items.
+
+## ADR-016 · A model sees an explicit, allow-listed, budgeted selection — never "the context"
+`@vixera/intelligence` has no way to hand a model an entity: it hands it a
+`ContextSelection`, reduced to per-type allow-listed fields (no bodies, no
+addresses, no tokens), under byte/item/field budgets, with a deterministic
+serialization and a content-free manifest. Replies may only cite refs from the
+selection. Every run is audited by reference and size, never by content. Task
+outputs are data; suggestions are notes, never actions. Provider adapters that
+hold keys are server-side only.

@@ -171,10 +171,30 @@ a `CommandReader` (a `SpineReader` slice) bound to the current user; no SQL,
 no user id in any query. `CommandHistory` keeps the last 20 inputs and feeds
 `Handoff.commandHistory`.
 
-The seam: `IntentRouter` is an interface. A model-backed router
-(`@vixera/intelligence` `ModelProvider`, server-side only, keys in Supabase
-secrets) can implement it later and be composed with the rule-based one;
-Phase 1 ships only the rules and the `NullModelProvider`.
+The seam: `IntentRouter` is an interface with three implementations.
+
+```
+HybridIntentRouter(rules, model | null, { threshold = 0.8 })
+  1. RuleBasedIntentRouter answers; confidence ≥ threshold → done, the model is never asked
+  2. else ModelIntentRouter answers; used only if it is a real intent AND more confident
+  3. else the rules' answer stands (including `unknown`)
+```
+
+`ModelIntentRouter` wraps an `IntentClassifier` and gives it only the text,
+the area, the *type* of the focused entity and the timezone — no names, no
+ids, no context items. Whatever comes back crosses `parseIntent`
+(`intent-schema.ts`), which accepts exactly the `Intent` union and nothing
+else: unknown types, action-shaped types, out-of-range limits and undeclared
+fields are rejected or dropped, and a classifier that fails routes to
+`unknown`. A model's confidence is capped (0.85) so it can never outrank a
+certain grammar match. The executor is the same typed `CommandExecutor` for
+both branches; no router can make it do anything the grammar could not.
+
+The composition root wires `HybridIntentRouter(rules, null)`: the classifier
+is meant to be `Intelligence.classifyIntent` behind an Edge Function
+(`docs/intelligence.md`), which does not exist yet, so today the hybrid router
+is exactly the rule-based one. Implemented and fixture-tested; no model has
+ever routed a real command.
 
 ## Dev-fixture mode vs production
 
