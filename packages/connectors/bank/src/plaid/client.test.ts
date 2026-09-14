@@ -58,7 +58,8 @@ describe("PlaidClient", () => {
     const body = JSON.parse(ff.calls[0]!.body ?? "{}");
     expect(body).toMatchObject({ access_token: "access-sandbox-fake-token-1", hosted_link: {} });
     expect(body).not.toHaveProperty("products");
-    // Not an update and no Hosted Link: neither key is sent, and a hosted URL Plaid did not return is absent, not null.
+    // Not an update and no Hosted Link: neither key is sent. (The fake answers
+    // every call with a hosted URL, so its absence is not what this asserts.)
     const plain = await client.createLinkToken({ userId: "u", products: ["transactions"], clientName: "Vixera One", countryCodes: ["US"], language: "en" });
     expect(plain).toEqual({ linkToken: "link-sandbox-update", expiration: "x", hostedLinkUrl: "https://hosted.plaid.com/link/fake" });
     expect(JSON.parse(ff.calls[1]!.body ?? "{}")).not.toHaveProperty("access_token");

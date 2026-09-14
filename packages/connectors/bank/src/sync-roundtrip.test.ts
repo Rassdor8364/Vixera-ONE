@@ -136,7 +136,8 @@ describe("BankConnector through the SyncEngine", () => {
     ]);
     // One event per surviving transaction: the pending coffee's event left with its row.
     expect(after1.contextEvents).toBe(3);
-    // Only the has_more:false cursor was ever persisted.
+    // The final checkpoint is the has_more:false cursor (that intermediate pages
+    // never advanced it is what the dies-mid-update test below asserts).
     expect(after1.checkpoint).toEqual({ cursor: "fake-cursor-page-2" });
 
     const second = await w.engine.runAccount(w.account.id, { force: true });
@@ -145,6 +146,35 @@ describe("BankConnector through the SyncEngine", () => {
     expect(await snapshot(w)).toEqual(after1);
     const cursors = ff.callsTo("/transactions/sync").map((c) => (JSON.parse(c.body ?? "{}") as { cursor?: string }).cursor ?? null);
     expect(cursors).toEqual([null, "fake-cursor-page-1", "fake-cursor-page-2"]);
+  });
+
+  it("Plaid provider: the run's time budget interrupts an update before any resume point, and the next run redoes it whole", async () => {
+    const ff = plaidRoutes(happyPath);
+    const w = await world(createPlaidBankConnector(FAKE_PLAID_CONFIG), { fetch: ff.fetch, externalAccountId: "fake-item-id-1" });
+    // The deadline is already past once the first page has been read: the engine
+    // stops there, and a bank update has no cursor to keep before has_more:false.
+    const first = await w.engine.runCapability(w.account, "bank", Date.parse("2026-09-10T12:00:00.000Z") + 1);
+    expect(first).toMatchObject({ status: "ok", interrupted: true, checkpointAdvanced: false, pages: 1 });
+    expect((await snapshot(w)).checkpoint).toBeNull();
+    expect(ff.callsTo("/transactions/sync")).toHaveLength(1);
+
+    const second = await w.engine.runCapability(w.account, "bank");
+    expect(second).toMatchObject({ status: "ok", interrupted: false, checkpointAdvanced: true, pages: 2 });
+    // Restarted from the cursor the interrupted update began with (null), not from page 1's.
+    expect(ff.callsTo("/transactions/sync").map((c) => (JSON.parse(c.body ?? "{}") as { cursor?: string }).cursor ?? null)).toEqual([null, null, "fake-cursor-page-1"]);
+    expect((await snapshot(w)).checkpoint).toEqual({ cursor: "fake-cursor-page-2" });
+  });
+
+  it("Plaid provider: a transaction's context event is dated by authorized_datetime when there is one, else by the posting date at UTC midnight", async () => {
+    const ff = plaidRoutes(happyPath);
+    const w = await world(createPlaidBankConnector(FAKE_PLAID_CONFIG), { fetch: ff.fetch, externalAccountId: "fake-item-id-1" });
+    await w.engine.runAccount(w.account.id);
+    const byExternal = new Map((await w.store.listMoneyTransactions({ connectorAccountId: w.account.id })).map((t) => [t.externalId, t.id]));
+    const events = await w.store.listContextEvents();
+    // Compared as instants: the in-memory store keeps the connector's own ISO form, Postgres canonicalizes it.
+    const occurredAt = (externalId: string) => Date.parse(events.find((e) => e.subject.type === "money_transaction" && e.subject.id === byExternal.get(externalId))?.occurredAt ?? "");
+    expect(occurredAt("fake-txn-northwind")).toBe(Date.parse("2026-09-08T09:12:00Z")); // authorized_datetime in the fixture
+    expect(occurredAt("fake-txn-lindqvist")).toBe(Date.parse("2026-09-09T00:00:00Z")); // authorized_date only: the posting date by convention
   });
 
   it("Plaid provider: a mutation mid-update replays page 1 through the store without duplicating anything", async () => {

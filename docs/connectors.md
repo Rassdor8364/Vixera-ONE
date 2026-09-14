@@ -238,12 +238,14 @@ never as an error.
   `modified` are upserted, `removed` ids become deletions; an id that appears
   in both `added`/`modified` and `removed` of one page is deleted, whichever
   order the linker applies the batch in.
-* Dates: Plaid's `date` and `authorized_date` are civil dates (no timezone)
-  and `authorized_datetime` is populated only where the institution provides
-  a time (rarely, for US items). `postedOn` is `date`; `authorizedAt` is
-  `authorized_datetime` or **null** — never `authorized_date` stamped with
-  `T00:00:00Z`, which would be the previous local day west of Greenwich —
-  and the civil `authorized_date` travels in `metadata.authorized_date`. The
+* Dates: Plaid's `date` and `authorized_date` are civil dates (no timezone).
+  `authorized_datetime` is returned for select institutions "as provided by
+  the institution" and, per Plaid, "may contain default time values (such as
+  00:00:00)". `postedOn` is `date`; `authorizedAt` is `authorized_datetime`
+  when it carries a time of day, and **null** when it is absent or a midnight
+  stamp on the authorized (or posting) date — never `authorized_date` stamped
+  with `T00:00:00Z`, which would be the previous local day west of Greenwich.
+  The civil `authorized_date` travels in `metadata.authorized_date`. The
   linker's `occurredAt` falls back to `postedOn` at UTC midnight when
   `authorizedAt` is null; that is a date rendered as an instant by
   convention, not a claim about the time of day.
@@ -257,9 +259,14 @@ never as an error.
   `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the pass from that
   same starting cursor — never from an intermediate one — up to 3 attempts,
   then `ConnectorError("unknown")`; replayed pages are idempotent by natural
-  key. A run the engine's time budget stops mid-update is reported
-  `interrupted` and restarts the update next run rather than resuming from a
-  cursor Plaid may have discarded.
+  key — on the assumption, which Plaid does not state, that a restarted
+  update repeats or removes everything an aborted one added. A run the
+  engine's time budget stops mid-update is reported `interrupted` and
+  restarts the update next run rather than resuming from a cursor Plaid may
+  have discarded. Known limitation: because intermediate pages advance
+  nothing, an update that does not fit in the run's remaining budget restarts
+  from the same cursor on every run; the engine does not yet reserve budget
+  for a source that cannot resume mid-update (a task in the roadmap).
 * `PlaidClient` allow-lists read endpoints (`PLAID_READ_ENDPOINTS`); any
   other endpoint throws `unsupported`. There is no method on `BankProvider`
   that can move money. Caveat: the `connector-link` Edge Function's link-time
@@ -291,7 +298,7 @@ returns one empty page unless a test hook changed the fixtures.
 
 | Code | Raised by | Engine (`SyncEngine.runCapability`) |
 | --- | --- | --- |
-| `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links (Plaid: through Link update mode, `beginBankLink({ accessToken })` + `completeBankRelink` — a fresh link would duplicate the Item) |
+| `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links (Plaid: through Link update mode — `beginBankLink({ accessToken })` + `completeBankRelink` exist in the package, but `connector-link` still starts a fresh link, which duplicates the Item; see "Repairing a needs_reauth Item") |
 | `checkpoint_invalid` | Graph 410 on a fresh query, corrupted checkpoint the source cannot repair | checkpoint cleared and the capability retried **once** from scratch in the same run; a second failure is recorded as an error |
 | `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run retries from the persisted checkpoint once the backoff below has elapsed |
 | `provider_unavailable` | network failure, 5xx | same as rate limited |
@@ -370,13 +377,20 @@ Linking happens **server-side** so provider tokens never reach a device
    duplicates every account and transaction. The package side:
    `beginBankLink(client, { userId, accessToken, hostedLink: true })` sends
    `access_token` (no `products`) to `/link/token/create`, which opens Link
-   in update mode; when the user is done there is no public token to
-   exchange — `completeBankRelink({ client, connector, fetch }, { credential })`
+   in update mode; a public token an update-mode session may still deliver
+   must **not** be exchanged (the `access_token` is unchanged) —
+   `completeBankRelink({ client, connector, fetch }, { credential })`
    re-describes the Item with the account's existing Vault credential
    (`/item/get`; still `item.error` → `unauthorized`, leave the account in
    `needs_reauth`) and returns the same `externalAccountId`, so
-   `persistLinkedAccount` finds the existing row, sets it `active` and keeps
-   its checkpoint. Edge Function wiring (pending): `start` accepts
+   `persistLinkedAccount` can find the existing row by (provider, external id)
+   as it does for a re-link after disconnect (`link_test.ts`); the package
+   round-trip test performs that persistence step by hand. **Status: package
+   support only (fixture-tested).** Update mode repairs `ITEM_LOGIN_REQUIRED`;
+   an account parked for `INVALID_ACCESS_TOKEN` or `ITEM_NOT_FOUND` has no Item
+   left to repair and needs a fresh link with the old row disconnected — the
+   engine does not yet record which code parked the account, so the Field
+   cannot tell the two apart. Edge Function wiring (pending): `start` accepts
    `connectorAccountId` for a Plaid account in `needs_reauth`, loads its
    credential from Vault and calls `beginBankLink` with it; `complete` with
    that `connectorAccountId` reads the finished hosted session as today, then

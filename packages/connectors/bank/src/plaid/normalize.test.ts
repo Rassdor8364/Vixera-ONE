@@ -117,6 +117,18 @@ describe("Plaid transaction normalization", () => {
     }
   });
 
+  it("treats a midnight default in authorized_datetime as the date it is, not as an instant", () => {
+    const base = page1.added[0] as PlaidTransaction;
+    const t = (patch: Partial<PlaidTransaction>) => normalizeTransaction({ ...base, ...patch }, ctx);
+    // Plaid: "may contain default time values (such as 00:00:00)".
+    expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-09T00:00:00Z" }).authorizedAt).toBeNull();
+    expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-09T00:00:00.000Z" }).authorizedAt).toBeNull();
+    expect(t({ authorized_date: null, date: "2026-09-09", authorized_datetime: "2026-09-09T00:00:00Z" }).authorizedAt).toBeNull();
+    // A midnight on another day is a real moment in some timezone; a time of day always is.
+    expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-10T00:00:00Z" }).authorizedAt).toBe("2026-09-10T00:00:00Z");
+    expect(t({ authorized_date: "2026-09-09", authorized_datetime: "2026-09-09T11:00:00Z" }).authorizedAt).toBe("2026-09-09T11:00:00Z");
+  });
+
   it("never emits a number for money", () => {
     for (const t of [...added, ...(page2.added as readonly PlaidTransaction[]), ...(page2.modified as readonly PlaidTransaction[])]) {
       const n = normalizeTransaction(t);

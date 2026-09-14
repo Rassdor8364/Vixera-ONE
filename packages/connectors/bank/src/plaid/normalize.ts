@@ -7,16 +7,32 @@
  * so every amount is negated — as a string, never as a float.
  *
  * Dates: `date` and `authorized_date` are civil dates (YYYY-MM-DD) with no
- * timezone; `authorized_datetime` is a real instant that most (US)
- * institutions leave null. `authorizedAt` is only ever the instant — a date
- * stamped with T00:00:00Z would be the previous day for every user west of
- * Greenwich — and the civil date travels in `metadata.authorized_date`.
+ * timezone. `authorized_datetime` is returned for select institutions "as
+ * provided by the institution" and, Plaid says, "may contain default time
+ * values (such as 00:00:00)" — so it is passed through as an instant only
+ * when it carries a time of day; a midnight stamp on the authorized date is
+ * that date, not a moment, and is dropped like the civil date is (a date
+ * stamped T00:00:00Z would be the previous day for every user west of
+ * Greenwich). The civil date always travels in `metadata.authorized_date`.
  */
 import type { IsoDateTime, JsonObject, MoneyAccountType, NormalizedMoneyAccount, NormalizedMoneyTransaction } from "@vixera/domain";
 import { decimalFromNumber, negateDecimal } from "../decimal.ts";
 import type { PlaidAccount, PlaidTransaction } from "./types.ts";
 
 export const DEFAULT_CURRENCY = "USD";
+
+/**
+ * `authorized_datetime` when it is a real moment; null when it is absent or a
+ * midnight default on the authorized date (or the posting date, when no
+ * authorized date is given), which is a date wearing a clock.
+ */
+export function authorizedInstant(txn: Pick<PlaidTransaction, "authorized_datetime" | "authorized_date" | "date">): IsoDateTime | null {
+  const at = txn.authorized_datetime;
+  if (!at) return null;
+  const midnight = /^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.0+)?(?:Z|\+00:00)$/.exec(at);
+  if (midnight && midnight[1] === (txn.authorized_date ?? txn.date)) return null;
+  return at;
+}
 
 export function mapAccountType(type: string, subtype: string | null | undefined): MoneyAccountType {
   const t = type.toLowerCase();
@@ -79,7 +95,7 @@ export function normalizeTransaction(txn: PlaidTransaction): NormalizedMoneyTran
     description: txn.name,
     merchantName: txn.merchant_name ?? null,
     postedOn: txn.date,
-    authorizedAt: txn.authorized_datetime ?? null,
+    authorizedAt: authorizedInstant(txn),
     pending: txn.pending,
     category,
     metadata: {
