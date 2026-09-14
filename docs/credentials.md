@@ -53,6 +53,13 @@ pub const CREDENTIAL_SERVICE: &str = "ai.vixera.one";
 Keys are namespaced ASCII (`supabase.session`, `device.key`,
 `connector.<accountId>` reserved for a future device-hosted sync); values are
 opaque strings. Errors may name the key, never the value; nothing is logged.
+`is_vixera_credential_key` names the namespace the webview may touch:
+`supabase.session` and its `supabase.session-*` siblings, `device.key`,
+`connector.<id>`. The Tauri commands (`commands.rs`) and the Kotlin `secure_*`
+plugin commands both refuse anything else, so the TypeScript adapter's check is
+not the only one and a script running in the webview cannot read arbitrary
+entries of the keychain, nor the `:c<n>` chunk entries (a colon is never part
+of a caller-visible key).
 
 | Platform | Implementation | Backend |
 | --- | --- | --- |
@@ -60,6 +67,7 @@ opaque strings. Errors may name the key, never the value; nothing is logged.
 | macOS (not a Phase 1 client) | `KeyringCredentialStore` (`apple-native`) | login Keychain, service `ai.vixera.one` |
 | Linux (dev only) | `KeyringCredentialStore` (`linux-native`) | kernel keyutils — per login session, not persisted across reboot |
 | Android | `android::PluginCredentialStore` in the app shell → `tauri-plugin-vixera-share` `secure_*` | `EncryptedSharedPreferences("ai.vixera.one.secure")`, Keystore master key AES256-GCM |
+| iOS (not a client) | `UnavailableCredentialStore` | none — every call fails with `CredentialError::Unavailable`, so the app launches to the sign-in screen and explains itself instead of panicking |
 | tests / browser | `InMemoryCredentialStore` (Rust), `MemoryCredentialStore` (TS) | process memory |
 
 Dev desktop builds (`debug_assertions`) use the service name `ai.vixera.one.dev`
@@ -104,7 +112,7 @@ supabase-js default key would be refused by the adapter.
 | Provider revokes / token invalid | the engine sets the account `needs_reauth` with `last_error` and skips it; the user connects the same provider again from the Field (Quiet → Sources), which re-links the existing account row: `vx_credential_put` replaces the secret, the account becomes `active`, checkpoints are kept |
 | Rotate `VIXERA_SYNC_SECRET` | `supabase secrets set VIXERA_SYNC_SECRET=...` then update the Vault secret `vixera_sync_secret` used by `pg_cron` |
 | Rotate provider client secret | `supabase secrets set ...`; existing refresh tokens keep working for Google/Microsoft; Plaid needs no re-link |
-| Sign out a device | `credential_delete("supabase.session")` (Field "sign out"); the refresh token is also revoked server-side by `supabase.auth.signOut()` |
+| Sign out a device | Field "sign out" calls `supabase.auth.signOut({ scope: "local" })`: supabase-js removes `supabase.session` from the store and the server revokes *this device's* refresh token only — other devices stay signed in. If the server call fails the local session is dropped anyway |
 | Lost / wiped device | revoke its sessions from the Supabase dashboard (Auth → user → sessions) and mark its `devices` row inactive; the device key becomes useless because nothing device-side can mint a session |
 | Rotate the Android master key | uninstall/reinstall (Keystore key and preferences are per install); the user signs in again |
 | Suspected Vault key compromise | Supabase project-level: rotate the Vault key via support, then re-link every connector account (each `vx_credential_put` re-encrypts) |
@@ -127,33 +135,47 @@ credential value rejected for key supabase.session: password encoded as UTF-16 e
 ```
 
 `ChunkedCredentialStore` wraps the keychain store and splits oversized values
-across `supabase.session:c0 … :cN-1`, with the primary entry holding a manifest.
-It is transparent in both directions:
+across chunk entries, with the primary entry holding a manifest
+(`U+0001 vx-chunked:<count>:<generation>`). Chunks are generation-tagged:
+`supabase.session:a:c0 … :a:cN-1` or `…:b:c0 …`, and every rewrite goes into the
+generation the live manifest does *not* point at, so the chunks a live manifest
+names are never overwritten in place. Entries written by an older build
+(`supabase.session:c0 …`, manifest without a generation) still read and are
+migrated by the next write. It is transparent in both directions:
 
 - a value that fits is written whole, so entries written before this existed —
   and entries on platforms with roomier stores — read back unchanged;
 - the manifest is prefixed with U+0001, which cannot begin any value Vixera
   stores (they are JSON or base64), so a plain value is never mistaken for one.
 
-Chunks are written **before** the manifest, so an interrupted write leaves the
-previous value readable rather than publishing a half-written session. A torn
+Chunks are written **before** the manifest and into the other generation, so an
+interrupted write leaves the previous value readable rather than publishing a
+half-written session — including when the new value is shorter than the old,
+which an in-place layout would tear. The previous generation and any legacy
+chunks are deleted only after the manifest has flipped; a cleanup interrupted
+midway is finished by the next write, which scans a little past a hole
+(`GAP_TOLERANCE`) so a torn cleanup cannot strand chunks forever. A torn
 value — manifest present, a chunk missing — reads as absent rather than as an
 error, because for every caller it means what a missing credential means: sign in
 again. A manifest claiming zero chunks (which `set` never writes) is treated the
 same way; a manifest whose count is not a number is a `Backend` error, since it
-is corruption rather than a torn write. A count larger than reality stops at the
-first missing chunk, so a bogus "four billion" never means four billion lookups.
+is corruption rather than a torn write, as is a manifest naming a generation
+that does not exist. A count larger than reality stops at the first missing
+chunk, so a bogus "four billion" never means four billion lookups.
 
 Keys too long to take a `:cN` suffix (over 125 bytes) still store values that
 fit; only a value that would need chunks under such a key is refused, and it is
 refused before anything is written, never torn.
 
-Tested (`cargo test -p vixera-platform`): round-trips at, over and far over the
-cap; the cap counted in UTF-16 units, not bytes or chars; splits landing inside
-a surrogate pair and between a base letter and a combining mark; a crash before
-the manifest; stale chunks after shrinking; deletion; corrupt, zero and huge
-manifests; an entry written before chunking existed; and that an error never
-carries a value.
+Tested (`cargo test -p vixera-platform`, 36 tests): round-trips at, over and
+far over the cap; the cap counted in UTF-16 units, not bytes or chars; splits
+landing inside a surrogate pair and between a base letter and a combining mark;
+a crash before the manifest; a rewrite never touching the live chunks; a torn
+cleanup finished across a hole; the legacy layout read and migrated; stale
+chunks after shrinking; deletion; corrupt, zero, huge and unknown-generation
+manifests; an entry written before chunking existed; chunk keys unreachable
+from any caller; the unavailable store failing without panicking; and that an
+error never carries a value.
 
 It wraps all three desktop targets rather than sitting behind a Windows `cfg`, so
 macOS and Linux exercise the same code path the tests cover. Android is not

@@ -50,8 +50,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init());
 
-    // Share-sheet intake and Keystore-backed secure storage exist only on mobile.
-    #[cfg(mobile)]
+    // Share-sheet intake and Keystore-backed secure storage exist only on Android;
+    // the plugin has no iOS implementation, so it is not registered there.
+    #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_vixera_share::init());
 
     builder
@@ -95,12 +96,20 @@ fn build_credential_store<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Box<
     ))
 }
 
-#[cfg(mobile)]
+#[cfg(target_os = "android")]
 fn build_credential_store<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Box<dyn CredentialStore + Send + Sync> {
     Box::new(android::PluginCredentialStore::new(app.clone()))
 }
 
-#[cfg(mobile)]
+/// iOS has no secure store yet (a Swift Keychain plugin is future work). The app
+/// must still launch: every credential call fails with a clear Unavailable
+/// error and the sign-in screen says so, rather than the process panicking.
+#[cfg(target_os = "ios")]
+fn build_credential_store<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Box<dyn CredentialStore + Send + Sync> {
+    Box::new(vixera_platform::UnavailableCredentialStore::new("secure credential storage is not implemented on iOS yet"))
+}
+
+#[cfg(target_os = "android")]
 pub mod android {
     //! `CredentialStore` backed by the share plugin's `secure_*` commands
     //! (`EncryptedSharedPreferences` + Android Keystore master key).

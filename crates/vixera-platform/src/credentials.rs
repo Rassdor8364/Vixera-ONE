@@ -77,7 +77,39 @@ pub const DEFAULT_MAX_UTF16_UNITS: usize = 1000;
 /// Marks a primary entry as a manifest rather than a value. U+0001 cannot begin
 /// any value Vixera stores (they are JSON or base64), so an entry written by an
 /// older build is still read back correctly as a plain value.
+///
+/// Manifest forms: `<sentinel><count>` (legacy; chunks at `key:c<i>`) and
+/// `<sentinel><count>:<gen>` (chunks at `key:<gen>:c<i>`, `gen` ∈ {a, b}).
 const CHUNK_SENTINEL: &str = "\u{1}vx-chunked:";
+const GENERATIONS: [&str; 2] = ["a", "b"];
+/// A torn cleanup can leave a hole in a generation; keep scanning this far past one.
+const GAP_TOLERANCE: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Manifest {
+    count: usize,
+    /// `None` is the legacy layout written before generations existed.
+    generation: Option<&'static str>,
+}
+
+impl Manifest {
+    /// `Ok(None)` for a plain value, `Ok(Some)` for a manifest, `Err` for a corrupt one.
+    fn parse(primary: &str) -> Result<Option<Manifest>, ()> {
+        let Some(rest) = primary.strip_prefix(CHUNK_SENTINEL) else { return Ok(None) };
+        let (count, generation) = match rest.split_once(':') {
+            None => (rest, None),
+            Some((count, g)) => (count, Some(GENERATIONS.iter().copied().find(|x| *x == g).ok_or(())?)),
+        };
+        Ok(Some(Manifest { count: count.parse().map_err(|_| ())?, generation }))
+    }
+
+    fn render(self) -> String {
+        match self.generation {
+            None => format!("{CHUNK_SENTINEL}{}", self.count),
+            Some(g) => format!("{CHUNK_SENTINEL}{}:{g}", self.count),
+        }
+    }
+}
 
 fn utf16_len(value: &str) -> usize {
     value.chars().map(char::len_utf16).sum()
@@ -104,7 +136,11 @@ fn split_utf16(value: &str, max_units: usize) -> Vec<&str> {
 ///
 /// A value that fits is written verbatim, so this is transparent to anything
 /// already stored. A value that does not fit becomes `key` holding a manifest
-/// plus `key:c0 … key:cN-1` holding the pieces.
+/// plus `key:<gen>:c0 … cN-1` holding the pieces. Each rewrite goes to the
+/// OTHER generation, so the chunks a live manifest points at are never
+/// overwritten in place: a rewrite that dies half-way leaves the previous
+/// value whole, never a splice of old and new pieces. The manifest swap is
+/// one entry write; the previous generation is deleted after it.
 ///
 /// Everything stays in the platform-secure store; nothing spills to disk.
 #[derive(Debug, Clone)]
@@ -123,22 +159,57 @@ impl<S: CredentialStore> ChunkedCredentialStore<S> {
         Self { inner, max_utf16_units: max_utf16_units.max(1) }
     }
 
-    fn chunk_key(&self, key: &str, index: usize) -> Result<String, CredentialError> {
-        let chunk = format!("{key}:c{index}");
+    fn chunk_key(&self, key: &str, generation: Option<&str>, index: usize) -> Result<String, CredentialError> {
+        let chunk = match generation {
+            None => format!("{key}:c{index}"),
+            Some(g) => format!("{key}:{g}:c{index}"),
+        };
         validate_key(&chunk)?;
         Ok(chunk)
     }
 
-    /// Remove chunks from `from` upward until one is missing, so shrinking a value
-    /// never leaves a longer previous one half-present.
-    fn delete_chunks_from(&self, key: &str, from: usize) -> Result<(), CredentialError> {
+    /// The manifest currently stored under `key`, if the primary entry is one.
+    fn current_manifest(&self, key: &str) -> Result<Option<Manifest>, CredentialError> {
+        match self.inner.get(key)? {
+            Some(primary) => Manifest::parse(&primary)
+                .map_err(|()| CredentialError::Backend { key: key.to_owned(), message: "unreadable chunk manifest".into() }),
+            None => Ok(None),
+        }
+    }
+
+    /// Remove one generation's chunks from `from` upward. Scans a little past a
+    /// missing index so a hole left by an interrupted cleanup does not strand what
+    /// lies beyond it.
+    fn delete_generation(&self, key: &str, generation: Option<&str>, from: usize) -> Result<(), CredentialError> {
+        let mut misses = 0;
         for index in from.. {
-            // A key too long to take a ":cN" suffix never had chunks: nothing to do,
+            // A key too long to take a chunk suffix never had chunks: nothing to do,
             // and not an error — a short value under such a key must still store.
-            let Ok(chunk) = self.chunk_key(key, index) else { return Ok(()) };
+            let Ok(chunk) = self.chunk_key(key, generation, index) else { return Ok(()) };
             match self.inner.get(&chunk)? {
-                Some(_) => self.inner.delete(&chunk)?,
-                None => break,
+                Some(_) => {
+                    self.inner.delete(&chunk)?;
+                    misses = 0;
+                }
+                None => {
+                    misses += 1;
+                    if misses > GAP_TOLERANCE {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete every chunk family except `keep`.
+    fn delete_other_generations(&self, key: &str, keep: Option<&str>) -> Result<(), CredentialError> {
+        if keep.is_some() {
+            self.delete_generation(key, None, 0)?;
+        }
+        for g in GENERATIONS {
+            if Some(g) != keep {
+                self.delete_generation(key, Some(g), 0)?;
             }
         }
         Ok(())
@@ -149,23 +220,24 @@ impl<S: CredentialStore> CredentialStore for ChunkedCredentialStore<S> {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
         validate_key(key)?;
         let Some(primary) = self.inner.get(key)? else { return Ok(None) };
-        let Some(count) = primary.strip_prefix(CHUNK_SENTINEL) else { return Ok(Some(primary)) };
-        let count: usize = count
-            .parse()
-            .map_err(|_| CredentialError::Backend { key: key.to_owned(), message: "unreadable chunk manifest".into() })?;
+        let manifest = match Manifest::parse(&primary) {
+            Ok(None) => return Ok(Some(primary)),
+            Ok(Some(m)) => m,
+            Err(()) => return Err(CredentialError::Backend { key: key.to_owned(), message: "unreadable chunk manifest".into() }),
+        };
         // `set` never writes a manifest for zero chunks (an empty value fits and is
         // stored whole), so this is corruption, and corruption reads as absent.
-        if count == 0 {
+        if manifest.count == 0 {
             return Ok(None);
         }
 
         let mut value = String::new();
-        for index in 0..count {
+        for index in 0..manifest.count {
             // A missing piece means the value was torn by an interrupted write. It
             // is unrecoverable, and for every caller it means the same thing a
             // missing credential means — sign in again — so report it as absent
             // rather than as an error they cannot act on differently.
-            let Some(part) = self.inner.get(&self.chunk_key(key, index)?)? else { return Ok(None) };
+            let Some(part) = self.inner.get(&self.chunk_key(key, manifest.generation, index)?)? else { return Ok(None) };
             value.push_str(&part);
         }
         Ok(Some(value))
@@ -175,24 +247,86 @@ impl<S: CredentialStore> CredentialStore for ChunkedCredentialStore<S> {
         validate_key(key)?;
         if utf16_len(value) <= self.max_utf16_units {
             self.inner.set(key, value)?;
-            return self.delete_chunks_from(key, 0);
+            // Whatever chunk families a previous larger value left behind.
+            self.delete_generation(key, None, 0)?;
+            for g in GENERATIONS {
+                self.delete_generation(key, Some(g), 0)?;
+            }
+            return Ok(());
         }
 
+        // Write into the generation the current manifest does NOT point at, so
+        // the live chunks are never touched until the manifest has moved. Legacy
+        // (no generation) and "nothing stored" both go to "a".
+        let current = self.current_manifest(key)?.and_then(|m| m.generation);
+        let next = if current == Some(GENERATIONS[0]) { GENERATIONS[1] } else { GENERATIONS[0] };
         let parts = split_utf16(value, self.max_utf16_units);
-        // Chunks first, manifest last: until the manifest lands the old value is
-        // what `get` returns, so a failure part-way through never publishes a
-        // half-written session.
         for (index, part) in parts.iter().enumerate() {
-            self.inner.set(&self.chunk_key(key, index)?, part)?;
+            self.inner.set(&self.chunk_key(key, Some(next), index)?, part)?;
         }
-        self.inner.set(key, &format!("{CHUNK_SENTINEL}{}", parts.len()))?;
-        self.delete_chunks_from(key, parts.len())
+        // The swap: one entry write. Before it, `get` returns the previous value
+        // whole; after it, the new one.
+        self.inner.set(key, &Manifest { count: parts.len(), generation: Some(next) }.render())?;
+        // Stale pieces of THIS generation from an even earlier, longer value, then
+        // the previous generation and any legacy chunks.
+        self.delete_generation(key, Some(next), parts.len())?;
+        self.delete_other_generations(key, Some(next))
     }
 
     fn delete(&self, key: &str) -> Result<(), CredentialError> {
         validate_key(key)?;
         self.inner.delete(key)?;
-        self.delete_chunks_from(key, 0)
+        self.delete_generation(key, None, 0)?;
+        for g in GENERATIONS {
+            self.delete_generation(key, Some(g), 0)?;
+        }
+        Ok(())
+    }
+}
+
+/**
+ * The keys the Field may store, enforced at the Rust boundary too (the TypeScript
+ * adapter checks the same list, but a command reachable from the webview must not
+ * trust it): `supabase.session`, its supabase-js siblings `supabase.session-*`,
+ * `device.key`, and `connector.<accountId>`. A colon is never allowed — that is
+ * how chunk keys (`key:a:c3`) stay unreachable from any caller.
+ */
+pub fn is_vixera_credential_key(key: &str) -> bool {
+    if validate_key(key).is_err() || key.contains(':') {
+        return false;
+    }
+    key == KEY_SUPABASE_SESSION
+        || key.strip_prefix("supabase.session-").is_some_and(|rest| !rest.is_empty())
+        || key == KEY_DEVICE_KEY
+        || key.strip_prefix(KEY_CONNECTOR_PREFIX).is_some_and(|rest| !rest.is_empty())
+}
+
+/// A store for platforms with no secure storage yet (iOS today): every call
+/// fails with [`CredentialError::Unavailable`], so the app launches and the
+/// sign-in screen explains itself instead of the process panicking.
+#[derive(Debug, Clone)]
+pub struct UnavailableCredentialStore {
+    reason: String,
+}
+
+impl UnavailableCredentialStore {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self { reason: reason.into() }
+    }
+}
+
+impl CredentialStore for UnavailableCredentialStore {
+    fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+        validate_key(key)?;
+        Err(CredentialError::Unavailable(self.reason.clone()))
+    }
+    fn set(&self, key: &str, _value: &str) -> Result<(), CredentialError> {
+        validate_key(key)?;
+        Err(CredentialError::Unavailable(self.reason.clone()))
+    }
+    fn delete(&self, key: &str) -> Result<(), CredentialError> {
+        validate_key(key)?;
+        Err(CredentialError::Unavailable(self.reason.clone()))
     }
 }
 
@@ -460,7 +594,7 @@ mod tests {
     fn a_torn_write_reads_as_absent_rather_than_as_a_corrupt_session() {
         let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
         store.set(KEY_SUPABASE_SESSION, &"a".repeat(45)).unwrap();
-        store.inner.delete(&format!("{KEY_SUPABASE_SESSION}:c2")).unwrap();
+        store.inner.delete(&format!("{KEY_SUPABASE_SESSION}:a:c2")).unwrap();
         assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap(), None);
     }
 
@@ -496,9 +630,9 @@ mod tests {
     #[test]
     fn a_manifest_claiming_a_huge_count_stops_at_the_first_missing_chunk() {
         let inner = InMemoryCredentialStore::new();
-        inner.set(&format!("{KEY_SUPABASE_SESSION}:c0"), "aaaaaaaaaa").unwrap();
-        inner.set(&format!("{KEY_SUPABASE_SESSION}:c1"), "bbbbbbbbbb").unwrap();
-        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:4000000000").unwrap();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:a:c0"), "aaaaaaaaaa").unwrap();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:a:c1"), "bbbbbbbbbb").unwrap();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:4000000000:a").unwrap();
         let store = ChunkedCredentialStore::with_limit(inner, 10);
         // Returns promptly (two reads and a miss), not after four billion lookups.
         assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap(), None);
@@ -543,8 +677,8 @@ mod tests {
         // Simulate `set` dying after writing the chunks of a new, larger value but
         // before the manifest: the chunks are in place, the primary still says "old",
         // and because it is not a manifest, `get` returns it unchanged.
-        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:c0"), "new-sessio").unwrap();
-        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:c1"), "n-value-xx").unwrap();
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:a:c0"), "new-sessio").unwrap();
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:a:c1"), "n-value-xx").unwrap();
         assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some("old"));
         // And the next successful write cleans up the orphaned chunks after it.
         store.set(KEY_SUPABASE_SESSION, "tiny").unwrap();
@@ -564,15 +698,79 @@ mod tests {
     }
 
     #[test]
-    fn chunk_keys_cannot_collide_with_a_real_key_written_whole() {
-        // A value stored whole under "supabase.session:c0" is a legitimate (if odd)
-        // key; a chunked write to "supabase.session" must not read it as its chunk 0
-        // — the manifest count is what bounds the read, and set() cleans up what it owns.
+    fn chunk_keys_are_unreachable_from_any_caller() {
+        // Every chunk key carries a colon, and the namespace a caller may use never
+        // does — so no caller can read, write or clobber a chunk by name.
+        for good in [KEY_SUPABASE_SESSION, "supabase.session-code-verifier", KEY_DEVICE_KEY, "connector.acct-1"] {
+            assert!(is_vixera_credential_key(good), "{good}");
+        }
+        for bad in ["supabase.session:c0", "supabase.session:a:c0", "supabase.session-", "connector.", "device.key.extra", "sb-ref-auth-token", "", "has space"] {
+            assert!(!is_vixera_credential_key(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rewriting_a_chunked_value_never_touches_the_live_chunks() {
         let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
-        store.set(KEY_SUPABASE_SESSION, &"a".repeat(25)).unwrap();
-        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some("a".repeat(25).as_str()));
-        store.set(KEY_SUPABASE_SESSION, "small").unwrap();
-        assert_eq!(store.get(&format!("{KEY_SUPABASE_SESSION}:c0")).unwrap(), None);
+        let old = "o".repeat(25); // 3 chunks in generation a
+        store.set(KEY_SUPABASE_SESSION, &old).unwrap();
+        assert_eq!(store.inner.get(&format!("{KEY_SUPABASE_SESSION}:a:c0")).unwrap().as_deref(), Some("oooooooooo"));
+        // Simulate `set` dying after the first chunk of the rewrite: it went to
+        // generation b, so the manifest (still a) and its chunks are intact.
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:b:c0"), "NEWNEWNEWN").unwrap();
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some(old.as_str()));
+        // A completed rewrite lands in b and removes a.
+        let new = "n".repeat(45);
+        store.set(KEY_SUPABASE_SESSION, &new).unwrap();
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some(new.as_str()));
+        assert_eq!(store.inner.get(&format!("{KEY_SUPABASE_SESSION}:a:c0")).unwrap(), None);
+        assert_eq!(store.inner.len(), 1 + 5);
+        // And the next rewrite goes back to a, removing b.
+        store.set(KEY_SUPABASE_SESSION, &"x".repeat(15)).unwrap();
+        assert_eq!(store.inner.get(&format!("{KEY_SUPABASE_SESSION}:b:c0")).unwrap(), None);
+        assert_eq!(store.inner.len(), 1 + 2);
+    }
+
+    #[test]
+    fn a_torn_cleanup_is_finished_by_the_next_write_even_across_a_hole() {
+        let store = ChunkedCredentialStore::with_limit(InMemoryCredentialStore::new(), 10);
+        store.set(KEY_SUPABASE_SESSION, &"a".repeat(25)).unwrap(); // generation a, 3 chunks
+        // Orphans a previous cleanup left behind: generation b with a hole at c1.
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:b:c0"), "junk").unwrap();
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:b:c2"), "junk").unwrap();
+        store.inner.set(&format!("{KEY_SUPABASE_SESSION}:b:c5"), "junk").unwrap();
+        store.set(KEY_SUPABASE_SESSION, "tiny").unwrap();
+        assert_eq!(store.inner.len(), 1, "everything but the value itself is gone");
+    }
+
+    #[test]
+    fn a_legacy_manifest_still_reads_and_is_migrated_by_the_next_write() {
+        let inner = InMemoryCredentialStore::new();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:c0"), "legacy-par").unwrap();
+        inner.set(&format!("{KEY_SUPABASE_SESSION}:c1"), "t").unwrap();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:2").unwrap();
+        let store = ChunkedCredentialStore::with_limit(inner, 10);
+        assert_eq!(store.get(KEY_SUPABASE_SESSION).unwrap().as_deref(), Some("legacy-part"));
+        store.set(KEY_SUPABASE_SESSION, &"n".repeat(25)).unwrap();
+        assert_eq!(store.inner.get(&format!("{KEY_SUPABASE_SESSION}:c0")).unwrap(), None);
+        assert!(store.inner.get(KEY_SUPABASE_SESSION).unwrap().unwrap().ends_with(":a"));
+    }
+
+    #[test]
+    fn a_manifest_naming_an_unknown_generation_is_corrupt() {
+        let inner = InMemoryCredentialStore::new();
+        inner.set(KEY_SUPABASE_SESSION, "\u{1}vx-chunked:2:z").unwrap();
+        let store = ChunkedCredentialStore::with_limit(inner, 10);
+        assert!(matches!(store.get(KEY_SUPABASE_SESSION), Err(CredentialError::Backend { .. })));
+    }
+
+    #[test]
+    fn the_unavailable_store_fails_every_call_without_panicking() {
+        let store = UnavailableCredentialStore::new("no secure storage on this platform");
+        assert!(matches!(store.get(KEY_SUPABASE_SESSION), Err(CredentialError::Unavailable(_))));
+        assert!(matches!(store.set(KEY_SUPABASE_SESSION, "x"), Err(CredentialError::Unavailable(_))));
+        assert!(matches!(store.delete(KEY_SUPABASE_SESSION), Err(CredentialError::Unavailable(_))));
+        assert!(matches!(store.get("bad key!"), Err(CredentialError::InvalidKey(_))));
     }
 
     #[test]

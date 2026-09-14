@@ -13,19 +13,49 @@ use crate::{AppState, Error, Result};
 /// Loopback probes are hints; keep them short so the UI never stalls on them.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 
+/// The webview may only touch the Vixera credential namespace. The TypeScript
+/// adapter enforces the same list, but a command is reachable by anything that
+/// runs in the webview, so the check lives here as well.
+fn checked(key: &str) -> Result<()> {
+    if vixera_platform::is_vixera_credential_key(key) {
+        Ok(())
+    } else {
+        Err(vixera_platform::CredentialError::InvalidKey(format!("key {key:?} is outside the Vixera credential namespace")).into())
+    }
+}
+
 #[tauri::command]
 pub fn credential_get(state: State<'_, AppState>, key: String) -> Result<Option<String>> {
+    checked(&key)?;
     Ok(state.credentials.get(&key)?)
 }
 
 #[tauri::command]
 pub fn credential_set(state: State<'_, AppState>, key: String, value: String) -> Result<()> {
+    checked(&key)?;
     Ok(state.credentials.set(&key, &value)?)
 }
 
 #[tauri::command]
 pub fn credential_delete(state: State<'_, AppState>, key: String) -> Result<()> {
+    checked(&key)?;
     Ok(state.credentials.delete(&key)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked;
+
+    #[test]
+    fn commands_refuse_keys_outside_the_namespace() {
+        assert!(checked("supabase.session").is_ok());
+        assert!(checked("supabase.session-code-verifier").is_ok());
+        assert!(checked("device.key").is_ok());
+        assert!(checked("connector.acct").is_ok());
+        for bad in ["sb-ref-auth-token", "supabase.session:a:c0", "anything", ""] {
+            assert!(checked(bad).is_err(), "{bad}");
+        }
+    }
 }
 
 #[tauri::command]
