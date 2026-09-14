@@ -51,7 +51,9 @@ interface BankSyncSource     { syncBank(ctx, checkpoint): AsyncIterable<SyncPage
   (`null` = keep the previous one). `done: false` asks for another page.
   `fullResync: true` says the provider invalidated the previous checkpoint and
   this page starts from scratch (logged; the store still upserts by natural
-  key, so nothing is deleted on a full resync).
+  key, so nothing is deleted on a full resync — which also means rows the
+  provider removed during the gap are **not** reconciled; see the Gmail and
+  Google Calendar notes below).
 * **Batches** contain only normalized domain objects from
   `packages/domain/src/connectors/normalized.ts`: `NormalizedMailMessage`,
   `NormalizedTimeEvent`, `NormalizedMoneyAccount`, `NormalizedMoneyTransaction`
@@ -75,14 +77,18 @@ absent: linking returns `provider_not_configured`, syncing its accounts records
 
 | Capability | Source | Rows written by the linker |
 | --- | --- | --- |
-| `mail` | Gmail, Graph inbox | `mail_messages`, attachment `documents` (metadata only, `location.kind = "provider"`), `people`, `relationships`, `context_events` |
+| `mail` | Gmail (every label except Spam, Trash, Drafts, Chats; Sent kept without a sender), Graph inbox | `mail_messages`, attachment `documents` (metadata only, `location.kind = "provider"`), `people`, `relationships`, `context_events` |
 | `calendar` | Google Calendar, Graph calendarView | `time_events`, `people`, `relationships`, `context_events` |
 | `bank` | Plaid `/transactions/sync` + `/accounts/get` | `money_accounts` (balances), `money_transactions`, `relationships`, `context_events` |
 | `document` | Praxion (local) | never paged by the engine; `runCapability` reports it as skipped rather than failing every cycle |
 
 An account's `capabilities` array says what it feeds; a Google account feeds
-mail **and** calendar with one credential. Each capability has its own
-`connector_sync_states` row (ADR-004).
+mail **and** calendar with one credential — or only one of them: Google's
+consent screen lets the user untick scopes, and `discoverAccount` derives the
+capabilities from the scopes actually granted (`capabilitiesForScopes`:
+`gmail.readonly` or broader → `mail`, `calendar.readonly` or broader →
+`calendar`; a grant covering neither fails the link with `unsupported`). Each
+capability has its own `connector_sync_states` row (ADR-004).
 
 ## Multi-account model
 
@@ -162,34 +168,79 @@ never as an error.
 ```
 
 * First run: `users/me/profile` → `historyId` is captured **before** the
-  backfill lists `messages.list?q=newer_than:<backfillDays>d` (default 30
-  days, 100 ids per page, message fetch concurrency 4). While `backfill` is
+  backfill lists `messages.list?q=newer_than:<backfillDays>d -in:drafts -in:chats`
+  (default 30 days, 100 ids per page, message fetch concurrency 4;
+  `messages.list` already leaves out Spam and Trash). While `backfill` is
   present each page carries the next `pageToken`, so a crash resumes the
-  backfill page-by-page. The last page drops `backfill`.
-* Incremental: `history.list?startHistoryId=<historyId>` (500 records/page);
-  the checkpoint advances to the last history record id of each page, so a
-  multi-page history run is restartable.
+  backfill page-by-page. The last page drops `backfill`. A stored page token
+  Gmail later rejects (400) is thrown as `checkpoint_invalid`.
+* Incremental: `history.list?startHistoryId=<historyId>` (500 records/page,
+  no label filter — Sent and archived mail must flow too); the checkpoint
+  advances to the last history record id of each page, so a multi-page
+  history run is restartable.
+* **Label semantics** (`GMAIL_HIDDEN_LABELS` = `TRASH`, `SPAM`, `DRAFT`,
+  `CHAT`): messages carrying any of these never reach the spine, and both
+  paths agree, so a mailbox yields the same rows whichever ran. History
+  records are folded in order (`planHistory`): `messagesAdded` whose ref is
+  already hidden is skipped without a fetch; `labelsAdded` TRASH/SPAM on a
+  stored message is a **deletion without a fetch** (Gmail's
+  `messagesDeleted` means purged, not trashed — trashing arrives as a label
+  change); `labelsRemoved` TRASH/SPAM re-fetches the message; the last move
+  wins within a page and a purge always wins. Any fetched message that turns
+  out hidden is emitted as a deletion. `UNREAD` changes re-fetch; other label
+  changes are ignored.
+* **Sent mail** (`SENT` label) is kept as the user's own context — recipients
+  still resolve to people — but with `from: null` and
+  `metadata.direction = "sent"`, so it is never "received from" the user and
+  never creates a person for the user's own address. Everything else carries
+  `metadata.direction = "received"`.
+* A `messages.get` that answers 404 is a deletion (gone between list and
+  get). A 2xx whose body is empty or not JSON is a retryable
+  `invalid_response`: the run fails and retries from the same `historyId`,
+  it never becomes a deletion.
 * `history.list` **404** (Gmail no longer holds history back to our id) →
-  the source yields a fresh backfill with `fullResync: true`.
-* Message ids are the natural key; deletions come from history
-  `messagesDeleted`; unread is derived from the `UNREAD` label.
+  the source yields a fresh backfill with `fullResync: true`. The re-list
+  only upserts: messages purged at Gmail during the gap stay in
+  `mail_messages` (known limitation; trashed ones are caught the next time
+  their labels change).
+* Message ids are the natural key; unread is derived from the `UNREAD` label.
 
 ### Google Calendar — `packages/connectors/google/src/calendar/sync.ts`
 
 ```
-{ calendars: { [calendarId]: { syncToken: string } } }
+{ calendars: { [calendarId]: { syncToken?: string,
+                               page?: { token: string, timeMin?: IsoDateTime, timeMax?: IsoDateTime, fullResync?: true },
+                               series?: { [masterEventId]: instanceEventId[] } } } }
 ```
 
 * Calendars: every `calendarList` entry that is selected and more than
   free/busy, plus `primary` always (`selectCalendars`). Each calendar syncs
-  independently; tokens for calendars that no longer exist are dropped.
+  independently; state for calendars that no longer exist is dropped.
 * First run per calendar: `events.list?singleEvents=true&showDeleted=true`
-  over the window (default 30 days back, 90 ahead, 250 per page). The
-  calendar's `nextSyncToken` is written only after its last page, so a crash
-  mid-calendar re-lists just that calendar.
+  over the window (default 30 days back, 90 ahead, 250 per page). **Every
+  page is a resume point**: it checkpoints the calendar's `nextPageToken`
+  as `page`, together with the `timeMin`/`timeMax` the token was issued for
+  (Google requires every parameter except `pageToken` to match), so the
+  engine can stop at its deadline after any page and the next run continues
+  that calendar from the same page with the same window. The last page
+  replaces `page` with the calendar's `nextSyncToken`. A stored page token
+  Google rejects (400) re-lists just that calendar from scratch with a fresh
+  window; the other calendars are untouched. Pages of a multi-page sync-token
+  response checkpoint their page token the same way (without a window).
 * Incremental: `events.list?syncToken=…`; `status: cancelled` → deletion.
+* **Recurring series.** Instances are stored under their own ids
+  (`metadata.recurringEventId` names the master). `series` remembers which
+  stored instance ids belong to which master; when Google reports the
+  **master** id as cancelled (the user deleted the whole series), the page
+  emits a deletion for every instance under it and forgets the series. An
+  instance cancelled on its own is deleted and dropped from the map.
+  Instances whose id dates them (`<master>_<YYYYMMDD[THHMMSSZ]>`) are
+  forgotten once they leave the past window, so the map stays bounded;
+  undatable ids are kept.
 * **410** on a sync-token request → that calendar re-lists from scratch with
-  `fullResync: true`. A 410 without a token is a real error.
+  `fullResync: true`. A 410 without a token is a real error. The re-list
+  only upserts: events removed at Google during the gap stay in
+  `time_events` (known limitation).
 
 ### Microsoft Graph mail — `packages/connectors/microsoft/src/mail/sync.ts`
 
@@ -298,13 +349,13 @@ returns one empty page unless a test hook changed the fixtures.
 
 | Code | Raised by | Engine (`SyncEngine.runCapability`) |
 | --- | --- | --- |
-| `unauthorized` | 401 after one refresh attempt, 403 without a quota reason, refresh without refresh token, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links (Plaid: through Link update mode — `beginBankLink({ accessToken })` + `completeBankRelink` exist in the package, but `connector-link` still starts a fresh link, which duplicates the Item; see "Repairing a needs_reauth Item") |
+| `unauthorized` | 401 after one refresh attempt, 403 without a quota or scope reason, refresh without refresh token, Google token endpoint `invalid_grant`, Plaid `ITEM_LOGIN_REQUIRED` / `INVALID_ACCESS_TOKEN` / `ITEM_NOT_FOUND` | account `status = needs_reauth` (+ `last_error`), sync state `error`; the remaining capabilities of that account are skipped ("account needs_reauth") until the user re-links (Plaid: through Link update mode — `beginBankLink({ accessToken })` + `completeBankRelink` exist in the package, but `connector-link` still starts a fresh link, which duplicates the Item; see "Repairing a needs_reauth Item") |
 | `checkpoint_invalid` | Graph 410 on a fresh query, corrupted checkpoint the source cannot repair | checkpoint cleared and the capability retried **once** from scratch in the same run; a second failure is recorded as an error |
 | `rate_limited` | 429, Google 403 quota, Plaid `RATE_LIMIT_EXCEEDED` | state `error`, `consecutive_failures + 1`; nothing sleeps — the next scheduled run retries from the persisted checkpoint once the backoff below has elapsed |
 | `provider_unavailable` | network failure, 5xx | same as rate limited |
 | `invalid_response` | provider body missing required fields | state `error`; not retried within the run, and subject to the same backoff |
-| `unsupported` | capability not implemented by the connector, wrong credential kind, disallowed Plaid endpoint | state `error` |
-| `unknown` | anything else | state `error` |
+| `unsupported` | capability not implemented by the connector, wrong credential kind, disallowed Plaid endpoint, Google 403 `insufficientPermissions` / `ACCESS_TOKEN_SCOPE_INSUFFICIENT` (a scope the user declined: limits one capability, the account stays active) | state `error` |
+| `unknown` | anything else; Google token endpoint 400/401 other than `invalid_grant` (`invalid_client`, `unauthorized_client`, … — our OAuth client configuration, retryable so accounts recover once it is fixed) | state `error` |
 | *(missing credential)* | `credentialRef` null or Vault returns nothing | account `needs_reauth`, outcome `errorCode: "credential_missing"` |
 
 **Backoff.** A state in `error` is not retried until `lastAttemptAt +
@@ -435,9 +486,13 @@ already synced from that account stay in the spine. The provider-side grant is
    `apps/desktop/src/data/link.ts`; add the workspace dependency to
    `apps/desktop/package.json` if the Field imports anything from it.
 6. **Tests**: normalization from fixtures, multi-account separation (two
-   accounts of the same provider through one instance), checkpoint
-   round-trip, error mapping, and an engine run against `InMemorySpineStore`
-   proving a second run with the produced checkpoint changes nothing.
+   accounts of the same provider through one instance — Google has this in
+   `connector.test.ts`; add it for the others), checkpoint round-trip and
+   error mapping. Connector packages depend on `@vixera/domain` only, so the
+   engine round-trip (a second run with the produced checkpoint changes
+   nothing) lives in `packages/sync/src/engine/sync-engine.test.ts` against
+   the mock connector, not per provider; nothing is tested against a live
+   provider.
 
 ## Deliberately not implemented
 

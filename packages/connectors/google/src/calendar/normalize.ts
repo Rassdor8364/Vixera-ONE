@@ -3,8 +3,10 @@
  *
  * All-day events are represented as UTC midnight of their civil date with
  * `allDay: true`; `endsAt` keeps Google's exclusive end date. Timed events are
- * converted to UTC ISO. Cancelled events are still normalized (the sync
- * source turns them into deletions). Pure and synchronous.
+ * converted to UTC ISO. The sync source turns cancelled events into deletions
+ * before they get here, so a cancelled status only reaches this function when
+ * a caller passes one directly (it still maps to "cancelled"). Pure and
+ * synchronous.
  */
 import {
   ConnectorError,

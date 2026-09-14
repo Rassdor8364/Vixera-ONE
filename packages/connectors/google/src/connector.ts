@@ -37,6 +37,20 @@ interface GoogleUserInfo {
   readonly hd?: string;
 }
 
+/**
+ * Which capabilities a set of granted scopes covers. Google's consent screen
+ * lets the user untick individual scopes, so the grant can be narrower than
+ * `GOOGLE_SCOPES`; broader scopes (full mail, read/write calendar) count too.
+ * Returns null when the credential carries no scope information at all.
+ */
+export function capabilitiesForScopes(scopes: readonly string[]): ConnectorCapability[] | null {
+  if (scopes.length === 0) return null;
+  const out: ConnectorCapability[] = [];
+  if (scopes.some((s) => /^https:\/\/mail\.google\.com\/?$/.test(s) || /\/auth\/gmail\.(readonly|modify|metadata)$/.test(s))) out.push("mail");
+  if (scopes.some((s) => /\/auth\/calendar(\.readonly|\.events|\.events\.readonly)?$/.test(s))) out.push("calendar");
+  return out;
+}
+
 export class GoogleConnector implements Connector {
   readonly provider: ProviderId = "google";
   readonly capabilities: readonly ConnectorCapability[] = ["mail", "calendar"];
@@ -63,11 +77,21 @@ export class GoogleConnector implements Connector {
     if (info.name) metadata.name = info.name;
     if (info.hd) metadata.hostedDomain = info.hd;
     if (typeof info.email_verified === "boolean") metadata.emailVerified = info.email_verified;
+    // The account feeds exactly what the user granted. Claiming mail on a
+    // calendar-only grant made the first Gmail call fail and the engine mark
+    // the whole account needs_reauth, which also stopped the valid calendar.
+    // A credential without scope information (Google omits `scope` on some
+    // responses) cannot narrow the set, so it keeps the connector's full one.
+    const granted = client.credential.kind === "oauth2" ? capabilitiesForScopes(client.credential.scopes) : null;
+    const capabilities = granted === null ? this.capabilities : this.capabilities.filter((c) => granted.includes(c));
+    if (capabilities.length === 0) {
+      throw new ConnectorError("unsupported", "Google grant includes neither Gmail nor Calendar access; re-link and allow at least one", false);
+    }
     return {
       externalAccountId: info.sub,
       label: email ?? info.name ?? `google:${info.sub}`,
       address: email,
-      capabilities: this.capabilities,
+      capabilities,
       metadata,
     };
   }

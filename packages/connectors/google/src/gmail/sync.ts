@@ -15,11 +15,20 @@
  * Every page is idempotent for the store (natural key = message id).
  * HTTP 404 on `history.list` means Gmail no longer holds history back to our
  * id; the source then yields a fresh backfill with `fullResync: true`.
+ *
+ * Label semantics (both paths agree, so a mailbox yields the same rows
+ * whichever path ran): messages in Spam, Trash, Drafts or Chats
+ * (`GMAIL_HIDDEN_LABELS`) never reach the spine. The backfill query excludes
+ * drafts and chats (`messages.list` already omits Spam/Trash), history skips
+ * arrivals born hidden, a stored message that gains TRASH/SPAM becomes a
+ * deletion without a fetch, one that loses them is fetched again, and any
+ * fetched message that turns out hidden is emitted as a deletion. Sent mail
+ * is kept (see `normalize.ts`: no sender, `metadata.direction = "sent"`).
  */
 import { ConnectorError, type Checkpoint, type MailSyncBatch, type NormalizedMailMessage, type SyncContext, type SyncPage } from "@vixera/domain";
 import { GoogleApiClient, mapConcurrent } from "../http.ts";
 import type { GoogleOAuthConfig } from "../oauth.ts";
-import { GMAIL_UNREAD_LABEL, normalizeGmailMessage } from "./normalize.ts";
+import { GMAIL_UNREAD_LABEL, isHiddenGmailMessage, normalizeGmailMessage } from "./normalize.ts";
 import type { GmailHistoryList, GmailHistoryRecord, GmailMessage, GmailMessageList, GmailProfile } from "./types.ts";
 
 export const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -120,7 +129,8 @@ async function* backfill(
 
   for (;;) {
     const url = new URL(`${GMAIL_API}/messages`);
-    url.searchParams.set("q", `newer_than:${options.backfillDays}d`);
+    // messages.list leaves out SPAM/TRASH unless asked; drafts and chats we leave out ourselves.
+    url.searchParams.set("q", `newer_than:${options.backfillDays}d -in:drafts -in:chats`);
     url.searchParams.set("maxResults", String(LIST_PAGE_SIZE));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
     let list;
@@ -136,14 +146,15 @@ async function* backfill(
       throw error;
     }
     const refs = list.body?.messages ?? [];
-    const { messages } = await fetchMessages(ctx, client, options, refs.map((r) => r.id));
+    // A message trashed between list and get comes back hidden: it may be stored from an earlier run.
+    const { messages, hidden } = await fetchMessages(ctx, client, options, refs.map((r) => r.id));
     const nextToken = list.body?.nextPageToken ?? null;
     const next: GmailCheckpoint = nextToken
       ? { historyId, backfill: { pageToken: nextToken, since, ...(fullResync ? { fullResync: true as const } : {}) } }
       : { historyId };
-    ctx.log?.("gmail.backfill.page", { listed: refs.length, normalized: messages.length, hasMore: nextToken !== null });
+    ctx.log?.("gmail.backfill.page", { listed: refs.length, normalized: messages.length, hidden: hidden.length, hasMore: nextToken !== null });
     yield {
-      batch: { messages, deleted: [] },
+      batch: { messages, deleted: hidden.map((externalId) => ({ externalId })) },
       checkpoint: toCheckpoint(next),
       done: nextToken === null,
       ...(fullResync ? { fullResync: true } : {}),
@@ -183,8 +194,9 @@ async function* incremental(
     }
     const records = res.body?.history ?? [];
     const { toFetch, deleted } = planHistory(records);
-    const { messages, missing } = await fetchMessages(ctx, client, options, [...toFetch]);
+    const { messages, missing, hidden } = await fetchMessages(ctx, client, options, [...toFetch]);
     for (const id of missing) deleted.add(id);
+    for (const id of hidden) deleted.add(id);
 
     const nextToken = res.body?.nextPageToken ?? null;
     const lastRecordId = records.length ? records[records.length - 1]?.id : undefined;
@@ -201,31 +213,72 @@ async function* incremental(
   }
 }
 
-/** Folds a page of history records into "fetch these" and "delete these" (delete wins). */
+/**
+ * Folds a page of history records into "fetch these" and "delete these".
+ * Records are in mailbox order, so for Trash/Spam moves the last move wins
+ * (trashed then restored within one page is a fetch, not a deletion); a
+ * `messagesDeleted` purge always wins. Gmail's `messagesDeleted` means
+ * purged, NOT trashed: trashing arrives as `labelsAdded: ["TRASH"]`.
+ */
 export function planHistory(records: readonly GmailHistoryRecord[]): { toFetch: Set<string>; deleted: Set<string> } {
   const toFetch = new Set<string>();
   const deleted = new Set<string>();
+  const purged = new Set<string>();
   for (const record of records) {
-    for (const a of record.messagesAdded ?? []) toFetch.add(a.message.id);
-    for (const l of record.labelsAdded ?? []) if ((l.labelIds ?? []).includes(GMAIL_UNREAD_LABEL)) toFetch.add(l.message.id);
-    for (const l of record.labelsRemoved ?? []) if ((l.labelIds ?? []).includes(GMAIL_UNREAD_LABEL)) toFetch.add(l.message.id);
-    for (const d of record.messagesDeleted ?? []) deleted.add(d.message.id);
+    for (const a of record.messagesAdded ?? []) {
+      // Born hidden (spam, draft, chat): never stored, nothing to fetch or delete.
+      // Should it leave those labels later, `labelsRemoved` fetches it then.
+      if (!isHiddenGmailMessage(a.message.labelIds)) toFetch.add(a.message.id);
+    }
+    for (const l of record.labelsAdded ?? []) {
+      if (isHiddenGmailMessage(l.labelIds)) {
+        deleted.add(l.message.id);
+        toFetch.delete(l.message.id);
+      } else if ((l.labelIds ?? []).includes(GMAIL_UNREAD_LABEL)) toFetch.add(l.message.id);
+    }
+    for (const l of record.labelsRemoved ?? []) {
+      if (isHiddenGmailMessage(l.labelIds)) {
+        deleted.delete(l.message.id);
+        toFetch.add(l.message.id);
+      } else if ((l.labelIds ?? []).includes(GMAIL_UNREAD_LABEL)) toFetch.add(l.message.id);
+    }
+    for (const d of record.messagesDeleted ?? []) purged.add(d.message.id);
   }
-  for (const id of deleted) toFetch.delete(id);
+  for (const id of purged) {
+    deleted.add(id);
+    toFetch.delete(id);
+  }
   return { toFetch, deleted };
 }
 
+/**
+ * Fetches and normalizes `ids`. `missing` are ids Gmail answered 404 for;
+ * `hidden` are messages whose current labels keep them out of the spine
+ * (callers emit both as deletions).
+ */
 async function fetchMessages(
   ctx: SyncContext,
   client: GoogleApiClient,
   options: GmailSyncOptions,
   ids: readonly string[],
-): Promise<{ messages: NormalizedMailMessage[]; missing: string[] }> {
+): Promise<{ messages: NormalizedMailMessage[]; missing: string[]; hidden: string[] }> {
   const missing: string[] = [];
+  const hidden: string[] = [];
   const results = await mapConcurrent(ids, options.concurrency, async (id) => {
     const res = await client.getJson<GmailMessage>(`${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`, { tolerate: [404] });
-    if (res.status === 404 || !res.body) {
+    if (res.status === 404) {
       missing.push(id);
+      return null;
+    }
+    // Only a 404 means "gone". A 2xx whose body did not parse (empty, truncated,
+    // an HTML error page from a proxy) is a failed fetch: reporting it as
+    // missing would delete the stored message and everything linked to it,
+    // and the advanced history checkpoint would never fetch it again.
+    if (!res.body) {
+      throw new ConnectorError("invalid_response", `Gmail returned HTTP ${res.status} without a JSON body for message ${id}`, true);
+    }
+    if (isHiddenGmailMessage(res.body.labelIds)) {
+      hidden.push(id);
       return null;
     }
     try {
@@ -235,5 +288,5 @@ async function fetchMessages(
       return null;
     }
   });
-  return { messages: results.filter((m): m is NormalizedMailMessage => m !== null), missing };
+  return { messages: results.filter((m): m is NormalizedMailMessage => m !== null), missing, hidden };
 }
