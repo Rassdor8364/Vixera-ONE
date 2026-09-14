@@ -15,7 +15,8 @@
  *
  * Checkpoint (opaque to the engine, owned by this file):
  *   { calendars: { [calendarId]: { syncToken?: string,
- *                                  page?: { token: string, timeMin?: string, timeMax?: string, fullResync?: true } } } }
+ *                                  page?: { token: string, timeMin?: string, timeMax?: string, fullResync?: true },
+ *                                  series?: { [masterEventId]: instanceEventId[] } } } }
  *
  * `page` is present while a listing is in progress and is what makes the
  * engine's deadline harmless: it can stop after any page and the next run
@@ -24,6 +25,14 @@
  * that issued the token). A page token Google no longer accepts (400) makes
  * that one calendar re-list from scratch; the other calendars' tokens are
  * untouched. Pages are idempotent by natural key, so a replay costs nothing.
+ *
+ * `series` remembers which stored instances belong to which recurring
+ * master. `singleEvents=true` stores expanded instances under their own ids,
+ * but when the user deletes the whole series Google reports the MASTER id as
+ * cancelled; without this map that deletion would match no row and every
+ * instance would live on. Instances whose id dates them (Google's
+ * `<master>_<YYYYMMDD[THHMMSSZ]>` form) are forgotten once they leave the
+ * past window, so the map stays bounded; ids that cannot be dated are kept.
  */
 import { ConnectorError, type CalendarSyncBatch, type Checkpoint, type JsonObject, type NormalizedTimeEvent, type SyncContext, type SyncPage } from "@vixera/domain";
 import { GoogleApiClient } from "../http.ts";
@@ -53,6 +62,8 @@ export interface CalendarPageState {
 export interface CalendarCheckpointEntry {
   readonly syncToken?: string;
   readonly page?: CalendarPageState;
+  /** Stored instance ids per recurring master id (see the file header). */
+  readonly series?: { readonly [masterId: string]: readonly string[] };
 }
 
 export interface GoogleCalendarCheckpoint {
@@ -71,13 +82,26 @@ export function parseCalendarCheckpoint(checkpoint: Checkpoint | null): GoogleCa
   const out: Record<string, CalendarCheckpointEntry> = {};
   for (const [id, entry] of Object.entries(calendars)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const parsed: { syncToken?: string; page?: CalendarPageState } = {};
+    const parsed: { syncToken?: string; page?: CalendarPageState; series?: Record<string, string[]> } = {};
     if (typeof entry.syncToken === "string" && entry.syncToken) parsed.syncToken = entry.syncToken;
     const page = parsePage(entry.page);
     if (page) parsed.page = page;
-    if (parsed.syncToken || parsed.page) out[id] = parsed;
+    const series = parseSeries(entry.series);
+    if (series) parsed.series = series;
+    if (parsed.syncToken || parsed.page || parsed.series) out[id] = parsed;
   }
   return { calendars: out };
+}
+
+function parseSeries(value: unknown): Record<string, string[]> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string[]> = {};
+  for (const [master, instances] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(instances)) continue;
+    const ids = instances.filter((i): i is string => typeof i === "string" && i.length > 0);
+    if (ids.length) out[master] = ids;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function parsePage(value: unknown): CalendarPageState | null {
@@ -98,6 +122,27 @@ function parsePage(value: unknown): CalendarPageState | null {
 interface CalendarState {
   syncToken: string | null;
   page: CalendarPageState | null;
+  series: Map<string, Set<string>>;
+}
+
+function loadState(prior: CalendarCheckpointEntry | undefined, pastEdgeMs: number): CalendarState {
+  const series = new Map<string, Set<string>>();
+  for (const [master, ids] of Object.entries(prior?.series ?? {})) {
+    const kept = ids.filter((id) => {
+      const startMs = instanceStartMs(id);
+      return startMs === null || startMs >= pastEdgeMs;
+    });
+    if (kept.length) series.set(master, new Set(kept));
+  }
+  return { syncToken: prior?.syncToken ?? null, page: prior?.page ?? null, series };
+}
+
+/** Start instant encoded in a Google instance id (`<master>_20260911T120000Z` or `<master>_20260911`), or null. */
+function instanceStartMs(id: string): number | null {
+  const m = /_(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(id);
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0));
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function toCheckpoint(states: ReadonlyMap<string, CalendarState>): Checkpoint {
@@ -111,6 +156,11 @@ function toCheckpoint(states: ReadonlyMap<string, CalendarState>): Checkpoint {
         ...(state.page.timeMin !== undefined && state.page.timeMax !== undefined ? { timeMin: state.page.timeMin, timeMax: state.page.timeMax } : {}),
         ...(state.page.fullResync ? { fullResync: true } : {}),
       };
+    }
+    if (state.series.size) {
+      const series: JsonObject = {};
+      for (const [master, instances] of state.series) series[master] = [...instances];
+      entry.series = series;
     }
     if (Object.keys(entry).length) calendars[id] = entry;
   }
@@ -136,13 +186,17 @@ export async function* syncCalendar(
   const parsed = parseCalendarCheckpoint(checkpoint);
   if (checkpoint && !parsed) ctx.log?.("calendar.checkpoint.invalid", { keys: Object.keys(checkpoint) });
 
+  const now = ctx.now();
+  const pastEdgeMs = now.getTime() - options.window.pastDays * 86_400_000;
+  const freshWindow = {
+    timeMin: new Date(pastEdgeMs).toISOString(),
+    timeMax: new Date(now.getTime() + options.window.futureDays * 86_400_000).toISOString(),
+  };
+
   const calendars = selectCalendars(await listCalendars(client));
   // State carried forward: only for calendars that still exist for this account.
   const states = new Map<string, CalendarState>();
-  for (const c of calendars) {
-    const prior = parsed?.calendars[c.id];
-    states.set(c.id, { syncToken: prior?.syncToken ?? null, page: prior?.page ?? null });
-  }
+  for (const c of calendars) states.set(c.id, loadState(parsed?.calendars[c.id], pastEdgeMs));
   ctx.log?.("calendar.sync.start", {
     calendars: calendars.length,
     withSyncToken: [...states.values()].filter((s) => s.syncToken !== null).length,
@@ -153,12 +207,6 @@ export async function* syncCalendar(
     yield { batch: { events: [], deleted: [] }, checkpoint: toCheckpoint(states), done: true };
     return;
   }
-
-  const now = ctx.now();
-  const freshWindow = {
-    timeMin: new Date(now.getTime() - options.window.pastDays * 86_400_000).toISOString(),
-    timeMax: new Date(now.getTime() + options.window.futureDays * 86_400_000).toISOString(),
-  };
 
   for (let i = 0; i < calendars.length; i++) {
     const calendar = calendars[i] as GoogleCalendarListEntry;
@@ -214,7 +262,7 @@ export async function* syncCalendar(
         continue;
       }
 
-      const { events, deleted } = fold(ctx, calendar.id, res.body?.items ?? []);
+      const { events, deleted } = fold(ctx, calendar.id, res.body?.items ?? [], state.series);
       const nextPage = res.body?.nextPageToken ?? null;
       const nextSync = res.body?.nextSyncToken ?? null;
       if (nextPage) {
@@ -256,20 +304,45 @@ async function listCalendars(client: GoogleApiClient): Promise<GoogleCalendarLis
   }
 }
 
-function fold(ctx: SyncContext, calendarId: string, items: readonly GoogleEvent[]): CalendarSyncBatch {
+/**
+ * Normalizes a page. Cancelled items become deletions; a cancelled id that is
+ * a known recurring master fans out to every instance stored under it.
+ * `series` is updated in place (instances registered, cancelled ones and
+ * cancelled masters forgotten) so the checkpoint written after this page
+ * reflects it.
+ */
+function fold(ctx: SyncContext, calendarId: string, items: readonly GoogleEvent[], series: Map<string, Set<string>>): CalendarSyncBatch {
   const events: NormalizedTimeEvent[] = [];
-  const deleted: { externalId: string; externalCalendarId: string }[] = [];
+  const deletedIds = new Set<string>();
   for (const raw of items) {
     if (!raw?.id) continue;
     if (raw.status === "cancelled") {
-      deleted.push({ externalId: raw.id, externalCalendarId: calendarId });
+      deletedIds.add(raw.id);
+      if (raw.recurringEventId) {
+        const siblings = series.get(raw.recurringEventId);
+        siblings?.delete(raw.id);
+        if (siblings?.size === 0) series.delete(raw.recurringEventId);
+      } else {
+        const instances = series.get(raw.id);
+        if (instances) {
+          for (const id of instances) deletedIds.add(id);
+          series.delete(raw.id);
+          ctx.log?.("calendar.series.cancelled", { calendarId, id: raw.id, instances: instances.size });
+        }
+      }
       continue;
     }
     try {
       events.push(normalizeGoogleEvent(calendarId, raw));
     } catch (error) {
       ctx.log?.("calendar.event.skipped", { calendarId, id: raw.id, reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    if (raw.recurringEventId) {
+      const instances = series.get(raw.recurringEventId) ?? new Set<string>();
+      instances.add(raw.id);
+      series.set(raw.recurringEventId, instances);
     }
   }
-  return { events, deleted };
+  return { events, deleted: [...deletedIds].map((externalId) => ({ externalId, externalCalendarId: calendarId })) };
 }
