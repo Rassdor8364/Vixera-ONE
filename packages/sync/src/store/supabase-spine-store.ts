@@ -675,8 +675,19 @@ export class SupabaseSpineStore implements SpineStore {
     return rows.map(relationshipFromRow);
   }
 
+  /**
+   * Paged like `listRelationships`: PostgREST caps a set-returning RPC at
+   * `db-max-rows` exactly as it caps a table read, so a well-connected node (a
+   * person on a thousand messages) came back silently truncated. The order is
+   * total — an edge appears twice, once per direction, only as a self-loop.
+   */
   async neighbors(node: EntityRef, query: NeighborsQuery = {}): Promise<NeighborRow[]> {
-    const rows = await this.rows<NeighborRpcRow>(this.client.rpc("vx_neighbors", { p_user_id: this.userId, p_type: node.type, p_id: node.id }), "neighbors");
+    const args = { p_user_id: this.userId, p_type: node.type, p_id: node.id };
+    const rows = await this.pageAll<NeighborRpcRow>(
+      (from, to) => this.client.rpc("vx_neighbors", args, { count: "exact" }).order("relationship_id", { ascending: true }).order("direction", { ascending: true }).range(from, to),
+      {},
+      "neighbors",
+    );
     const direction = query.direction ?? "both";
     return rows
       .filter((r) => (direction === "both" || r.direction === direction) && (!query.kind || r.kind === query.kind))

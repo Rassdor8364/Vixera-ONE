@@ -17,7 +17,7 @@ interface Call {
   readonly ops: { readonly name: string; readonly args: readonly unknown[] }[];
 }
 
-type Responder = (call: Call) => { data: unknown; error: { code?: string; message: string; details?: string } | null };
+type Responder = (call: Call) => { data: unknown; error: { code?: string; message: string; details?: string } | null; count?: number };
 
 function fakeClient(respond: Responder): { client: SupabaseClient; calls: Call[] } {
   const calls: Call[] = [];
@@ -236,6 +236,20 @@ describe("SupabaseSpineStore query shape", () => {
     expect((await store.neighbors(node, { direction: "in" })).map((n) => n.relationshipId)).toEqual(["r2"]);
     expect((await store.neighbors(node, { kind: "has_person", type: "person" })).map((n) => n.ref)).toEqual([{ type: "person", id: "p1" }]);
     expect(await store.neighbors(node, { kind: "has_person", type: "document" })).toEqual([]);
+  });
+
+  it("neighbors() pages the RPC: a full page is followed by the next range, never taken as the whole graph", async () => {
+    const row = (i: number) => ({ relationship_id: `r${i}`, kind: "mentions", direction: "out", neighbor_type: "person", neighbor_id: `p${i}`, confidence: "0.600", source: "rule" });
+    const pages = [Array.from({ length: 500 }, (_, i) => row(i)), [row(500)]];
+    let n = 0;
+    const { client, calls } = fakeClient(() => ({ data: pages[n++] ?? [], error: null, count: 501 }));
+    const store = new SupabaseSpineStore(client, DEV_USER_ID);
+    const all = await store.neighbors(ref("person", "44444444-4444-4444-8444-444444444444"));
+    expect(all).toHaveLength(501);
+    expect(calls.map((c) => c.target)).toEqual(["rpc:vx_neighbors", "rpc:vx_neighbors"]);
+    expect(has(calls[0]!, "range", 0, 499)).toBe(true);
+    expect(has(calls[1]!, "range", 500, 999)).toBe(true);
+    expect(has(calls[0]!, "order", "relationship_id", { ascending: true })).toBe(true);
   });
 
   it("createActionRequest replays by idempotency key and updates 404 as SpineNotFoundError", async () => {
