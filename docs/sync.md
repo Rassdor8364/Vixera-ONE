@@ -340,9 +340,11 @@ alive to finish one.
 parseEnvelope        400 invalid_envelope / invalid_payload (hand-written guards per type)
 createActionRequest  upsert on (user_id, idempotency_key), ignoreDuplicates → created | existing
 existing done|failed → return the stored outcome, replayed: true, never re-executed
-existing running < 10 min, or queued < 30 s → 409 in_progress
-existing stale        → retried (attempts + 1)
+existing running < 10 min, or queued < 30 s (never run) → 409 in_progress
+existing queued after a transient failure, or stale → retried (attempts + 1)
 running → handler → done (result) | failed (error)   both recorded, returned as ActionOutcome
+         transient failure (store outage, retryable provider error) → back to queued,
+         outcome failed + retryable: true; the key is not spent until MAX_ACTION_ATTEMPTS (5)
 same key, different actionType → 409 conflict
 ```
 

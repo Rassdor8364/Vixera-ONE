@@ -6,7 +6,9 @@
  * POSTed to the `action-dispatch` Edge Function with an idempotency key. The
  * function persists an `action_requests` row, executes the handler and
  * returns an `ActionOutcome`; the Field then refreshes. Replaying the same
- * key returns the stored outcome (`replayed: true`) and never re-executes.
+ * key returns the stored outcome (`replayed: true`) and never re-executes —
+ * except after a failure the server marked `retryable` (an outage, not the
+ * request), when the same envelope runs the action again.
  *
  * Keys: notification-style actions (one per subject and type) derive their
  * key with `notificationIdempotencyKey`; user-initiated actions use `newId()`.

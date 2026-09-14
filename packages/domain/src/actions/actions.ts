@@ -72,6 +72,12 @@ export interface ActionOutcome {
   /** True when this call was a replay of an already-executed request. */
   readonly replayed: boolean;
   readonly actionRequestId: string;
+  /**
+   * Set on a failure the server could not attribute to the request itself (the
+   * database or a provider was unavailable): the key is not spent, and sending
+   * the same envelope again runs the action again.
+   */
+  readonly retryable?: boolean;
 }
 
 export function isActionType(value: string): value is ActionType {

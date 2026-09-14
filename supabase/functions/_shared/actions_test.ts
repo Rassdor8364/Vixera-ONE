@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DEV_USER_ID, deriveNow, ref, type ActionEnvelope, type ActionType, type JsonObject } from "@vixera/domain";
-import { InMemorySpineStore, MOCK_NOW, emptyCounts, tickingClock } from "@vixera/sync";
-import { ACTION_HANDLERS, ActionError, dispatchAction, parseEnvelope, type ActionContext, type ActionHandlers } from "./actions.ts";
+import { InMemorySpineStore, MOCK_NOW, emptyCounts, tickingClock, SpineStorageError } from "@vixera/sync";
+import { ACTION_HANDLERS, ActionError, dispatchAction, parseEnvelope, type ActionContext, type ActionHandlers, MAX_ACTION_ATTEMPTS } from "./actions.ts";
 import { HttpError } from "./http.ts";
 import type { BudgetedSyncReport } from "./sync.ts";
 
@@ -76,6 +76,64 @@ Deno.test("dispatch: a failing handler records failed and the replay returns the
   assert.equal(replay.replayed, true);
   assert.equal(replay.error, "boom");
   assert.equal(runs, 1);
+});
+
+Deno.test("dispatch: a transient store failure does not spend the key — the same envelope runs the handler again", async () => {
+  const { store, ctx } = world();
+  let runs = 0;
+  const handlers: ActionHandlers = {
+    ...ACTION_HANDLERS,
+    "context_event.dismiss": () => {
+      runs++;
+      return runs === 1 ? Promise.reject(new SpineStorageError("update context event: TypeError: fetch failed", null)) : Promise.resolve({ dismissed: true });
+    },
+  };
+  // A subject-derived key, as the Field sends for dismiss: there is no second key to try.
+  const env = envelope("context_event.dismiss", { contextEventId: crypto.randomUUID() }, "context_event.dismiss:the-only-key");
+  const first = await dispatchAction(store, env, ctx, { handlers });
+  assert.equal(first.status, "failed");
+  assert.equal(first.retryable, true);
+  assert.match(first.error ?? "", /fetch failed/);
+  const waiting = await store.getActionRequest(first.actionRequestId);
+  assert.equal(waiting?.status, "queued");
+  assert.equal(waiting?.attempts, 1);
+  const second = await dispatchAction(store, env, ctx, { handlers });
+  assert.equal(second.status, "done");
+  assert.equal(second.replayed, false);
+  assert.equal(second.retryable, undefined);
+  assert.deepEqual(second.result, { dismissed: true });
+  assert.equal(runs, 2);
+  assert.equal((await store.getActionRequest(first.actionRequestId))?.attempts, 2);
+  // Now the key is spent: a third send replays without running.
+  const third = await dispatchAction(store, env, ctx, { handlers });
+  assert.equal(third.replayed, true);
+  assert.equal(runs, 2);
+});
+
+Deno.test("dispatch: a transient failure that keeps happening is failed for good after MAX_ACTION_ATTEMPTS runs", async () => {
+  const { store, ctx } = world();
+  let runs = 0;
+  const handlers: ActionHandlers = {
+    ...ACTION_HANDLERS,
+    "context_event.dismiss": () => {
+      runs++;
+      return Promise.reject(new SpineStorageError("connection failure", "08006"));
+    },
+  };
+  const env = envelope("context_event.dismiss", { contextEventId: crypto.randomUUID() }, "context_event.dismiss:always-down");
+  for (let i = 1; i < MAX_ACTION_ATTEMPTS; i++) {
+    const r = await dispatchAction(store, env, ctx, { handlers });
+    assert.equal(r.retryable, true, `run ${i}`);
+    assert.equal(runs, i);
+  }
+  const last = await dispatchAction(store, env, ctx, { handlers });
+  assert.equal(last.status, "failed");
+  assert.equal(last.retryable, undefined);
+  assert.equal(runs, MAX_ACTION_ATTEMPTS);
+  assert.equal((await store.getActionRequest(last.actionRequestId))?.status, "failed");
+  const replay = await dispatchAction(store, env, ctx, { handlers });
+  assert.equal(replay.replayed, true);
+  assert.equal(runs, MAX_ACTION_ATTEMPTS);
 });
 
 Deno.test("dispatch: a request still running answers 409 in_progress; a stale one is retried", async () => {

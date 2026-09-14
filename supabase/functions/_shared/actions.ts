@@ -19,6 +19,7 @@
  * request's user; they never see a user id.
  */
 import {
+  ConnectorError,
   ACTION_TYPES,
   isActionType,
   isEntityType,
@@ -40,7 +41,7 @@ import {
   type PraxionLocation,
   type RelationshipKind,
 } from "@vixera/domain";
-import { errorMessage, type SpineStore } from "@vixera/sync";
+import { errorMessage, isTransientStoreError, type SpineStore } from "@vixera/sync";
 import { HttpError, isJsonObject } from "./http.ts";
 import { processIngestItem } from "./ingest.ts";
 import { summarizeReport, type BudgetedSyncReport } from "./sync.ts";
@@ -52,6 +53,8 @@ export const HANDOFF_IMPORTANCE = 60;
 export const STALE_RUNNING_MS = 10 * 60_000;
 /** A "queued" request younger than this belongs to a concurrent request that is about to run it. */
 export const STALE_QUEUED_MS = 30_000;
+/** Runs (the first included) a transient failure may cost a key before it is spent for good. */
+export const MAX_ACTION_ATTEMPTS = 5;
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 export interface ActionContext {
@@ -524,10 +527,13 @@ export async function dispatchAction(store: SpineStore, envelope: ActionEnvelope
     }
     if (request.status === "done" || request.status === "failed") return outcome(request, true);
     const age = ctx.now().getTime() - Date.parse(request.updatedAt);
+    // A queued request that has already run and carries an error is waiting for
+    // its next try after a transient failure, not about to run: run it now.
+    const awaitingRetry = request.status === "queued" && request.attempts > 0 && request.error !== null;
     if (request.status === "running" && age < STALE_RUNNING_MS) throw new HttpError(409, "in_progress", "This action is still running");
-    if (request.status === "queued" && age < STALE_QUEUED_MS) throw new HttpError(409, "in_progress", "This action is about to run");
-    // stale queued (a previous attempt died before running) or stale running: retry.
-    ctx.log?.("action: retrying stale request", { actionRequestId: request.id, status: request.status, attempts: request.attempts });
+    if (request.status === "queued" && !awaitingRetry && age < STALE_QUEUED_MS) throw new HttpError(409, "in_progress", "This action is about to run");
+    // awaiting retry, stale queued (a previous attempt died before running) or stale running: retry.
+    ctx.log?.(awaitingRetry ? "action: retrying after a transient failure" : "action: retrying stale request", { actionRequestId: request.id, status: request.status, attempts: request.attempts });
   }
 
   const running = await store.updateActionRequest(request.id, { status: "running", attempts: request.attempts + 1, error: null });
@@ -539,10 +545,24 @@ export async function dispatchAction(store: SpineStore, envelope: ActionEnvelope
     return outcome(done, false);
   } catch (err) {
     const error = errorMessage(err).slice(0, 1000);
+    // A failure that says nothing about the request (the database or a provider
+    // was unavailable) must not spend the key: the Field derives keys from the
+    // subject for dismiss / snooze / accept, so a cached failure would make that
+    // action impossible for good. Back to queued, bounded by MAX_ACTION_ATTEMPTS.
+    if (isTransientFailure(err) && running.attempts < MAX_ACTION_ATTEMPTS) {
+      const deferred = await store.updateActionRequest(running.id, { status: "queued", result: null, error });
+      ctx.log?.("action: deferred", { actionRequestId: deferred.id, actionType: envelope.actionType, attempts: deferred.attempts, error });
+      return { ...outcome(deferred, false), retryable: true };
+    }
     const failed = await store.updateActionRequest(running.id, { status: "failed", result: null, error });
-    ctx.log?.("action: failed", { actionRequestId: failed.id, actionType: envelope.actionType, error });
+    ctx.log?.("action: failed", { actionRequestId: failed.id, actionType: envelope.actionType, attempts: failed.attempts, error });
     return outcome(failed, false);
   }
+}
+
+/** Store outages and retryable provider errors; never an ActionError, a validation failure or a bug. */
+function isTransientFailure(err: unknown): boolean {
+  return isTransientStoreError(err) || (err instanceof ConnectorError && err.retryable);
 }
 
 function outcome(request: ActionRequest, replayed: boolean): ActionOutcome {

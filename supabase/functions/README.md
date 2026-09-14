@@ -17,7 +17,7 @@ with 400 / 401 / 403 / 404 / 409 / 413 / 500. CORS allows
 
 | Function | Body | Response |
 | --- | --- | --- |
-| `action-dispatch` | `ActionEnvelope` (`@vixera/domain`) | `ActionOutcome`; replay of a key ⇒ `replayed: true`, never re-executed; still running ⇒ 409 `in_progress` |
+| `action-dispatch` | `ActionEnvelope` (`@vixera/domain`) | `ActionOutcome`; replay of a done/failed key ⇒ `replayed: true`, never re-executed; a transient failure answers `failed` + `retryable: true` and the same envelope runs again (up to 5 runs); still running ⇒ 409 `in_progress` |
 | `connector-link` | `{ provider: "google" \| "microsoft", step: "start" }` | `{ authorizationUrl, expiresAt }` — browser lands on `GET …/connector-link/callback?code&state` which renders "Connected — return to Vixera One" |
 | | `{ provider: "plaid", step: "start" }` | `{ linkToken, hostedLinkUrl \| null, expiration }` |
 | | `{ provider: "plaid", step: "complete", publicToken? \| linkToken? }` | `{ account: ConnectorAccount }` |
