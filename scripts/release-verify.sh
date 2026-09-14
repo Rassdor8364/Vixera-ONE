@@ -62,6 +62,8 @@ manifest_check() {
   fixtures="$(node -p "String(require('$m').env.VITE_VIXERA_DEV_FIXTURES || '')")"
   clean="$(node -p "String(require('$m').entryChunkClean)")"
   commit="$(node -p "require('$m').git.commit")"; dirty="$(node -p "String(require('$m').git.dirty)")"
+  local shell; shell="$(node -p "(require('$m').envFromShell || []).join(' ')")"
+  [[ -n "$shell" ]] && note "$platform manifest: built with shell overrides for $shell (not from the env files alone)"
   [[ "$url" =~ ^https://[a-z]{20}\.supabase\.co$ ]] && ok "$platform manifest: Supabase URL baked ($url)" || bad "$platform manifest: VITE_SUPABASE_URL is '$url' (expected a project URL — was .env.production present?)"
   [[ "$fixtures" == "true" ]] && bad "$platform manifest: VITE_VIXERA_DEV_FIXTURES=true was baked in" || ok "$platform manifest: dev fixtures off"
   [[ "$clean" == "true" ]] && ok "$platform manifest: fixture world absent from entry chunk" || bad "$platform manifest: entry chunk contains the fixture world"
@@ -76,15 +78,18 @@ manifest_check() {
   [[ $missing -eq 0 ]] && ok "$platform: embedded asset names match the manifest" || bad "$platform: binary and manifest describe different frontend builds"
 }
 
+# The artifact names are fully determined by the version, so each platform is
+# a file that is there or is not — a literal path in an array was never a glob,
+# and made "skipped" unreachable while a missing installer crashed pe-info.
+artifacts=(); platforms=0
+
 # ---------------------------------------------------------------- windows ---
-exes=("$DIR"/VixeraOne-"$EXPECT"-windows-x64-setup.exe)
+exe="$DIR/VixeraOne-$EXPECT-windows-x64-setup.exe"
 echo "windows"
-if ((${#exes[@]} == 0)); then
+if [[ ! -f "$exe" ]]; then
   note "no Windows installer for $EXPECT (skipped)"
-elif ((${#exes[@]} > 1)); then
-  bad "ambiguous: ${#exes[@]} Windows installers match"
 else
-  exe="${exes[0]}"
+  artifacts+=("$exe"); platforms=$((platforms + 1))
   info="$(node "$ROOT/scripts/pe-info.mjs" "$exe")"
   fv="$(node -pe "JSON.parse(process.argv[1]).fileVersion" "$info")"; pv="$(node -pe "JSON.parse(process.argv[1]).productVersion" "$info")"
   signed="$(node -pe "JSON.parse(process.argv[1]).signed" "$info")"
@@ -118,14 +123,12 @@ else
 fi
 
 # ---------------------------------------------------------------- android ---
-apks=("$DIR"/VixeraOne-"$EXPECT"-android-arm64.apk)
+apk="$DIR/VixeraOne-$EXPECT-android-arm64.apk"
 echo "android"
-if ((${#apks[@]} == 0)); then
+if [[ ! -f "$apk" ]]; then
   note "no Android APK for $EXPECT (skipped)"
-elif ((${#apks[@]} > 1)); then
-  bad "ambiguous: ${#apks[@]} APKs match"
 else
-  apk="${apks[0]}"
+  artifacts+=("$apk"); platforms=$((platforms + 1))
   aapt="$(sdk_tool aapt2)"; apksigner="$(sdk_tool apksigner)"
   if [[ -x "$aapt" ]]; then
     # Capture whole outputs, then pick lines: a `| head -1` or `| grep -q` on a
@@ -157,8 +160,9 @@ fi
 echo "checksums"
 if [[ -f "$DIR/SHA256SUMS.txt" ]]; then
   if (cd "$DIR" && sha256sum --quiet -c SHA256SUMS.txt 2>/dev/null); then ok "SHA256SUMS.txt matches every listed artifact"; else bad "SHA256SUMS.txt does not match"; fi
-  for f in "${exes[@]}" "${apks[@]}"; do grep -q " $(basename "$f")\$" "$DIR/SHA256SUMS.txt" || bad "$(basename "$f") is not listed in SHA256SUMS.txt"; done
+  for f in ${artifacts[@]+"${artifacts[@]}"}; do grep -q " $(basename "$f")\$" "$DIR/SHA256SUMS.txt" || bad "$(basename "$f") is not listed in SHA256SUMS.txt"; done
 else bad "no SHA256SUMS.txt"; fi
+((platforms > 0)) || bad "no installer for $EXPECT in $DIR — nothing was verified"
 
 echo
 if [[ $status -eq 0 ]]; then echo "release-verify: $checks checks passed — $EXPECT is what it says it is"; else echo "release-verify: FAILED — do not ship"; fi

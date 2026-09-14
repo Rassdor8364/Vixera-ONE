@@ -49,11 +49,19 @@ write_manifest() {
   local m="$OUT/VixeraOne-$(version)-$platform.manifest.json"   # own line: `local a=x b=$a` expands $a first
   local entry; entry="$(ls "$APP"/dist/assets/index-*.js | head -1)"
   local clean=true; grep -q "Northwind" "$entry" && clean=false
-  node - "$m" "$(version)" "$platform" "$clean" "$APP/dist/assets" "$APP/.env.production" "$ROOT" <<'JS'
-const [,, out, version, platform, clean, assetsDir, envFile, root] = process.argv;
-const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process"), crypto = require("node:crypto");
-const env = Object.fromEntries(fs.readFileSync(envFile, "utf8").split(/\r?\n/)
-  .filter((l) => /^[A-Z_]+=/.test(l)).map((l) => { const i = l.indexOf("="); return [l.slice(0, i), l.slice(i + 1).trim()]; }));
+  # Runs from $APP so `import "vite"` resolves the app's own Vite: the env is
+  # resolved by Vite's loadEnv, exactly as `vite build` resolved it — .env,
+  # .env.local, .env.production, .env.production.local and VITE_* from the
+  # shell, in that precedence. Re-parsing .env.production alone recorded a
+  # clean env while a fixture flag from .env.local or the shell was baked in.
+  (cd "$APP" && node --input-type=module - "$m" "$(version)" "$platform" "$clean" "$APP/dist/assets" "$ROOT" <<'JS'
+import fs from "node:fs"; import path from "node:path"; import cp from "node:child_process"; import crypto from "node:crypto";
+import { loadEnv } from "vite";
+const [, , out, version, platform, clean, assetsDir, root] = process.argv; // argv[1] is "-" for stdin
+const app = process.cwd();
+const env = loadEnv("production", app, ["VITE_"]);
+const envFiles = [".env", ".env.local", ".env.production", ".env.production.local"].filter((f) => fs.existsSync(path.join(app, f)));
+const envFromShell = Object.keys(process.env).filter((k) => k.startsWith("VITE_")).sort();
 // Only public build-time config belongs in a manifest; the anon key is public
 // too but there is no reason to copy it around, so it is reduced to its length.
 if (env.VITE_SUPABASE_ANON_KEY) env.VITE_SUPABASE_ANON_KEY = `<${env.VITE_SUPABASE_ANON_KEY.length} chars>`;
@@ -63,10 +71,11 @@ const git = (a) => cp.execSync(`git ${a}`, { cwd: root, encoding: "utf8" }).trim
 fs.writeFileSync(out, JSON.stringify({
   version, platform, builtAt: new Date().toISOString(),
   git: { commit: git("rev-parse HEAD"), dirty: git("status --porcelain").length > 0 },
-  env, entryChunkClean: clean === "true", assets,
+  env, envFiles, envFromShell, entryChunkClean: clean === "true", assets,
 }, null, 2) + "\n");
-console.log(`manifest: ${path.basename(out)} (${Object.keys(assets).length} assets, entry chunk ${clean === "true" ? "clean" : "CONTAINS FIXTURES"})`);
+console.log(`manifest: ${path.basename(out)} (${Object.keys(assets).length} assets, env from ${envFiles.join(", ") || "nothing"}${envFromShell.length ? ` + shell ${envFromShell.join(", ")}` : ""}, entry chunk ${clean === "true" ? "clean" : "CONTAINS FIXTURES"})`);
 JS
+  )
 }
 
 build_windows() {

@@ -116,7 +116,7 @@ both, locally and in CI):
 
 | Check | Why |
 | --- | --- |
-| No artifact from another version in the output directory; exactly one per platform | the earlier build that copied 0.1.0 under the 0.1.1 name |
+| No artifact from another version in the output directory; a platform's installer is either there or noted as skipped, and a run that finds no installer at all fails | the earlier build that copied 0.1.0 under the 0.1.1 name; an earlier verify that crashed in `pe-info` instead of saying "skipped" when one platform had not been built |
 | Installer's PE version resource (`FileVersion`, `ProductVersion`) equals the expected version; the `vixera-one.exe` inside the payload too, with `CompanyName = Vixera AI` | file name and binary must agree; a stale payload is invisible from outside |
 | Installer and inner binary carry an Authenticode signature, subject matches `scripts/release-identity.env`, signature is timestamped | `windows-sign.sh` used to exit 0 without a certificate and ship unsigned; it now refuses unless `VIXERA_REQUIRE_SIGNING=0` |
 | APK `applicationId`, `versionName` and `versionCode` (`major·10⁶ + minor·10³ + patch`) match; signer SHA-256 matches `release-identity.env`; arm64 native library present | a different signer means `INSTALL_FAILED_UPDATE_INCOMPATIBLE` for every installed user |
@@ -135,7 +135,14 @@ users' phones. Change it only when deliberately rotating a key.
 
 The manifest (`VixeraOne-<version>-<platform>.manifest.json`) also records the
 git commit and whether the tree was dirty. A release built from a dirty tree is
-reported, not refused — but it is not reproducible, so do not publish one.
+reported, not refused — but it is not reproducible, so do not publish one. Its
+`env` is what Vite resolved for the build — `loadEnv("production")` over
+`.env`, `.env.local`, `.env.production`, `.env.production.local` and any
+`VITE_*` in the shell, in Vite's precedence — not a re-read of
+`.env.production` alone, which once recorded a clean env while a fixture flag
+from `.env.local` was baked in. `envFiles` lists the files that took part and
+`envFromShell` the variables that came from the environment; `release:verify`
+notes the latter, since a shell override is not reproducible from the tree.
 
 ## Updating an installed copy
 
@@ -171,9 +178,10 @@ refuses an install that changes either. Two things therefore matter:
   overrides the derivation, and `autoIncrementVersionCode` bumps on each build,
   if either is ever wanted.)
 
-Both installers bake in `.env.production` at build time, so a change to the
-Supabase project or the Praxion port needs a rebuild and a reinstall, not just a
-restart.
+Both installers bake in the frontend env at build time (`.env.production` and
+whatever else Vite's production mode picks up — see the manifest note above),
+so a change to the Supabase project or the Praxion port needs a rebuild and a
+reinstall, not just a restart.
 
 ## Signing key
 
