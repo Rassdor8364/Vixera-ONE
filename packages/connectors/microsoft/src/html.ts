@@ -34,14 +34,24 @@ export function decodeEntities(input: string): string {
   });
 }
 
+/**
+ * The rest of a tag after its name: attribute soup where a quoted value may
+ * contain `>` (`title="x > y"`, tracking URLs), so a bare `[^>]*` would cut the
+ * tag short and leak `y">` into the text.
+ */
+const ATTRS = `[^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*`;
+const DROPPED_BLOCKS = new RegExp(`<(script|style|head|title)\\b${ATTRS}>[\\s\\S]*?</\\1\\s*>`, "gi");
+const CELL_START = new RegExp(`<(td|th)\\b${ATTRS}>`, "gi");
+const ANY_TAG = new RegExp(`</?[a-zA-Z!?]${ATTRS}>`, "g");
+
 export function htmlToText(html: string): string {
   const text = html
     .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(DROPPED_BLOCKS, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6]|blockquote|pre|table|section|article|header|footer)\s*>/gi, "\n")
-    .replace(/<(td|th)\b[^>]*>/gi, " ")
-    .replace(/<[^>]+>/g, "");
+    .replace(CELL_START, " ")
+    .replace(ANY_TAG, "");
   return decodeEntities(text)
     .replace(/\r/g, "")
     .replace(/[ \t ]+/g, " ")
