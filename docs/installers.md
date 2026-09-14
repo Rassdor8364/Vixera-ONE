@@ -104,6 +104,39 @@ Sideloading: copy the APK to the phone and open it, or `adb install -r
 VixeraOne-<version>-android-arm64.apk`. Android will ask permission to install
 from this source the first time.
 
+## Release verification
+
+`scripts/build-installers.sh` ends by running `pnpm release:verify`
+(`scripts/release-verify.sh`), and it can be run on its own against
+`dist/installers/`. A release is not done until it passes. It checks the things
+that have gone wrong here before, each against the version in
+`apps/desktop/package.json` — the single source of truth (`tauri.conf.json`
+points at it; `Cargo.toml` must match; `scripts/check-version.sh` enforces
+both, locally and in CI):
+
+| Check | Why |
+| --- | --- |
+| No artifact from another version in the output directory; exactly one per platform | the earlier build that copied 0.1.0 under the 0.1.1 name |
+| Installer's PE version resource (`FileVersion`, `ProductVersion`) equals the expected version; the `vixera-one.exe` inside the payload too, with `CompanyName = Vixera AI` | file name and binary must agree; a stale payload is invisible from outside |
+| Installer and inner binary carry an Authenticode signature, subject matches `scripts/release-identity.env`, signature is timestamped | `windows-sign.sh` used to exit 0 without a certificate and ship unsigned; it now refuses unless `VIXERA_REQUIRE_SIGNING=0` |
+| APK `applicationId`, `versionName` and `versionCode` (`major·10⁶ + minor·10³ + patch`) match; signer SHA-256 matches `release-identity.env`; arm64 native library present | a different signer means `INSTALL_FAILED_UPDATE_INCOMPATIBLE` for every installed user |
+| Build manifest present for each platform, records a real Supabase project URL, `VITE_VIXERA_DEV_FIXTURES` off, fixture world absent from the entry chunk, and the content-hashed asset names the binary embeds are the ones the manifest lists | the frontend is brotli-compressed inside the binary, so the baked config cannot be read back; the manifest is written from `apps/desktop/dist` immediately after the build, and the asset names tie the binary to it |
+| `SHA256SUMS.txt` present and matching | what gets published next to the files |
+
+The PE checks need no Windows tooling: `scripts/pe-info.mjs` walks the resource
+tree and the security data directory itself. `osslsigncode` adds the signer
+subject and timestamp on Linux/macOS; `7z` opens the NSIS payload; `aapt2` and
+`apksigner` from the Android SDK read the APK.
+
+`scripts/release-identity.env` holds the expected signer subject (Windows) and
+signer certificate SHA-256 (Android). It is public information and is committed
+on purpose: it is what makes a key mix-up fail the build instead of failing on
+users' phones. Change it only when deliberately rotating a key.
+
+The manifest (`VixeraOne-<version>-<platform>.manifest.json`) also records the
+git commit and whether the tree was dirty. A release built from a dirty tree is
+reported, not refused — but it is not reproducible, so do not publish one.
+
 ## Updating an installed copy
 
 There is no auto-updater in either app. A new build is applied by running the new

@@ -30,13 +30,16 @@ pnpm tauri build             # release build + installers
 `VITE_VIXERA_DEV_FIXTURES=true` for the in-memory world without a backend
 (`docs/field.md`).
 
-`pnpm tauri build` writes to `target/release/bundle/`:
+`pnpm tauri build` writes to `target/release/bundle/` (`<version>` is
+`apps/desktop/package.json`'s version — the single source of truth, see
+`scripts/check-version.sh`):
 
-* `nsis/Vixera One_0.1.0_x64-setup.exe` — per-user NSIS installer (`installMode: currentUser`, no admin prompt)
-* `msi/Vixera One_0.1.0_x64_en-US.msi` — WiX MSI
+* `nsis/Vixera One_<version>_x64-setup.exe` — per-user NSIS installer (`installMode: currentUser`, no admin prompt)
+* `msi/Vixera One_<version>_x64_en-US.msi` — WiX MSI, produced by a plain `tauri build` on Windows only; `scripts/build-installers.sh` builds NSIS alone and is the release path
 
-Both install the same binary; use NSIS for day-to-day, MSI for managed installs.
-`pnpm tauri build --debug` keeps devtools and symbols.
+`pnpm tauri build --debug` keeps devtools and symbols. Releases go through
+`scripts/build-installers.sh windows`, which signs, records a build manifest and
+runs `pnpm release:verify` — see `docs/installers.md`.
 
 Useful checks that do not need Windows:
 

@@ -9,7 +9,7 @@ laptop cannot; it only makes sure it is proved every time.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `hygiene` | `pnpm check:secrets`, `pnpm check:migrations` | No secret-shaped content or signing material is tracked. Migrations are well-named, never disable RLS, grant nothing to `anon`, and every `SECURITY DEFINER` function pins `search_path` and is revoked from client roles (or is on the documented allow-list). |
+| `hygiene` | `pnpm check:secrets`, `pnpm check:migrations`, `pnpm check:version` | No secret-shaped content or signing material is tracked. Migrations are well-named, never disable RLS, grant nothing to `anon`, and every `SECURITY DEFINER` function pins `search_path` and is revoked from client roles (or is on the documented allow-list). One version: `tauri.conf.json` derives from `apps/desktop/package.json` and `Cargo.toml` equals it. |
 | `typescript` | `pnpm typecheck`, `pnpm test`, `pnpm build:desktop` | Every package type-checks; 490 fixture-only Vitest tests pass; the production frontend builds **with no `.env` present** and the dev-fixture world is not in the entry chunk. |
 | `edge-functions` | `pnpm functions:check` | `deno check` on all four functions with the shared import map, then the 43 `_shared` Deno tests. |
 | `database` | `pnpm db:verify` | Shim + all eight migrations + seed apply to a throwaway PostgreSQL 16, and `scripts/sql/verify.sql` passes: every table has `user_id` and RLS, a second user sees nothing, client roles cannot write credential refs / checkpoints / action requests, Vault functions are not callable. |
@@ -34,7 +34,7 @@ person with the signing material.
 ## Running the same checks locally
 
 ```bash
-pnpm check              # secrets + migrations + typecheck + test + cargo check
+pnpm check              # secrets + migrations + version + typecheck + test + cargo check
 pnpm functions:check    # needs Deno 2
 pnpm db:verify          # needs PostgreSQL 15/16 binaries
 pnpm test:live          # needs the postgrest binary (see README)

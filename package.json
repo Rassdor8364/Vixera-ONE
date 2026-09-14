@@ -19,10 +19,12 @@
     "functions:check": "bash scripts/check-functions.sh",
     "check:secrets": "bash scripts/check-secrets.sh",
     "check:migrations": "bash scripts/check-migrations.sh",
-    "check": "pnpm check:secrets && pnpm check:migrations && pnpm typecheck && pnpm test && cargo check --workspace",
+    "check:version": "bash scripts/check-version.sh",
+    "check": "pnpm check:secrets && pnpm check:migrations && pnpm check:version && pnpm typecheck && pnpm test && cargo check --workspace",
     "db:live": "bash scripts/live-stack.sh up",
     "db:live:down": "bash scripts/live-stack.sh down",
-    "test:live": "bash scripts/test-live.sh"
+    "test:live": "bash scripts/test-live.sh",
+    "release:verify": "bash scripts/release-verify.sh"
   },
   "devDependencies": {
     "@types/node": "~22.20.2",

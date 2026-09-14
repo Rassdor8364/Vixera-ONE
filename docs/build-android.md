@@ -192,26 +192,15 @@ runtime inside `secure_get` / `secure_set`.
 
 ## Signing
 
-Debug builds use the default debug keystore. For release APKs create a keystore
-once and keep it out of git (`*.keystore`, `*.jks` and
-`gen/android/key.properties` are ignored):
-
-```bash
-keytool -genkey -v -keystore ~/vixera-one-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias vixera-one
-```
-
-`apps/desktop/src-tauri/gen/android/key.properties`:
-
-```
-storeFile=/absolute/path/to/vixera-one-release.jks
-storePassword=<from your password manager>
-keyAlias=vixera-one
-keyPassword=<from your password manager>
-```
-
-and in `gen/android/app/build.gradle.kts` load it into a `signingConfigs.release`
-block as documented by Tauri ("Android code signing"). Never commit the keystore
-or `key.properties`; losing the keystore means a new package identity for users.
+Debug builds use the default debug keystore. Release APKs are signed with the
+keystore described in `docs/installers.md` ("Signing key"):
+`apps/desktop/src-tauri/gen/android/vixera-one-release.keystore`, alias
+`vixera-ai`, password in `key.properties` beside it. Both files are git-ignored
+and both need an offline backup — losing them means no future build can install
+over the app. `build.gradle.kts` already reads `key.properties` into
+`signingConfigs.release`; without that file a release build succeeds **unsigned**
+and `scripts/build-installers.sh android` refuses to package it. Every APK's
+signer is checked against `scripts/release-identity.env` by `pnpm release:verify`.
 
 ## Troubleshooting
 

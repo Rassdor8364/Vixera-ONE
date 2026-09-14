@@ -58,9 +58,10 @@ pnpm typecheck                     # tsc in every workspace package
 pnpm test                          # vitest across packages/*, packages/connectors/*, apps/desktop
 pnpm test:watch
 pnpm --filter @vixera/sync test    # one package
-pnpm check                         # secrets + migrations + typecheck + test + cargo check --workspace
+pnpm check                         # secrets + migrations + version + typecheck + test + cargo check --workspace
 pnpm check:secrets                 # no secret-shaped content or signing material tracked
 pnpm check:migrations              # migration naming, RLS never disabled, definer functions pinned + revoked
+pnpm check:version                 # apps/desktop/package.json is the one version; tauri.conf.json + Cargo.toml follow it
 ```
 
 Every one of these runs in CI on each push (`.github/workflows/ci.yml`, see
@@ -104,9 +105,12 @@ scripts/build-installers.sh          # windows | android | all
 ```
 
 One `.exe` for Windows (NSIS, per-user, no admin) and one signed `.apk` for
-Android arm64, both baking in `apps/desktop/.env.production`. See
-[`docs/installers.md`](docs/installers.md) — including the Android signing key,
-which needs an offline backup.
+Android arm64, both baking in `apps/desktop/.env.production`. The build refuses
+to run unsigned, writes a build manifest per platform, and ends with
+`pnpm release:verify`, which inspects the artifacts (version resource, signer,
+`versionCode`, baked config, checksums) and refuses to bless a release that is
+not what it claims. See [`docs/installers.md`](docs/installers.md) — including
+the Android signing key, which needs an offline backup.
 
 ### Deploying
 

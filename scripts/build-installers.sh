@@ -17,11 +17,57 @@ APP="$ROOT/apps/desktop"
 WHAT="${1:-all}"
 OUT="$ROOT/dist/installers"
 
-version() { node -p "require('$APP/src-tauri/tauri.conf.json').version" 2>/dev/null || echo 0.0.0; }
+# apps/desktop/package.json is the one version; tauri.conf.json points at it
+# and Cargo.toml must match (scripts/check-version.sh).
+version() { node -p "require('$APP/package.json').version"; }
 
 [[ -f "$APP/.env.production" ]] || {
   echo "missing $APP/.env.production — copy .env.production.example and fill it in"; exit 1; }
+bash "$ROOT/scripts/check-version.sh"
+# Signing is mandatory unless explicitly waived; windows-sign.sh and the final
+# release-verify both honour this.
+export VIXERA_REQUIRE_SIGNING="${VIXERA_REQUIRE_SIGNING:-1}"
 mkdir -p "$OUT"
+# Anything from another version in the output directory is a shipping accident
+# waiting to happen; a stale artifact from THIS version is replaced below.
+shopt -s nullglob
+for f in "$OUT"/VixeraOne-*; do
+  b="$(basename "$f")"
+  if [[ "$b" =~ ^VixeraOne-([0-9]+\.[0-9]+\.[0-9]+)[-.] && "${BASH_REMATCH[1]}" != "$(version)" ]]; then
+    echo "removing $b (version ${BASH_REMATCH[1]} ≠ $(version))"; rm -f "$f"
+  fi
+done
+shopt -u nullglob
+
+# Records what the frontend build that went INTO the binary contained: the
+# baked env, the content-hashed asset names, and whether the fixture world
+# leaked into the entry chunk. release-verify ties the binary back to this by
+# the asset names it embeds. Must run right after `tauri build`, before anything
+# rebuilds apps/desktop/dist.
+write_manifest() {
+  local platform="$1"
+  local m="$OUT/VixeraOne-$(version)-$platform.manifest.json"   # own line: `local a=x b=$a` expands $a first
+  local entry; entry="$(ls "$APP"/dist/assets/index-*.js | head -1)"
+  local clean=true; grep -q "Northwind" "$entry" && clean=false
+  node - "$m" "$(version)" "$platform" "$clean" "$APP/dist/assets" "$APP/.env.production" "$ROOT" <<'JS'
+const [,, out, version, platform, clean, assetsDir, envFile, root] = process.argv;
+const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process"), crypto = require("node:crypto");
+const env = Object.fromEntries(fs.readFileSync(envFile, "utf8").split(/\r?\n/)
+  .filter((l) => /^[A-Z_]+=/.test(l)).map((l) => { const i = l.indexOf("="); return [l.slice(0, i), l.slice(i + 1).trim()]; }));
+// Only public build-time config belongs in a manifest; the anon key is public
+// too but there is no reason to copy it around, so it is reduced to its length.
+if (env.VITE_SUPABASE_ANON_KEY) env.VITE_SUPABASE_ANON_KEY = `<${env.VITE_SUPABASE_ANON_KEY.length} chars>`;
+const assets = Object.fromEntries(fs.readdirSync(assetsDir).sort().map((n) =>
+  [n, crypto.createHash("sha256").update(fs.readFileSync(path.join(assetsDir, n))).digest("hex")]));
+const git = (a) => cp.execSync(`git ${a}`, { cwd: root, encoding: "utf8" }).trim();
+fs.writeFileSync(out, JSON.stringify({
+  version, platform, builtAt: new Date().toISOString(),
+  git: { commit: git("rev-parse HEAD"), dirty: git("status --porcelain").length > 0 },
+  env, entryChunkClean: clean === "true", assets,
+}, null, 2) + "\n");
+console.log(`manifest: ${path.basename(out)} (${Object.keys(assets).length} assets, entry chunk ${clean === "true" ? "clean" : "CONTAINS FIXTURES"})`);
+JS
+}
 
 build_windows() {
   echo "==> Windows installer (NSIS)"
@@ -47,11 +93,16 @@ build_windows() {
   # silently ships it under the new name — `-print -quit` takes whichever the
   # filesystem returns first, which is not the newest.
   local built
-  built="$(find "$ROOT/target" -path '*/nsis/*-setup.exe' -name "*_$(version)_*" \
-             -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-  [[ -n "$built" ]] || { echo "no NSIS installer for version $(version) in target/"; exit 1; }
-  local out="$OUT/VixeraOne-$(version)-windows-x64-setup.exe"
+  local matches
+  mapfile -t matches < <(find "$ROOT/target" -path '*/nsis/*-setup.exe' -name "*_$(version)_*" -newer "$APP/package.json")
+  case ${#matches[@]} in
+    0) echo "no NSIS installer for version $(version) newer than package.json in target/"; exit 1 ;;
+    1) ;;
+    *) echo "ambiguous: ${#matches[@]} NSIS installers match version $(version):"; printf '  %s\n' "${matches[@]}"; exit 1 ;;
+  esac
+  local built="${matches[0]}" out="$OUT/VixeraOne-$(version)-windows-x64-setup.exe"
   cp -v "$built" "$out"
+  write_manifest windows-x64
   # Report who signed it. `verify` exits non-zero for a self-signed chain, which
   # is expected here and must not fail the build (the script runs under pipefail).
   if command -v osslsigncode >/dev/null; then
@@ -74,11 +125,16 @@ build_android() {
     echo '  printf "storeFile=vixera-one-release.keystore\nstorePassword=...\nkeyAlias=vixera-one\nkeyPassword=...\n" > key.properties'
     exit 1; }
   ( cd "$APP" && pnpm tauri android build --apk --target aarch64 )
-  local apk
-  apk="$(find "$APP/src-tauri/gen/android/app/build/outputs/apk" -name '*-release*.apk' ! -name '*unsigned*' \
-           -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-  [[ -n "$apk" ]] || { echo "no signed release APK produced"; exit 1; }
+  local matches
+  mapfile -t matches < <(find "$APP/src-tauri/gen/android/app/build/outputs/apk" -name '*-release*.apk' ! -name '*unsigned*' -newer "$APP/package.json")
+  case ${#matches[@]} in
+    0) echo "no signed release APK newer than package.json produced"; exit 1 ;;
+    1) ;;
+    *) echo "ambiguous: ${#matches[@]} release APKs produced:"; printf '  %s\n' "${matches[@]}"; exit 1 ;;
+  esac
+  local apk="${matches[0]}"
   cp -v "$apk" "$OUT/VixeraOne-$(version)-android-arm64.apk"
+  write_manifest android-arm64
   # One apksigner, not every build-tools version the glob happens to match.
   local apksigner
   apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
@@ -92,6 +148,10 @@ case "$WHAT" in
   *) echo "usage: $0 [windows|android|all]"; exit 1 ;;
 esac
 
+( cd "$OUT" && sha256sum VixeraOne-"$(version)"-*.exe VixeraOne-"$(version)"-*.apk 2>/dev/null > SHA256SUMS.txt || true )
 echo
 echo "==> installers in $OUT"
 ls -la "$OUT"
+echo
+# The build is not done until the artifacts have been inspected.
+bash "$ROOT/scripts/release-verify.sh" "$OUT"

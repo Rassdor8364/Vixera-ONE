@@ -13,7 +13,15 @@ FILE="${1:?usage: windows-sign.sh <file>}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROPS="${SIGN_PROPS:-$DIR/.signing/codesign.properties}"
 
-[[ -f "$PROPS" ]] || { echo "windows-sign: no $PROPS, skipping signing"; exit 0; }
+# A release must be signed. Without the certificate this used to exit 0 and the
+# build shipped an unsigned installer with no warning louder than one log line.
+# Now the default is to fail; VIXERA_REQUIRE_SIGNING=0 opts a local dev build out.
+if [[ ! -f "$PROPS" ]]; then
+  if [[ "${VIXERA_REQUIRE_SIGNING:-1}" == "0" ]]; then
+    echo "windows-sign: no $PROPS and VIXERA_REQUIRE_SIGNING=0, leaving $(basename "$FILE") UNSIGNED"; exit 0
+  fi
+  echo "windows-sign: no $PROPS — refusing to produce an unsigned release (set VIXERA_REQUIRE_SIGNING=0 for a local unsigned build)"; exit 1
+fi
 command -v osslsigncode >/dev/null || { echo "windows-sign: osslsigncode missing"; exit 1; }
 
 PFX="${SIGN_PFX:-$DIR/.signing/$(grep '^pfx=' "$PROPS" | cut -d= -f2-)}"
