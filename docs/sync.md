@@ -89,7 +89,7 @@ Guarantees, and where each is enforced:
 | Re-applying a page changes nothing | every connector row is upserted on its natural key (`mail_messages (user, account, external_id)`, `time_events (user, account, calendar, external_id)`, `money_accounts` / `money_transactions (user, account, external_id)`); `SupabaseSpineStore` collapses duplicate keys inside one page so PostgREST never updates the same row twice |
 | Context events never duplicate | `context_events (user_id, dedupe_key)`; `upsertContextEvents` returns existing rows unchanged, so a user's attention decision (quiet / dismissed) is never overwritten by a re-sync |
 | Edges never duplicate | `relationships (user, from, kind, to)`; `vx_relate` / `relate()` is idempotent (raises confidence on conflict) and rejects endpoints that do not exist for the same user |
-| People never duplicate per provider | `person_identities (user, kind, value)` with normalized values (`normalizeEmail`); `upsertPersonIdentity` returns the existing identity, and a lost race falls back to the winner's person |
+| People never duplicate per provider | `person_identities (user, kind, value)` with normalized values (`normalizeEmail`); `upsertPersonIdentity` returns the existing identity, and a lost race falls back to the winner's person and folds the row the loser created into it (`mergedIntoId`), so it never lingers in the People list |
 | Documents from attachments never duplicate | `findDocumentBySourceRef(account, { messageExternalId, attachmentId })` before `upsertDocument` |
 | A crash never loses data | apply-then-checkpoint ordering; intermediate pages keep a resumable checkpoint (Gmail backfill page token, Plaid cursor) or the previous one (Graph) |
 | One failure never blocks the rest | errors are caught per capability, per account, per user; `runAll` / `runSync` / the scheduled loop never throw for a connector failure |
@@ -134,7 +134,7 @@ ingestion).
 | Kind | `dedupe_key` | Emitted |
 | --- | --- | --- |
 | `mail.received` | `mail:<accountId>:<externalId>` | once per message |
-| `time.event.created` / `time.event.changed` / `time.event.cancelled` | `time:<accountId>:<calendarId>:<externalId>:<version>` with `version = FNV-1a(title, startsAt, endsAt, status)` | `created` at first sight, `changed` when the version differs, nothing for an unchanged re-sync |
+| `time.event.created` / `time.event.changed` / `time.event.cancelled` | `time:<accountId>:<calendarId>:<externalId>:<version>` with `version = FNV-1a(title, startsAt, endsAt, status)` | `created` at first sight, `changed` when the version differs, nothing for an unchanged re-sync. Every prior version's event is retired (`dismissed`, `supersededBy = <current key>`) whether or not the current key was seen before, so a meeting moved to 16:00 and back to 15:00 leaves exactly one live event, at 15:00: the 15:00 event that a later version retired is re-opened. A dismissal the user made (no `supersededBy`) is never re-opened |
 | `money.transaction.posted` | `money:<accountId>:<externalId>` | once per transaction |
 | `ingest.received` | `ingest:<ingestItemId>` | once per ingest item (ingestion pipeline) |
 | `handoff.created` | `handoff:<handoffId>` | once per handoff (`handoff.create` action) |
@@ -153,6 +153,7 @@ constant is exported so tests and the Field name the rule instead of a number.
 | Other events | 35 | same |
 | Cancelled event | 50 | same |
 | Transaction with `abs(amount) >= 1000` | 50 (`MONEY_TRANSACTION_LARGE`) | `needs_attention` |
+| Merchant name equal (case-insensitive) to exactly one person's display name or organization | — | the transaction gets `counterpartyPersonId` and a `has_person` edge at 0.8; a name two different people share links to **nobody** rather than to whichever sorts first |
 | Other transactions | 30 | `needs_attention` |
 | Ingested item | 40 (`INGEST_IMPORTANCE`, `_shared/ingest.ts`) | `needs_attention` |
 | Handoff created | 60 (`HANDOFF_IMPORTANCE`, `_shared/actions.ts`), `dueAt = expiresAt` | `needs_attention` |

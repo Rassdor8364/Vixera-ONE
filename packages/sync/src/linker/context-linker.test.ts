@@ -278,3 +278,105 @@ describe("a rescheduled event does not leave a stale NOW row", () => {
     expect(retired?.metadata["supersededBy"]).toBe(live[0]?.dedupeKey);
   });
 });
+
+describe("a version seen before comes back", () => {
+  const base = {
+    externalCalendarId: "primary",
+    externalId: "evt-back",
+    title: "Northwind kickoff",
+    description: null,
+    startsAt: "2026-09-10T15:00:00Z",
+    endsAt: "2026-09-10T15:45:00Z",
+    allDay: false,
+    timezone: "UTC",
+    location: null,
+    status: "confirmed" as const,
+    organizer: null,
+    participants: [],
+    externalLink: null,
+  };
+  const live = async (store: InMemorySpineStore) => (await store.listContextEvents({ kindPrefix: "time.event." })).filter((e) => e.attention !== "dismissed");
+
+  it("moved to 16:00 and back to 15:00: exactly one live event, at 15:00", async () => {
+    const { store, linker, account } = await setup();
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    await linker.applyCalendarBatch(account, { events: [{ ...base, startsAt: "2026-09-10T16:00:00Z", endsAt: "2026-09-10T16:45:00Z" }], deleted: [] });
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    const after = await live(store);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.dueAt).toBe("2026-09-10T15:00:00Z");
+    expect(after[0]?.metadata["supersededBy"]).toBeNull();
+    // The 16:00 event is retired and says by what.
+    const retired = (await store.listContextEvents({ kindPrefix: "time.event." })).find((e) => e.dueAt === "2026-09-10T16:00:00Z");
+    expect(retired?.attention).toBe("dismissed");
+    expect(retired?.metadata["supersededBy"]).toBe(after[0]?.dedupeKey);
+  });
+
+  it("cancelled then restored: no live cancelled event remains", async () => {
+    const { store, linker, account } = await setup();
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    await linker.applyCalendarBatch(account, { events: [{ ...base, status: "cancelled" }], deleted: [] });
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    const after = await live(store);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.kind).not.toBe(KIND_TIME_EVENT_CANCELLED);
+  });
+
+  it("a dismissal the user made is respected when that version comes back", async () => {
+    const { store, linker, account } = await setup();
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    const first = (await store.listContextEvents({ kindPrefix: "time.event." }))[0]!;
+    await store.setContextEventAttention(first.id, "dismissed"); // the user, no supersededBy
+    await linker.applyCalendarBatch(account, { events: [{ ...base, startsAt: "2026-09-10T16:00:00Z", endsAt: "2026-09-10T16:45:00Z" }], deleted: [] });
+    await linker.applyCalendarBatch(account, { events: [base], deleted: [] });
+    expect((await store.getContextEvent(first.id))?.attention).toBe("dismissed");
+    expect(await live(store)).toHaveLength(0);
+  });
+});
+
+describe("merchant matching refuses ambiguity", () => {
+  const person = (displayName: string, email: string) => ({ displayName, primaryEmail: email, organization: null, notes: null, metadata: {} });
+
+  it("two people with the same display name: the payment is linked to neither", async () => {
+    const { store, linker, account, fixtures } = await setup();
+    await store.upsertPerson(person("Sam Lee", "a@x.example"));
+    await store.upsertPerson(person("Sam Lee", "b@y.example"));
+    const tx = { ...fixtures.bank.transactions[0]!, externalId: "tx-sam", merchantName: "Sam Lee" };
+    await linker.applyBankBatch(account, { accounts: fixtures.bank.accounts, transactions: [tx], deleted: [] });
+    const stored = (await store.listMoneyTransactions()).find((t) => t.externalId === "tx-sam");
+    expect(stored?.counterpartyPersonId).toBeNull();
+    expect((await store.listRelationships()).filter((r) => r.kind === "has_person" && r.from.type === "money_transaction")).toHaveLength(0);
+  });
+
+  it("one person with that name: linked, as before", async () => {
+    const { store, linker, account, fixtures } = await setup();
+    const sam = await store.upsertPerson(person("Sam Lee", "a@x.example"));
+    const tx = { ...fixtures.bank.transactions[0]!, externalId: "tx-sam", merchantName: "sam lee" };
+    await linker.applyBankBatch(account, { accounts: fixtures.bank.accounts, transactions: [tx], deleted: [] });
+    expect((await store.listMoneyTransactions()).find((t) => t.externalId === "tx-sam")?.counterpartyPersonId).toBe(sam.id);
+  });
+});
+
+describe("a lost identity race leaves no duplicate person", () => {
+  it("the loser's row is folded into the winner", async () => {
+    const { store, linker, account } = await setup();
+    const winner = await store.upsertPerson({ displayName: "Winner", primaryEmail: "race@x.example", organization: null, notes: null, metadata: {} });
+    await store.upsertPersonIdentity({ personId: winner.id, kind: "email", value: "race@x.example", rawValue: "race@x.example", provider: "mock", connectorAccountId: account.id });
+    // The other run has not committed yet from this run's point of view: the
+    // lookup misses once, then the identity insert collides with the winner's.
+    const original = store.findPersonByIdentity.bind(store);
+    let missOnce = true;
+    store.findPersonByIdentity = async (kind, value) => {
+      if (missOnce) {
+        missOnce = false;
+        return null;
+      }
+      return original(kind, value);
+    };
+    const resolved = await linker.resolvePerson(account, { email: "race@x.example", name: "Loser" });
+    expect(resolved?.id).toBe(winner.id);
+    expect((await store.listPeople({ includeMerged: false })).map((p) => p.id)).toEqual([winner.id]);
+    const loser = (await store.listPeople({ includeMerged: true })).find((p) => p.displayName === "Loser");
+    expect(loser?.mergedIntoId).toBe(winner.id);
+  });
+});

@@ -257,8 +257,8 @@ export class ContextLinker {
       b.counts.updated += result.updated;
       const rowsByKey = new Map(result.rows.map((r) => [`${r.externalCalendarId} ${r.externalId}`, r]));
       const events: ContextEventInput[] = [];
-      /** dedupe key of this pass's event → the prior events it may supersede. */
-      const superseded = new Map<string, ContextEvent[]>();
+      /** dedupe key of this pass's event → the prior events it may supersede, and the event itself. */
+      const superseded = new Map<string, { prior: ContextEvent[]; e: NormalizedTimeEvent }>();
 
       for (let i = 0; i < batch.events.length; i++) {
         const e = batch.events[i] as NormalizedTimeEvent;
@@ -276,7 +276,7 @@ export class ContextLinker {
         // retired below: a rescheduled meeting must not leave its old NOW item
         // (with the old start time as dueAt) sitting in "needs me".
         const prior = await this.store.listContextEvents({ subject: eventRef, kindPrefix: "time.event." });
-        superseded.set(dedupeKey, prior);
+        superseded.set(dedupeKey, { prior, e });
         events.push({
           kind: timeEventKind(e, prior.length === 0),
           subject: eventRef,
@@ -301,13 +301,22 @@ export class ContextLinker {
       const ev = await this.store.upsertContextEvents(events);
       b.counts.contextEvents += ev.inserted;
 
-      // Retire the versions this pass replaced. An unchanged re-sync is a no-op
-      // because the current key is already among the priors.
-      for (const [dedupeKey, prior] of superseded) {
-        if (prior.some((p) => p.dedupeKey === dedupeKey)) continue;
+      // Retire every prior version this pass replaced — by key, not by
+      // "have we seen this key before": a meeting moved to 16:00 and back to
+      // 15:00 returns to a key that already exists, and the 16:00 event must
+      // still be retired. An unchanged re-sync retires nothing (the only prior
+      // is the current key).
+      for (const [dedupeKey, { prior, e }] of superseded) {
+        const current = prior.find((p) => p.dedupeKey === dedupeKey);
         for (const stale of prior) {
-          if (stale.attention === "dismissed") continue;
+          if (stale.dedupeKey === dedupeKey || stale.attention === "dismissed") continue;
           await this.store.setContextEventAttention(stale.id, "dismissed", { supersededBy: dedupeKey });
+        }
+        // The version that came back was retired by a later one (supersededBy
+        // set); bring it back. A dismissal the USER made carries no
+        // supersededBy and is respected.
+        if (current && current.attention === "dismissed" && current.metadata["supersededBy"]) {
+          await this.store.setContextEventAttention(current.id, timeAttention(e, now), { supersededBy: null });
         }
       }
     }
@@ -394,16 +403,25 @@ export class ContextLinker {
     return b.counts;
   }
 
-  /** lower-cased display name / organization → person, for merchant matching. Exact match only. */
-  private async counterpartyIndex(transactions: readonly NormalizedMoneyTransaction[]): Promise<Map<string, Person>> {
-    const index = new Map<string, Person>();
+  /**
+   * lower-cased display name / organization → person, for merchant matching.
+   * Exact match only, and a name two different people share maps to null: a
+   * payment is linked to nobody rather than to whichever "Sam Lee" sorts first.
+   */
+  private async counterpartyIndex(transactions: readonly NormalizedMoneyTransaction[]): Promise<Map<string, Person | null>> {
+    const index = new Map<string, Person | null>();
     if (!transactions.some((t) => t.merchantName)) return index;
     const people = await this.store.listPeople({ includeMerged: false });
+    const claim = (raw: string | null | undefined, p: Person) => {
+      const key = raw?.trim().toLowerCase();
+      if (!key) return;
+      const prior = index.get(key);
+      if (prior === undefined) index.set(key, p);
+      else if (prior !== null && prior.id !== p.id) index.set(key, null);
+    };
     for (const p of people) {
-      const name = p.displayName.trim().toLowerCase();
-      if (name && !index.has(name)) index.set(name, p);
-      const org = p.organization?.trim().toLowerCase();
-      if (org && !index.has(org)) index.set(org, p);
+      claim(p.displayName, p);
+      claim(p.organization, p);
     }
     return index;
   }
@@ -448,8 +466,11 @@ export class ContextLinker {
         connectorAccountId: account.id,
       });
       if (identity.personId !== created.id) {
-        // Lost a race: someone else created the identity meanwhile. Use theirs.
+        // Lost a race: someone else created the identity meanwhile. Use theirs,
+        // and fold the row we just created into it so it does not linger as a
+        // duplicate in the people list.
         const winner = await this.store.getPerson(identity.personId);
+        if (winner) await this.store.updatePerson(created.id, { mergedIntoId: winner.id });
         resolved = winner ? { person: winner, created: false } : { person: created, created: true };
       } else {
         resolved = { person: created, created: true };
