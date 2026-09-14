@@ -190,23 +190,36 @@ never as an error.
 ### Microsoft Graph mail — `packages/connectors/microsoft/src/mail/sync.ts`
 
 ```
-{ deltaLink: string }
+{ deltaLink: string }                                    // a complete delta round
+{ backfill: { nextLink: string, fullResync?: true } }    // initial backfill in progress
 ```
 
 * First run: `GET /me/mailFolders/inbox/messages/delta?$select=…&$filter=receivedDateTime ge <now − backfillDays>`
   (inbox only, bodies as text via `Prefer: outlook.body-content-type="text"`,
   page size 50 via `Prefer: odata.maxpagesize`). Attachment metadata is one
-  extra request per message with `hasAttachments`.
-* Every `@odata.nextLink` page is one `SyncPage` that keeps the **previous**
-  checkpoint (a nextLink is not durable); the final page carries the new
-  `@odata.deltaLink`. A crash mid-round replays the last complete delta
-  round, which the natural keys absorb.
+  extra request per message with `hasAttachments`, fetched 4 wide through
+  the one `GraphApiClient` of the run.
+* **Backfill pages are resume points.** Every intermediate page of the
+  initial backfill carries its `@odata.nextLink` as `backfill.nextLink`
+  (Graph encodes the paging state in the link and documents it as the thing
+  to save and reuse), so a backfill larger than one run's time budget stops
+  at the deadline on a checkpoint and continues from that page next run
+  instead of restarting. The last page drops `backfill` and carries the new
+  `@odata.deltaLink`.
+* Intermediate pages of an **incremental** round keep the previous
+  `deltaLink`: rounds are small and replaying one is cheaper than losing the
+  last complete round. A crash mid-round replays it, which the natural keys
+  absorb.
 * `@removed` tombstones → deletions. **410** on a delta link → restart from
   the initial backfill with `fullResync: true`; a 410 on a fresh query is
-  thrown as `checkpoint_invalid`.
-* `parseMailCheckpoint` refuses a `deltaLink` that is not a
-  `graph.microsoft.com` URL, so a corrupted checkpoint can never send a
-  bearer token elsewhere.
+  thrown as `checkpoint_invalid`. A **400 or 410 on any stored link**
+  (`deltaLink` or `backfill.nextLink`) is a dead checkpoint and takes the
+  same restart, so a rejected link self-heals instead of failing every run
+  as `unknown`; a 400 on a fresh query or on a link Graph issued during the
+  run stays an `unknown` error.
+* `parseMailCheckpoint` refuses a `deltaLink` or `backfill.nextLink` that is
+  not a `graph.microsoft.com` URL, and a checkpoint carrying both shapes, so
+  a corrupted checkpoint can never send a bearer token elsewhere.
 
 ### Microsoft Graph calendar — `packages/connectors/microsoft/src/calendar/sync.ts`
 
