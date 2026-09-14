@@ -317,8 +317,13 @@ export function runSpineStoreConformance(label: string, create: ConformanceFacto
         title: "invoice-0231.pdf", mimeType: "application/pdf", source: "share", connectorAccountId: null, sourceRef: {},
         location: { kind: "storage", bucket: "artifacts", path: "u/ingest/invoice.pdf" }, praxionDocumentId: null, sizeBytes: 118000, contentHash: "hash-1", metadata: {},
       });
-      const processed = await store.updateIngestItem(item.id, { status: "processed", documentId: doc.id, processedAt: "2026-09-09T12:00:00Z" });
+      expect(item.attempts).toBe(0);
+      const deferred = await store.updateIngestItem(item.id, { attempts: 1, error: "fetch failed" });
+      expect(deferred.status).toBe("received");
+      expect(deferred.attempts).toBe(1);
+      const processed = await store.updateIngestItem(item.id, { status: "processed", documentId: doc.id, attempts: 2, error: null, processedAt: "2026-09-09T12:00:00Z" });
       expect(processed.status).toBe("processed");
+      expect(processed.attempts).toBe(2);
       expect(processed.documentId).toBe(doc.id);
       expect(await store.listIngestItems({ status: "received" })).toHaveLength(0);
       expect((await store.getIngestItem(item.id))?.metadata).toEqual({ contentHash: "hash-1" });

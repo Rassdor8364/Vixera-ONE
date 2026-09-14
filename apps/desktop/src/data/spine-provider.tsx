@@ -49,6 +49,23 @@ export function SpineProvider({ runtime, children }: { runtime: SessionRuntime; 
     };
   }, []);
 
+  // Ingest items a transient failure left `received` get their next run when the
+  // Field starts and whenever the connection comes back. ingest-process is
+  // idempotent and a single query when nothing is waiting.
+  useEffect(() => {
+    if (runtime.mode !== "supabase" || !online) return;
+    let cancelled = false;
+    runtime.services
+      .processIngest(null)
+      .then((r) => {
+        if (!cancelled && r.processed > 0) refresh();
+      })
+      .catch(() => null);
+    return () => {
+      cancelled = true;
+    };
+  }, [runtime, online, refresh]);
+
   useEffect(() => {
     if (!runtime.supabase) return;
     const sub = subscribeRealtime(

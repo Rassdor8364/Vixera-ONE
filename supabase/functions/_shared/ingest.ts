@@ -18,14 +18,22 @@
  *   event:  context_event `ingest.received`, importance 40, dedupe `ingest:<id>`
  *
  * No OCR, no content extraction: what is not in the item's text is not read.
+ *
+ * Failures are of two kinds. A transient one (the database or PostgREST was
+ * unavailable, a statement was cancelled) leaves the item `received` with the
+ * error recorded, so the next run retries it; after MAX_INGEST_ATTEMPTS runs it
+ * is failed for real. Everything else fails the item at once — retrying a
+ * constraint violation only repeats it.
  */
 import { isUuid, ref, type DocumentLocation, type DocumentSource, type EntityRef, type IngestItem, type IngestSource, type JsonObject, type Person, type Thread } from "@vixera/domain";
-import { errorMessage, type SpineStore } from "@vixera/sync";
+import { errorMessage, isTransientStoreError, type SpineStore } from "@vixera/sync";
 
 export const KIND_INGEST_RECEIVED = "ingest.received";
 export const INGEST_IMPORTANCE = 40;
 export const MENTION_CONFIDENCE = 0.6;
 export const ARTIFACTS_BUCKET = "artifacts";
+/** Runs (including the first) before a transient failure becomes a permanent one. */
+export const MAX_INGEST_ATTEMPTS = 5;
 const MIN_MENTION_LENGTH = 3;
 
 export interface ProcessIngestOptions {
@@ -35,7 +43,10 @@ export interface ProcessIngestOptions {
 
 export interface ProcessIngestResult {
   readonly ingestItemId: string;
-  readonly status: "processed" | "failed";
+  /** `deferred`: a transient failure; the item is still `received` and will be retried. */
+  readonly status: "processed" | "failed" | "deferred";
+  /** Processing runs so far, this one included. */
+  readonly attempts: number;
   readonly documentId: string | null;
   /** True when an existing document (same content hash / same item) was reused. */
   readonly documentReused: boolean;
@@ -54,6 +65,7 @@ export function documentSourceFor(source: IngestSource): DocumentSource {
 
 export async function processIngestItem(store: SpineStore, item: IngestItem, options: ProcessIngestOptions): Promise<ProcessIngestResult> {
   const now = options.now();
+  const attempts = item.attempts + 1;
   let relationships = 0;
   try {
     // --- document ---------------------------------------------------------
@@ -131,18 +143,22 @@ export async function processIngestItem(store: SpineStore, item: IngestItem, opt
     ]);
     const contextEventId = events.rows[0]?.id ?? null;
 
-    await store.updateIngestItem(item.id, { status: "processed", documentId: documentId as IngestItem["documentId"], error: null, processedAt: now.toISOString() });
-    options.log?.("ingest: item processed", { ingestItemId: item.id, kind: item.kind, documentId, documentReused, relationships });
-    return { ingestItemId: item.id, status: "processed", documentId, documentReused, contextEventId, relationships, error: null };
+    await store.updateIngestItem(item.id, { status: "processed", documentId: documentId as IngestItem["documentId"], error: null, attempts, processedAt: now.toISOString() });
+    options.log?.("ingest: item processed", { ingestItemId: item.id, kind: item.kind, documentId, documentReused, relationships, attempts });
+    return { ingestItemId: item.id, status: "processed", attempts, documentId, documentReused, contextEventId, relationships, error: null };
   } catch (err) {
     const error = errorMessage(err).slice(0, 1000);
-    options.log?.("ingest: item failed", { ingestItemId: item.id, error });
+    const transient = isTransientStoreError(err);
+    const deferred = transient && attempts < MAX_INGEST_ATTEMPTS;
+    options.log?.(deferred ? "ingest: item deferred" : "ingest: item failed", { ingestItemId: item.id, error, attempts, transient });
     try {
-      await store.updateIngestItem(item.id, { status: "failed", error, processedAt: now.toISOString() });
+      // Deferred: still `received`, so the next run picks it up; the error and
+      // the count are what a person (and the cap) see in the meantime.
+      await store.updateIngestItem(item.id, deferred ? { error, attempts } : { status: "failed", error, attempts, processedAt: now.toISOString() });
     } catch (persistErr) {
       options.log?.("ingest: could not persist failure", { ingestItemId: item.id, error: errorMessage(persistErr) });
     }
-    return { ingestItemId: item.id, status: "failed", documentId: null, documentReused: false, contextEventId: null, relationships, error };
+    return { ingestItemId: item.id, status: deferred ? "deferred" : "failed", attempts, documentId: null, documentReused: false, contextEventId: null, relationships, error };
   }
 }
 

@@ -314,6 +314,7 @@ export interface IngestItemRow {
   document_id: string | null;
   error: string | null;
   metadata: JsonObject;
+  attempts: number | string;
   created_at: string;
   processed_at: string | null;
 }
@@ -1124,6 +1125,7 @@ export function ingestItemFromRow(r: IngestItemRow): IngestItem {
     documentId: r.document_id as IngestItem["documentId"],
     error: r.error,
     metadata: asJsonObject(r.metadata),
+    attempts: numberFromDb(r.attempts ?? 0),
     createdAt: isoFromDb(r.created_at),
     processedAt: isoFromDb(r.processed_at),
   };
@@ -1131,7 +1133,7 @@ export function ingestItemFromRow(r: IngestItemRow): IngestItem {
 
 export type IngestItemInsert = Omit<IngestItemRow, "created_at">;
 
-export function ingestItemToRow(userId: UserId, id: string, i: Omit<IngestItem, "id" | "userId" | "createdAt">): IngestItemInsert {
+export function ingestItemToRow(userId: UserId, id: string, i: Omit<IngestItem, "id" | "userId" | "createdAt" | "attempts"> & { readonly attempts?: number }): IngestItemInsert {
   return {
     id,
     user_id: userId,
@@ -1148,6 +1150,7 @@ export function ingestItemToRow(userId: UserId, id: string, i: Omit<IngestItem, 
     document_id: i.documentId,
     error: i.error,
     metadata: i.metadata,
+    attempts: i.attempts ?? 0,
     processed_at: i.processedAt,
   };
 }
@@ -1167,6 +1170,7 @@ export function ingestItemPatchToRow(patch: Partial<Omit<IngestItem, "id" | "use
   if (patch.documentId !== undefined) out.document_id = patch.documentId;
   if (patch.error !== undefined) out.error = patch.error;
   if (patch.metadata !== undefined) out.metadata = patch.metadata;
+  if (patch.attempts !== undefined) out.attempts = patch.attempts;
   if (patch.processedAt !== undefined) out.processed_at = patch.processedAt;
   return out;
 }

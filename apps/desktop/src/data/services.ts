@@ -8,7 +8,7 @@ import type { FunctionsClient } from "./functions.ts";
 
 export interface FieldServices {
   syncNow(connectorAccountId?: string | null): Promise<SyncReport>;
-  processIngest(ingestItemId?: string | null): Promise<{ processed: number; documentIds: string[] }>;
+  processIngest(ingestItemId?: string | null): Promise<{ processed: number; deferred: number; failed: number; documentIds: string[] }>;
 }
 
 export function createHttpServices(functions: FunctionsClient): FieldServices {
@@ -18,7 +18,7 @@ export function createHttpServices(functions: FunctionsClient): FieldServices {
       return report;
     },
     async processIngest(ingestItemId) {
-      return functions.call<{ processed: number; documentIds: string[] }>("ingest-process", ingestItemId ? { ingestItemId } : {});
+      return functions.call<{ processed: number; deferred: number; failed: number; documentIds: string[] }>("ingest-process", ingestItemId ? { ingestItemId } : {});
     },
   };
 }

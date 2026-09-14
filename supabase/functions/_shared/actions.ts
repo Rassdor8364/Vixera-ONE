@@ -444,7 +444,9 @@ export const ACTION_HANDLERS: ActionHandlers = {
     });
     const result = await processIngestItem(store, item, { now: ctx.now, ...(ctx.log ? { log: ctx.log } : {}) });
     if (result.status === "failed") throw new ActionError(result.error ?? "ingest failed");
-    return { ingestItemId: item.id, documentId: result.documentId, contextEventId: result.contextEventId, documentReused: result.documentReused, relationships: result.relationships };
+    // Deferred: the item is stored and `received`; ingest-process (which the
+    // Field calls after every submit, at launch and when back online) retries it.
+    return { ingestItemId: item.id, deferred: result.status === "deferred", documentId: result.documentId, contextEventId: result.contextEventId, documentReused: result.documentReused, relationships: result.relationships };
   },
 
   "connector.sync_now": async (store, { connectorAccountId }, ctx) => {

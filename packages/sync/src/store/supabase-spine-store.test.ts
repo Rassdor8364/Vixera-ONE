@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { DEV_USER_ID, ref } from "@vixera/domain";
-import { SupabaseSpineStore, escapeLike, ilike, orIlike } from "./supabase-spine-store.ts";
+import { isTransientStoreError, SupabaseSpineStore, escapeLike, ilike, orIlike } from "./supabase-spine-store.ts";
 import { SpineIntegrityError, SpineNotFoundError } from "./spine-store.ts";
 import { SpineStorageError } from "./supabase-spine-store.ts";
 
@@ -305,5 +305,18 @@ describe("filter helpers", () => {
     expect(escapeLike("100%_done\\")).toBe("100\\%\\_done\\\\");
     expect(ilike("eric")).toBe("%eric%");
     expect(orIlike('eric "the" studio, inc')).toBe('"%eric the studio, inc%"');
+  });
+});
+
+describe("isTransientStoreError", () => {
+  const storage = (code: string | null) => new SpineStorageError("x", code);
+  it("treats connection, resource, cancellation and rollback failures — and a codeless fetch failure — as transient", () => {
+    for (const code of [null, "", "PGRST001", "PGRST002", "PGRST003", "08006", "40001", "40P01", "53300", "57014", "57P01"]) expect(isTransientStoreError(storage(code))).toBe(true);
+  });
+  it("treats data, constraint, syntax and permission errors as permanent, along with non-store errors", () => {
+    for (const code of ["22P02", "23505", "42P01", "42501", "PGRST116", "PGRST301"]) expect(isTransientStoreError(storage(code))).toBe(false);
+    expect(isTransientStoreError(new SpineIntegrityError("x"))).toBe(false);
+    expect(isTransientStoreError(new Error("disk full"))).toBe(false);
+    expect(isTransientStoreError(null)).toBe(false);
   });
 });

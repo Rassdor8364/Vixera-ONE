@@ -264,8 +264,16 @@ Server (`ingest.submit` handler → `processIngestItem`):
    mentions of known people (display names) and thread titles in title +
    text become `mentions` edges (confidence 0.6, source `rule`).
 4. Context event `ingest.received` (importance 40, dedupe `ingest:<id>`),
-   item marked `processed` with `documentId`; failures mark it `failed`
-   with the error text.
+   item marked `processed` with `documentId`. A failure is one of two kinds:
+   a transient one (`isTransientStoreError` — the database or PostgREST
+   unavailable, a cancelled statement, a lost transaction race, a codeless
+   failed fetch) leaves the item `received` with the error text and
+   `attempts` incremented, and the action answers `deferred: true`; the next
+   `ingest-process` run retries it (the Field calls one after every submit,
+   at launch and when the connection returns), and after
+   `MAX_INGEST_ATTEMPTS` (5) runs it is marked `failed`. Any other error
+   marks it `failed` at once, with the error text — retrying a constraint
+   violation only repeats it.
 
 `POST ingest-process { ingestItemId? }` re-runs the pipeline for one item
 (any status) or every `received` item (max 200 per call). Documents ingested

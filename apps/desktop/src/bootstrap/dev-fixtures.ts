@@ -68,7 +68,7 @@ export async function createDevWorld(userId: UserId, options: DevWorldOptions = 
   const services: FieldServices = {
     syncNow: () => sync(),
     async processIngest() {
-      return { processed: 0, documentIds: [] };
+      return { processed: 0, deferred: 0, failed: 0, documentIds: [] };
     },
   };
   return { store, dispatch, services, storage, connector, sync };

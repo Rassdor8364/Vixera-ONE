@@ -29,6 +29,11 @@ export interface IngestItem extends UserScoped {
   readonly documentId: DocumentId | null;
   readonly error: string | null;
   readonly metadata: JsonObject;
+  /**
+   * Processing runs so far. A transient failure leaves the item `received`
+   * for the next run; the pipeline bounds this, never a client.
+   */
+  readonly attempts: number;
   readonly createdAt: IsoDateTime;
   readonly processedAt: IsoDateTime | null;
 }

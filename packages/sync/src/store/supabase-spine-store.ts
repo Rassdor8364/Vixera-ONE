@@ -968,6 +968,29 @@ function mapError(err: PgError, context: string): Error {
   return new SpineStorageError(message, code, err.details ?? null);
 }
 
+// PostgREST's own connection-level codes (could not connect, schema cache not
+// loaded, pool timeout) and the SQLSTATE classes that describe the server's
+// state rather than the request: 08 connection exception, 40 transaction
+// rollback (serialization failure, deadlock), 53 insufficient resources, 57
+// operator intervention (cancelled statement, admin shutdown).
+const TRANSIENT_CODES = new Set(["PGRST001", "PGRST002", "PGRST003"]);
+const TRANSIENT_CODE_CLASSES = ["08", "40", "53", "57"];
+
+/**
+ * True for a failure that says nothing about the request itself — the
+ * database or PostgREST was unavailable, a statement was cancelled, a
+ * transaction lost a race — and supabase-js's report of a failed fetch, which
+ * carries no code at all. A caller may retry these later. Everything else
+ * (constraints, validation, a missing row, a malformed query) fails the same
+ * way every time and is not worth a second attempt.
+ */
+export function isTransientStoreError(err: unknown): boolean {
+  if (!(err instanceof SpineStorageError)) return false;
+  const code = err.code ?? "";
+  if (code === "") return true;
+  return TRANSIENT_CODES.has(code) || TRANSIENT_CODE_CLASSES.some((c) => code.startsWith(c));
+}
+
 function paged(q: SelectBuilder, page: Page): SelectBuilder {
   if (page.limit !== undefined) {
     const offset = page.offset ?? 0;

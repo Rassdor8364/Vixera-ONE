@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DEV_USER_ID, ref, type IngestItem } from "@vixera/domain";
-import { InMemorySpineStore, MOCK_NOW, tickingClock, type DocumentInput } from "@vixera/sync";
-import { findMentions, ingestDedupeKey, processIngestItem } from "./ingest.ts";
+import { InMemorySpineStore, MOCK_NOW, SpineStorageError, tickingClock, type DocumentInput } from "@vixera/sync";
+import { MAX_INGEST_ATTEMPTS, findMentions, ingestDedupeKey, processIngestItem } from "./ingest.ts";
 
 function world() {
   const clock = tickingClock(MOCK_NOW, 1000);
@@ -129,20 +129,75 @@ Deno.test("explicit metadata.threadId / personId link the document instead of sc
   assert.ok(edges.every((e) => e.from.type === "document" && e.from.id === result.documentId));
 });
 
-Deno.test("a failing store call marks the item failed with the error text", async () => {
-  const { store, clock } = world();
-  const it = await item(store, { kind: "file", title: "x", storagePath: "u/x" });
-  const broken = new Proxy(store, {
+function failingUpsert(store: InMemorySpineStore, error: Error): InMemorySpineStore {
+  return new Proxy(store, {
     get(target, prop, receiver) {
-      if (prop === "upsertDocument") return (_input: DocumentInput) => Promise.reject(new Error("disk full"));
+      if (prop === "upsertDocument") return (_input: DocumentInput) => Promise.reject(error);
       return Reflect.get(target, prop, receiver);
     },
   });
-  const result = await processIngestItem(broken, it, { now: clock });
+}
+
+Deno.test("a failing store call marks the item failed with the error text", async () => {
+  const { store, clock } = world();
+  const it = await item(store, { kind: "file", title: "x", storagePath: "u/x" });
+  const result = await processIngestItem(failingUpsert(store, new Error("disk full")), it, { now: clock });
   assert.equal(result.status, "failed");
   assert.equal(result.error, "disk full");
+  assert.equal(result.attempts, 1);
   const updated = await store.getIngestItem(it.id);
   assert.equal(updated?.status, "failed");
   assert.equal(updated?.error, "disk full");
+  assert.equal(updated?.attempts, 1);
   assert.equal((await store.listContextEvents()).length, 0);
+});
+
+Deno.test("a transient store failure defers the item: still received, error and attempt recorded, retried next run", async () => {
+  const { store, clock } = world();
+  const it = await item(store, { kind: "file", title: "x", storagePath: "u/x", metadata: { contentHash: "h1" } });
+  const outage = new SpineStorageError("upsert document: TypeError: fetch failed", null);
+  const first = await processIngestItem(failingUpsert(store, outage), it, { now: clock });
+  assert.equal(first.status, "deferred");
+  assert.equal(first.attempts, 1);
+  const waiting = await store.getIngestItem(it.id);
+  assert.equal(waiting?.status, "received");
+  assert.equal(waiting?.attempts, 1);
+  assert.match(waiting?.error ?? "", /fetch failed/);
+  assert.equal((await store.listIngestItems({ status: "received" })).length, 1, "the next ingest-process run must still see it");
+  // The outage passes; the same item goes through and the error clears.
+  const second = await processIngestItem(store, waiting!, { now: clock });
+  assert.equal(second.status, "processed");
+  assert.equal(second.attempts, 2);
+  const done = await store.getIngestItem(it.id);
+  assert.equal(done?.status, "processed");
+  assert.equal(done?.error, null);
+  assert.ok(done?.documentId);
+});
+
+Deno.test("a transient failure that keeps happening is failed for real after MAX_INGEST_ATTEMPTS runs", async () => {
+  const { store, clock } = world();
+  const it = await item(store, { kind: "file", title: "x", storagePath: "u/x" });
+  const outage = new SpineStorageError("upsert document: connection failure", "08006");
+  let current = it;
+  for (let run = 1; run < MAX_INGEST_ATTEMPTS; run++) {
+    const r = await processIngestItem(failingUpsert(store, outage), current, { now: clock });
+    assert.equal(r.status, "deferred", `run ${run}`);
+    current = (await store.getIngestItem(it.id))!;
+    assert.equal(current.status, "received");
+    assert.equal(current.attempts, run);
+  }
+  const last = await processIngestItem(failingUpsert(store, outage), current, { now: clock });
+  assert.equal(last.status, "failed");
+  assert.equal(last.attempts, MAX_INGEST_ATTEMPTS);
+  const final = await store.getIngestItem(it.id);
+  assert.equal(final?.status, "failed");
+  assert.ok(final?.processedAt);
+});
+
+Deno.test("a permanent store error (constraint, validation) is not retried", async () => {
+  const { store, clock } = world();
+  const it = await item(store, { kind: "file", title: "x", storagePath: "u/x" });
+  const result = await processIngestItem(failingUpsert(store, new SpineStorageError("upsert document: invalid input syntax", "22P02")), it, { now: clock });
+  assert.equal(result.status, "failed");
+  assert.equal((await store.getIngestItem(it.id))?.status, "failed");
 });

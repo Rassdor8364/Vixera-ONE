@@ -2,9 +2,10 @@
  * ingest-process — runs THE ingestion pipeline (ingest.ts) for the caller.
  *
  *   POST /  body { ingestItemId? }
- *           → { processed, documentIds, failed, items: [{ ingestItemId, status, documentId, error }] }
+ *           → { processed, deferred, failed, documentIds, items: [{ ingestItemId, status, attempts, documentId, error }] }
  *   One item (any status: re-processing is idempotent; an already processed
- *   item is returned as-is) or every "received" item of the user.
+ *   item is returned as-is) or every "received" item of the user — which is
+ *   also how an item a transient failure left `received` gets its next run.
  */
 import { isUuid } from "@vixera/domain";
 import { readEnv } from "../_shared/env.ts";
@@ -35,7 +36,7 @@ Deno.serve(
             const item = await store.getIngestItem(id);
             if (!item) throw new HttpError(404, "not_found", `ingest item ${id} not found`);
             if (item.status === "processed") {
-              results.push({ ingestItemId: item.id, status: "processed", documentId: item.documentId, documentReused: true, contextEventId: null, relationships: 0, error: null });
+              results.push({ ingestItemId: item.id, status: "processed", attempts: item.attempts, documentId: item.documentId, documentReused: true, contextEventId: null, relationships: 0, error: null });
             } else {
               results.push(await processIngestItem(store, item, { now, log }));
             }
@@ -47,9 +48,10 @@ Deno.serve(
           const processed = results.filter((r) => r.status === "processed");
           return json(req, {
             processed: processed.length,
+            deferred: results.filter((r) => r.status === "deferred").length,
+            failed: results.filter((r) => r.status === "failed").length,
             documentIds: processed.map((r) => r.documentId).filter((d): d is string => d !== null),
-            failed: results.length - processed.length,
-            items: results.map((r) => ({ ingestItemId: r.ingestItemId, status: r.status, documentId: r.documentId, error: r.error })),
+            items: results.map((r) => ({ ingestItemId: r.ingestItemId, status: r.status, attempts: r.attempts, documentId: r.documentId, error: r.error })),
           });
         },
       },

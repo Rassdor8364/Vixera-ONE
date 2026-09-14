@@ -847,7 +847,7 @@ export class InMemorySpineStore implements SpineStore {
   }
 
   async createIngestItem(input: IngestItemInput): Promise<IngestItem> {
-    const row: IngestItem = { ...input, id: (input.id ?? newId()) as IngestItem["id"], userId: this.userId, createdAt: this.iso() };
+    const row: IngestItem = { ...input, attempts: input.attempts ?? 0, id: (input.id ?? newId()) as IngestItem["id"], userId: this.userId, createdAt: this.iso() };
     this.ingestItems.set(row.id, row);
     return row;
   }
