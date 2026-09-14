@@ -35,6 +35,16 @@ describe("time ranges", () => {
     expect(transactionRange("all", { now })).toBeNull();
     expect(transactionRange(undefined, { now })).toBeNull();
   });
+
+  it("last week is the previous calendar week, Monday to Sunday, not the rolling seven days", () => {
+    // 2026-09-10 is a Thursday: this week began Monday 09-07, last week ran 08-31 … 09-06.
+    expect(transactionRange("last_week", { now })).toEqual({ from: "2026-08-31", to: "2026-09-06" });
+    // On a Monday the previous week ended yesterday.
+    expect(transactionRange("last_week", { now: new Date("2026-09-07T03:00:00Z") })).toEqual({ from: "2026-08-31", to: "2026-09-06" });
+    // Day boundaries follow the timezone: Sunday 23:30 in Los Angeles is still last week's Sunday there.
+    expect(transactionRange("last_week", { now: new Date("2026-09-07T06:30:00Z"), timezone: "America/Los_Angeles" })).toEqual({ from: "2026-08-24", to: "2026-08-30" });
+    expect(transactionRange("last_week", { now: new Date("2026-09-07T06:30:00Z"), timezone: "UTC" })).toEqual({ from: "2026-08-31", to: "2026-09-06" });
+  });
 });
 
 describe("next 7 days is a rolling window, not the calendar week", () => {

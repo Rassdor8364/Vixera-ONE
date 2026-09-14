@@ -118,9 +118,12 @@ export class CommandExecutor {
     const personRef = ref("person", person.id);
     const ids = new Set<string>();
     for (const n of await this.reader.neighbors(personRef, { type: "document" })) ids.add(n.ref.id);
-    for (const message of await this.personMail(person)) {
-      for (const n of await this.reader.neighbors(ref("mail_message", message.id), { type: "document" })) ids.add(n.ref.id);
-    }
+    // One neighbors() call per message is unavoidable with the reader's
+    // contract, so bound it: the most recent messages, a few in flight at a
+    // time, rather than one round trip per message of a years-long thread.
+    const recent = (await this.personMail(person)).slice(0, MAIL_ATTACHMENT_SCAN);
+    const hops = await mapLimit(recent, NEIGHBOR_CONCURRENCY, (message) => this.reader.neighbors(ref("mail_message", message.id), { type: "document" }));
+    for (const n of hops.flat()) ids.add(n.ref.id);
     const docs = await this.loadDocuments(ids);
     return sortRecentFirst(docs, (d) => d.updatedAt);
   }
@@ -231,7 +234,7 @@ export class CommandExecutor {
 
     const filtered = posted ? rows.filter((t) => t.postedOn >= posted.from && t.postedOn <= posted.to) : rows;
     const transactions = sortRecentFirst(filtered, (t) => `${t.postedOn}T${t.authorizedAt ?? ""}`);
-    const rangeTitle = range === "month" ? " this month" : range === "week" ? " this week" : "";
+    const rangeTitle = range === "month" ? " this month" : range === "week" ? " this week" : range === "last_week" ? " last week" : "";
     return {
       kind: "results",
       area: "money",
@@ -375,4 +378,22 @@ function rangeTitle(range: Exclude<EventRange, object>): string {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Messages whose attachments a person-scoped document search follows; older mail is reachable through the Files area. */
+const MAIL_ATTACHMENT_SCAN = 40;
+/** Reader calls in flight at once for the per-message hops. */
+const NEIGHBOR_CONCURRENCY = 4;
+
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }

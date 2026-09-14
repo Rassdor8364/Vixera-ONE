@@ -18,7 +18,8 @@ export function isFieldArea(value: string): value is FieldArea {
 
 export type EventRange = "today" | "tomorrow" | "week" | "next7" | { readonly from: string; readonly to: string };
 export type DocumentKind = "invoice" | "contract" | "agreement" | "pdf" | "image" | "any";
-export type TransactionRange = "month" | "week" | "all";
+/** `week`: the rolling last seven days; `last_week`: the previous calendar week (Monday–Sunday); `month`: this calendar month. */
+export type TransactionRange = "month" | "week" | "last_week" | "all";
 
 export interface TransactionScope {
   readonly threadQuery?: string;

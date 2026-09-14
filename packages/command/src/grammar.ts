@@ -90,6 +90,15 @@ export function normalizeText(text: string): string {
 
 type Rule = { readonly name: string; readonly re: RegExp; readonly build: (m: RegExpMatchArray) => Parse | null };
 
+/**
+ * A rule whose match is an open-ended capture ("…'s invoices", "mail from …",
+ * "who is …") knows the shape of the ask, not whether the words it captured
+ * mean what it assumes. Below the hybrid router's threshold (0.8) so a model,
+ * when one is wired, is consulted and wins only when it is more sure; with no
+ * model the rule still answers.
+ */
+export const OPEN_CAPTURE_CONFIDENCE = 0.75;
+
 function intent(rule: string, value: Intent, confidence = 1): Parse {
   return { kind: "intent", rule, intent: value, confidence };
 }
@@ -103,6 +112,10 @@ function eventsOf(word: string): EventRange {
 }
 
 function txRange(word: string): TransactionRange {
+  // "last week" is the previous calendar week, not the rolling seven days a
+  // bare "week" means; silently folding it into the rolling window answered a
+  // different question than the one asked.
+  if (word.startsWith("last") && word.includes("week")) return "last_week";
   if (word.includes("week")) return "week";
   if (word.includes("month")) return "month";
   return "all";
@@ -143,12 +156,12 @@ export const RULES: readonly Rule[] = [
   {
     name: "show_thread",
     re: new RegExp(`^${VERB}\\s+(?:me\\s+)?(?:the\\s+)?thread\\s+(?:called\\s+|named\\s+)?["']?(.+?)["']?$`),
-    build: (m) => intent("show_thread", { type: "show_thread", query: g(m, 1) }),
+    build: (m) => intent("show_thread", { type: "show_thread", query: g(m, 1) }, OPEN_CAPTURE_CONFIDENCE),
   },
   {
     name: "show_thread.suffix",
     re: /^(?:open|show|go to)\s+(?:the\s+)?["']?(.+?)["']?\s+thread$/,
-    build: (m) => intent("show_thread.suffix", { type: "show_thread", query: g(m, 1) }),
+    build: (m) => intent("show_thread.suffix", { type: "show_thread", query: g(m, 1) }, OPEN_CAPTURE_CONFIDENCE),
   },
 
   // --- Time ----------------------------------------------------------------
@@ -187,7 +200,7 @@ export const RULES: readonly Rule[] = [
   {
     name: "find_document.kind_from_person",
     re: new RegExp(`^(?:${VERB}\\s+)?(?:me\\s+)?(?:the\\s+|an?\\s+|all\\s+|latest\\s+)?(${DOC_KIND})\\s+(?:from|by|of|sent by)\\s+(.+)$`),
-    build: (m) => intent("find_document.kind_from_person", { type: "find_document", kind: docKind(g(m, 1)), fromPersonQuery: g(m, 2) }),
+    build: (m) => intent("find_document.kind_from_person", { type: "find_document", kind: docKind(g(m, 1)), fromPersonQuery: g(m, 2) }, OPEN_CAPTURE_CONFIDENCE),
   },
   {
     name: "possessive",
@@ -195,10 +208,10 @@ export const RULES: readonly Rule[] = [
     build: (m) => {
       const who = g(m, 1);
       const noun = g(m, 2);
-      if (new RegExp(`^(?:${DOC_NOUN})$`).test(noun)) return intent("possessive.documents", { type: "show_person_documents", personQuery: who });
-      if (new RegExp(`^(?:${MAIL_NOUN})$`).test(noun)) return intent("possessive.mail", { type: "show_person_mail", personQuery: who });
+      if (new RegExp(`^(?:${DOC_NOUN})$`).test(noun)) return intent("possessive.documents", { type: "show_person_documents", personQuery: who }, OPEN_CAPTURE_CONFIDENCE);
+      if (new RegExp(`^(?:${MAIL_NOUN})$`).test(noun)) return intent("possessive.mail", { type: "show_person_mail", personQuery: who }, OPEN_CAPTURE_CONFIDENCE);
       if (new RegExp(`^(?:${MONEY_NOUN})$`).test(noun)) return { kind: "transactions_for", rule: "possessive.transactions", target: who };
-      return intent("possessive.document_kind", { type: "find_document", kind: docKind(noun), fromPersonQuery: who });
+      return intent("possessive.document_kind", { type: "find_document", kind: docKind(noun), fromPersonQuery: who }, OPEN_CAPTURE_CONFIDENCE);
     },
   },
   {
@@ -207,8 +220,8 @@ export const RULES: readonly Rule[] = [
     build: (m) => {
       const noun = g(m, 1);
       const who = g(m, 2);
-      if (new RegExp(`^(?:${MAIL_NOUN})$`).test(noun)) return intent("from_person.mail", { type: "show_person_mail", personQuery: who });
-      return intent("from_person.documents", { type: "show_person_documents", personQuery: who });
+      if (new RegExp(`^(?:${MAIL_NOUN})$`).test(noun)) return intent("from_person.mail", { type: "show_person_mail", personQuery: who }, OPEN_CAPTURE_CONFIDENCE);
+      return intent("from_person.documents", { type: "show_person_documents", personQuery: who }, OPEN_CAPTURE_CONFIDENCE);
     },
   },
 
@@ -261,12 +274,12 @@ export const RULES: readonly Rule[] = [
   {
     name: "find_person.who",
     re: /^who(?:'s| is| was)\s+(.+)$/,
-    build: (m) => intent("find_person.who", { type: "find_person", query: g(m, 1) }),
+    build: (m) => intent("find_person.who", { type: "find_person", query: g(m, 1) }, OPEN_CAPTURE_CONFIDENCE),
   },
   {
     name: "find_person.person",
     re: new RegExp(`^${VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:person|contact)\\s+(?:called\\s+|named\\s+)?(.+)$`),
-    build: (m) => intent("find_person.person", { type: "find_person", query: g(m, 1) }),
+    build: (m) => intent("find_person.person", { type: "find_person", query: g(m, 1) }, OPEN_CAPTURE_CONFIDENCE),
   },
 
   // --- Generic find ---------------------------------------------------------

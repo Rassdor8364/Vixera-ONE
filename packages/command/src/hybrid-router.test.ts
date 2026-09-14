@@ -17,6 +17,20 @@ describe("HybridIntentRouter", () => {
     expect(model.route).not.toHaveBeenCalled();
   });
 
+  it("an open-ended capture is offered to the model, which wins only when it is more sure", async () => {
+    // "eric's invoices" is a possessive rule: the shape is certain, the captured words are not.
+    const surer = stub({ intent: { type: "find_document", kind: "invoice", fromPersonQuery: "eric lindqvist" }, confidence: 0.85, matchedRule: "model.find_document" });
+    const routed = await new HybridIntentRouter(rules, surer).route("eric's invoices", ctx);
+    expect(surer.route).toHaveBeenCalled();
+    expect(routed).toMatchObject({ intent: { type: "find_document", fromPersonQuery: "eric lindqvist" }, source: "model" });
+    // A model that is less sure than the rule loses; the rule's own answer stands.
+    const lessSure = stub({ intent: { type: "open_area", area: "money" }, confidence: 0.5, matchedRule: "model.open_area" });
+    const kept = await new HybridIntentRouter(rules, lessSure).route("eric's invoices", ctx);
+    expect(lessSure.route).toHaveBeenCalled();
+    expect(kept).toMatchObject({ intent: { type: "find_document", kind: "invoice", fromPersonQuery: "eric" }, source: "rules" });
+    expect(kept.confidence).toBeLessThan(0.8);
+  });
+
   it("with no model wired it is exactly the rule-based router", async () => {
     const hybrid = new HybridIntentRouter(rules, null);
     for (const text of ["Find Eric.", "asdf qwerty", "show transactions"]) {

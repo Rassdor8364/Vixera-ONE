@@ -12,7 +12,7 @@ import { isFieldArea, type DocumentKind, type EventRange, type Intent, type Tran
  */
 
 const DOCUMENT_KINDS: readonly DocumentKind[] = ["invoice", "contract", "agreement", "pdf", "image", "any"];
-const TRANSACTION_RANGES: readonly TransactionRange[] = ["month", "week", "all"];
+const TRANSACTION_RANGES: readonly TransactionRange[] = ["month", "week", "last_week", "all"];
 const NAMED_EVENT_RANGES = ["today", "tomorrow", "week", "next7"] as const;
 const MAX_QUERY = 200;
 const MAX_LIMIT = 100;

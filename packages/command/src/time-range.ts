@@ -47,6 +47,12 @@ export function transactionRange(
   const today = startOfDay(context.now, tz);
   const to = localDate(context.now, tz);
   if (range === "week") return { from: localDate(addDays(today, -6, tz), tz), to };
+  if (range === "last_week") {
+    // The calendar week (Monday to Sunday) before the one containing "now".
+    const dow = weekday(context.now, tz);
+    const thisMonday = addDays(today, -((dow + 6) % 7), tz);
+    return { from: localDate(addDays(thisMonday, -7, tz), tz), to: localDate(addDays(thisMonday, -1, tz), tz) };
+  }
   const { year, month } = ymd(context.now, tz);
   return { from: `${year}-${pad(month)}-01`, to };
 }
