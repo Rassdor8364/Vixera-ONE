@@ -16,7 +16,25 @@ const TRANSACTION_RANGES: readonly TransactionRange[] = ["month", "week", "all"]
 const NAMED_EVENT_RANGES = ["today", "tomorrow", "week", "next7"] as const;
 const MAX_QUERY = 200;
 const MAX_LIMIT = 100;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
+/**
+ * A real calendar instant, or null. `Date.parse` alone is not enough: V8 rolls
+ * "2026-02-30" over to March 2 instead of rejecting it, and comparing two
+ * strings lexically ignores offsets. The executor must never see a range it
+ * cannot resolve.
+ */
+export function parseCalendarInstant(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const m = ISO_DATE.exec(value);
+  if (!m) return null;
+  const [, y, mo, d, h = "0", mi = "0", sec = "0"] = m;
+  const year = Number(y), month = Number(mo), day = Number(d), hour = Number(h), minute = Number(mi), second = Number(sec);
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return null;
+  if (hour > 23 || minute > 59 || second > 60) return null;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
 
 function isObject(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
@@ -29,10 +47,11 @@ function optionalQuery(x: unknown): string | null | undefined {
 }
 function eventRange(x: unknown): EventRange | null {
   if (typeof x === "string") return (NAMED_EVENT_RANGES as readonly string[]).includes(x) ? (x as EventRange) : null;
-  if (isObject(x) && typeof x["from"] === "string" && typeof x["to"] === "string" && ISO_DATE.test(x["from"]) && ISO_DATE.test(x["to"]) && x["from"] <= x["to"]) {
-    return { from: x["from"], to: x["to"] };
-  }
-  return null;
+  if (!isObject(x)) return null;
+  const from = parseCalendarInstant(x["from"]);
+  const to = parseCalendarInstant(x["to"]);
+  if (from === null || to === null || from > to) return null;
+  return { from: x["from"] as string, to: x["to"] as string };
 }
 
 /** `Intent` or null. Never throws. */

@@ -44,6 +44,10 @@ export function OneCommandBar() {
       const next = locationForResult(r, field.location);
       if (next) field.setLocation(next);
       if (r.kind === "navigate") setText("");
+    } catch (error) {
+      // A reader or executor failure is an answer, not an unhandled rejection
+      // that leaves the previous result on screen.
+      setResult({ kind: "unknown", title: "Something went wrong", items: [], message: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
     }
