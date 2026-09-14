@@ -68,9 +68,10 @@ export const DEFAULT_TRANSACTIONS_PAGE_SIZE = 500;
 
 /**
  * Plaid's `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`: the item's data
- * changed between pages of one `/transactions/sync` pass. Plaid's own advice
- * is to restart pagination from the cursor of the last successful response,
- * which is what `BankConnector` does.
+ * changed between pages of one `/transactions/sync` pass. Plaid's reference
+ * requires the whole pagination loop to be restarted from the cursor of the
+ * update's first page (intermediate `next_cursor`s carry no guarantee), which
+ * is what `BankConnector` does.
  */
 export class PlaidMutationDuringPaginationError extends BankPaginationMutationError {
   constructor(

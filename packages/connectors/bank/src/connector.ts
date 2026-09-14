@@ -10,12 +10,21 @@
  *   - `removed` ids become `batch.deleted`; `modified` are upserted like
  *     `added` (natural key = external id).
  *
- * Checkpoint: `{ cursor }`. Each page's `checkpoint` is the cursor to persist
- * once that page is applied. The connector's own notion of "committed cursor"
- * advances only after the page has been yielded and the consumer asked for
- * the next one, so a restart after `BankPaginationMutationError` begins at
- * exactly the cursor the engine persisted (max 3 attempts, then a
- * `ConnectorError("unknown")`).
+ * Checkpoint: `{ cursor }`, and only a cursor the provider guarantees. Plaid's
+ * `/transactions/sync` contract: an update is the whole run of pages up to
+ * `has_more: false`; only that final `next_cursor` is durable, and a failure
+ * mid-update (`TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`) means the whole
+ * update must be requested again from the cursor it began with. So:
+ *   - intermediate pages (`hasMore`) echo the checkpoint the pass started
+ *     from (the engine treats an unchanged checkpoint as "no resume point");
+ *   - the final page carries the new cursor; an empty one (Plaid's "initial
+ *     update not ready") keeps the previous checkpoint;
+ *   - a `BankPaginationMutationError` restarts the pass from that same
+ *     starting cursor, never from an intra-pass cursor (max 3 attempts, then
+ *     a `ConnectorError("unknown")`). Replayed pages are idempotent by
+ *     natural key, so applying page 1 twice is harmless.
+ * A run the engine stops mid-update (time budget) therefore restarts the
+ * update next time instead of resuming from a cursor Plaid may have discarded.
  *
  * There is no write path. `Connector` has none, `BankProvider` has none.
  */
@@ -65,13 +74,14 @@ export class BankConnector implements Connector {
   async *syncBank(ctx: SyncContext, checkpoint: Checkpoint | null): AsyncIterable<SyncPage<BankSyncBatch>> {
     const pctx = toProviderContext(ctx);
     const accounts = await this.#bank.listAccounts(pctx);
-    let committedCursor = readBankCheckpoint(checkpoint);
+    // The only cursor with a guarantee behind it: the one the previous update ended with.
+    const startCursor = readBankCheckpoint(checkpoint);
+    const startCheckpoint: BankCheckpoint | null = startCursor ? { cursor: startCursor } : null;
     let first = true;
     let attempt = 0;
 
     for (;;) {
       attempt += 1;
-      const startCursor = committedCursor;
       let pagesThisAttempt = 0;
       try {
         for await (const page of this.#bank.syncTransactions(pctx, startCursor)) {
@@ -82,23 +92,22 @@ export class BankConnector implements Connector {
               transactions: mergeTransactions(page),
               deleted: page.removed.map((externalId) => ({ externalId })),
             },
-            checkpoint: page.nextCursor ? { cursor: page.nextCursor } : null,
+            // Intermediate cursors are not resume points: echo the starting checkpoint until the update completes.
+            checkpoint: !page.hasMore && page.nextCursor ? { cursor: page.nextCursor } : startCheckpoint,
             done: !page.hasMore,
           };
           first = false;
           yield out;
-          // The consumer has applied and persisted this page; only now is its cursor "committed".
-          if (page.nextCursor) committedCursor = page.nextCursor;
           if (!page.hasMore) return;
         }
         if (first) {
           // Provider yielded nothing at all: still refresh accounts once.
-          yield { batch: { accounts, transactions: [], deleted: [] }, checkpoint: null, done: true };
+          yield { batch: { accounts, transactions: [], deleted: [] }, checkpoint: startCheckpoint, done: true };
         }
         return;
       } catch (err) {
         if (!(err instanceof BankPaginationMutationError)) throw err;
-        ctx.log?.("bank.sync.restart", { provider: this.#bank.id, attempt, pagesBeforeRestart: pagesThisAttempt, cursor: committedCursor });
+        ctx.log?.("bank.sync.restart", { provider: this.#bank.id, attempt, pagesBeforeRestart: pagesThisAttempt, cursor: startCursor });
         if (attempt >= this.#maxAttempts) {
           throw new ConnectorError("unknown", `Bank transactions kept changing during pagination after ${attempt} attempts`, false, { cause: err });
         }

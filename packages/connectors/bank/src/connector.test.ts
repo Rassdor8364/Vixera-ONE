@@ -27,6 +27,25 @@ const happyPath = (_req: FakeRequest, cursor: string | null): FakeReply =>
 
 const plaidConnector = () => new BankConnector(new PlaidBankProvider({ config: FAKE_PLAID_CONFIG }));
 
+const syncBody = (added: unknown[], next_cursor: string, has_more: boolean) => ({ added, modified: [], removed: [], next_cursor, has_more });
+
+/**
+ * A three-page update starting from `start` (null = first sync): the cursors
+ * are c1 → c2 → c3, one of page1's transactions per page, and c3 is the only
+ * cursor Plaid guarantees (has_more: false).
+ */
+const threePages =
+  (start: string | null) =>
+  (_req: FakeRequest, cursor: string | null): FakeReply => {
+    const [t1, t2, t3] = page1.added;
+    if (cursor === start) return { json: syncBody([t1], "c1", true) };
+    if (cursor === "c1") return { json: syncBody([t2], "c2", true) };
+    if (cursor === "c2") return { json: syncBody([t3], "c3", false) };
+    return { json: syncBody([], cursor ?? "", false) };
+  };
+
+const sentCursors = (ff: ReturnType<typeof createFakeFetch>) => ff.callsTo("/transactions/sync").map((c) => (JSON.parse(c.body ?? "{}") as { cursor?: string }).cursor ?? null);
+
 /** Drains pages the way the engine does: each page is "applied" before the next is pulled. */
 async function drain(pages: AsyncIterable<SyncPage<BankSyncBatch>>, onPage?: (p: SyncPage<BankSyncBatch>) => void) {
   const out: SyncPage<BankSyncBatch>[] = [];
@@ -82,7 +101,8 @@ describe("BankConnector", () => {
       ["fake-txn-coffee-pending", "-6.40"],
     ]);
     expect(first.batch.deleted).toEqual([]);
-    expect(first.checkpoint).toEqual({ cursor: "fake-cursor-page-1" });
+    // has_more: true — Plaid guarantees nothing about this cursor, so it is not a resume point.
+    expect(first.checkpoint).toBeNull();
     expect(first.done).toBe(false);
 
     expect(second.batch.accounts).toEqual([]);
@@ -114,7 +134,22 @@ describe("BankConnector", () => {
     expect(readBankCheckpoint({ other: 1 })).toBeNull();
   });
 
-  it("restarts from the last committed cursor when Plaid reports a mutation during pagination", async () => {
+  it("commits a cursor only after has_more is false; intermediate pages echo the cursor the pass started from", async () => {
+    const fresh = plaidRoutes(threePages(null));
+    const pages = await drain(plaidConnector().syncBank(makeContext(fresh.fetch), null));
+    expect(pages.map((p) => p.checkpoint)).toEqual([null, null, { cursor: "c3" }]);
+    expect(pages.map((p) => p.done)).toEqual([false, false, true]);
+    expect(pages.map((p) => p.batch.transactions.map((t) => t.externalId))).toEqual([["fake-txn-northwind"], ["fake-txn-lindqvist"], ["fake-txn-coffee-pending"]]);
+    expect(sentCursors(fresh)).toEqual([null, "c1", "c2"]);
+
+    // Resuming from a persisted cursor: that cursor stays the checkpoint until the update completes.
+    const resumed = plaidRoutes(threePages("c0"));
+    const later = await drain(plaidConnector().syncBank(makeContext(resumed.fetch), { cursor: "c0" }));
+    expect(later.map((p) => p.checkpoint)).toEqual([{ cursor: "c0" }, { cursor: "c0" }, { cursor: "c3" }]);
+    expect(sentCursors(resumed)).toEqual(["c0", "c1", "c2"]);
+  });
+
+  it("restarts the whole update from the cursor the pass started with when Plaid reports a mutation during pagination", async () => {
     let mutations = 0;
     const ff = plaidRoutes((req, cursor) => {
       if (cursor === "fake-cursor-page-1" && mutations === 0) {
@@ -127,15 +162,46 @@ describe("BankConnector", () => {
     const applied: (string | null)[] = [];
     const pages = await drain(plaidConnector().syncBank(ctx, null), (p) => applied.push(readBankCheckpoint(p.checkpoint)));
 
-    expect(pages).toHaveLength(2);
-    expect(applied).toEqual(["fake-cursor-page-1", "fake-cursor-page-2"]);
-    const cursors = ff.callsTo("/transactions/sync").map((c) => (JSON.parse(c.body ?? "{}") as { cursor?: string }).cursor ?? null);
-    // page 1, failed page 2, page 2 again from the cursor the engine had persisted — not from scratch.
-    expect(cursors).toEqual([null, "fake-cursor-page-1", "fake-cursor-page-1"]);
+    // page 1, failed page 2, then the update again from its first cursor (null): page 1 replayed, page 2.
+    expect(sentCursors(ff)).toEqual([null, "fake-cursor-page-1", null, "fake-cursor-page-1"]);
+    expect(pages).toHaveLength(3);
+    expect(applied).toEqual([null, null, "fake-cursor-page-2"]);
     expect(pages[0]!.batch.accounts).toHaveLength(6);
     expect(pages[1]!.batch.accounts).toEqual([]);
-    expect(pages[1]!.batch.deleted).toEqual([{ externalId: "fake-txn-coffee-pending" }]);
-    expect(ctx.logs.find((l) => l.message === "bank.sync.restart")?.data).toMatchObject({ attempt: 1, cursor: "fake-cursor-page-1", pagesBeforeRestart: 1 });
+    expect(pages[1]!.batch.transactions.map((t) => t.externalId)).toEqual(pages[0]!.batch.transactions.map((t) => t.externalId));
+    expect(pages[2]!.batch.deleted).toEqual([{ externalId: "fake-txn-coffee-pending" }]);
+    expect(pages[2]!.done).toBe(true);
+    expect(ctx.logs.find((l) => l.message === "bank.sync.restart")?.data).toMatchObject({ attempt: 1, cursor: null, pagesBeforeRestart: 1 });
+  });
+
+  it("restarts from the persisted cursor, never from an intermediate one, on every mutation of the pass", async () => {
+    const mutated = new Set<string>();
+    const ff = plaidRoutes((req, cursor) => {
+      if ((cursor === "c1" || cursor === "c2") && !mutated.has(cursor)) {
+        mutated.add(cursor);
+        return MUTATION;
+      }
+      return threePages("c0")(req, cursor);
+    });
+    const ctx = makeContext(ff.fetch);
+    const pages = await drain(plaidConnector().syncBank(ctx, { cursor: "c0" }));
+    // attempt 1: c0 ok, c1 mutated; attempt 2: c0, c1 ok, c2 mutated; attempt 3: c0, c1, c2 done.
+    expect(sentCursors(ff)).toEqual(["c0", "c1", "c0", "c1", "c2", "c0", "c1", "c2"]);
+    expect(pages.map((p) => p.checkpoint)).toEqual([{ cursor: "c0" }, { cursor: "c0" }, { cursor: "c0" }, { cursor: "c0" }, { cursor: "c0" }, { cursor: "c3" }]);
+    expect(pages.filter((p) => p.done)).toHaveLength(1);
+    expect(ctx.logs.filter((l) => l.message === "bank.sync.restart").map((l) => l.data?.cursor)).toEqual(["c0", "c0"]);
+  });
+
+  it("keeps the previous checkpoint when Plaid answers with an empty next_cursor (initial update not ready)", async () => {
+    const ff = plaidRoutes(() => ({ json: syncBody([], "", false) }));
+    const fresh = await drain(plaidConnector().syncBank(makeContext(ff.fetch), null));
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toMatchObject({ checkpoint: null, done: true });
+    expect(fresh[0]!.batch.accounts).toHaveLength(6);
+    expect(fresh[0]!.batch.transactions).toEqual([]);
+
+    const resumed = await drain(plaidConnector().syncBank(makeContext(ff.fetch), { cursor: "c0" }));
+    expect(resumed[0]!.checkpoint).toEqual({ cursor: "c0" });
   });
 
   it("gives up after three attempts with a non-retryable unknown ConnectorError", async () => {
@@ -158,7 +224,7 @@ describe("BankConnector", () => {
     expect(unauthorized.callsTo("/transactions/sync")).toHaveLength(1);
   });
 
-  it("with the mock provider, the committed cursor only moves after a page was consumed", async () => {
+  it("with the mock provider, a mutation mid-pass replays the pass and only the final page carries a cursor", async () => {
     const mock = new MockBankProvider({ pageSize: 2 });
     mock.failNext({ method: "syncTransactions", error: new BankPaginationMutationError("mutated", null), afterPages: 1 });
     const connector = new BankConnector(mock);
@@ -166,16 +232,18 @@ describe("BankConnector", () => {
     const ctx = makeContext(noFetch, { account, credential: { kind: "access_token", accessToken: "fake-token" } });
 
     const pages = await collect(connector.syncBank(ctx, null));
-    expect(mock.calls.filter((c) => c.method === "syncTransactions").map((c) => c.cursor)).toEqual([null, "mock-cursor-2"]);
+    expect(mock.calls.filter((c) => c.method === "syncTransactions").map((c) => c.cursor)).toEqual([null, null]);
     expect(pages.map((p) => [p.batch.accounts.length, p.batch.transactions.length, readBankCheckpoint(p.checkpoint), p.done])).toEqual([
-      [1, 2, "mock-cursor-2", false],
+      [1, 2, null, false],
+      [0, 2, null, false],
       [0, 2, "mock-cursor-4", true],
     ]);
 
-    // Second cycle from the persisted checkpoint: accounts refreshed, no transactions, done.
-    const next = await collect(connector.syncBank(ctx, pages[1]!.checkpoint));
+    // Second cycle from the persisted checkpoint: accounts refreshed, no transactions, cursor echoed, done.
+    const next = await collect(connector.syncBank(ctx, pages[2]!.checkpoint));
     expect(next).toHaveLength(1);
     expect(next[0]!.batch).toEqual({ accounts: await mock.listAccounts(ctx), transactions: [], deleted: [] });
+    expect(next[0]!.checkpoint).toEqual({ cursor: "mock-cursor-4" });
     expect(next[0]!.done).toBe(true);
   });
 });

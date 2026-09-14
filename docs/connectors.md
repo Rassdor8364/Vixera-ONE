@@ -232,11 +232,19 @@ never as an error.
   (`/accounts/get`, always refreshed) + the first `/transactions/sync` page
   (500 per page); following pages carry transaction changes only. `added` and
   `modified` are upserted, `removed` ids become deletions.
-* Each page's `checkpoint` is that page's `next_cursor`. The connector's own
-  "committed cursor" advances only after the consumer asked for the next
-  page, so a restart after Plaid's
-  `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` begins at exactly the cursor
-  the engine persisted (max 3 attempts, then `ConnectorError("unknown")`).
+* Plaid's `/transactions/sync` contract: the pages up to `has_more: false`
+  are one update; only that final `next_cursor` is guaranteed (for a year),
+  and a failure mid-update means the whole update is requested again from
+  the cursor it began with. So intermediate pages echo the checkpoint the
+  pass started from (the engine keeps it, exactly as the Graph mail source
+  does), the final page carries the new cursor, and an empty `next_cursor`
+  (Plaid's "initial update not ready") keeps the previous checkpoint. A
+  `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the pass from that
+  same starting cursor — never from an intermediate one — up to 3 attempts,
+  then `ConnectorError("unknown")`; replayed pages are idempotent by natural
+  key. A run the engine's time budget stops mid-update is reported
+  `interrupted` and restarts the update next run rather than resuming from a
+  cursor Plaid may have discarded.
 * `PlaidClient` allow-lists read endpoints (`PLAID_READ_ENDPOINTS`); any
   other endpoint throws `unsupported`. There is no method on `BankProvider`
   that can move money.

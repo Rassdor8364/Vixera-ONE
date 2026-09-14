@@ -9,7 +9,7 @@
  * `/transactions/sync`. When Plaid reports that the data changed mid-pass it
  * throws `PlaidMutationDuringPaginationError`; the adapter does not restart
  * on its own because only the consumer (`BankConnector`) knows which cursor
- * it has committed, and that is the cursor the restart must begin from.
+ * the pass began with, and Plaid requires the restart to begin there.
  */
 import { ConnectorError, type ConnectorCredential, type NormalizedMoneyAccount } from "@vixera/domain";
 import type { BankItemDescription, BankProvider, BankProviderContext, BankTransactionsPage } from "../provider.ts";
