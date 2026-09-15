@@ -108,6 +108,10 @@ describe("PlaidClient", () => {
     expect(mapPlaidError(400, { error_type: "ITEM_ERROR", error_code: "PRODUCT_NOT_READY" }, "/x")).toMatchObject({ code: "unknown", retryable: false });
     // Server-side key misconfiguration must not flag the user's account as needing re-auth.
     expect(mapPlaidError(400, { error_type: "INVALID_INPUT", error_code: "INVALID_API_KEYS" }, "/x")).toMatchObject({ code: "unknown" });
+    // a stored cursor Plaid rejects is a dead checkpoint (re-list once), not a permanent failure; the same words elsewhere are not
+    expect(mapPlaidError(400, { error_type: "INVALID_INPUT", error_code: "INVALID_FIELD", error_message: "cursor is not valid" }, "/transactions/sync")).toMatchObject({ code: "checkpoint_invalid", retryable: false, providerCode: "INVALID_FIELD" });
+    expect(mapPlaidError(400, { error_type: "INVALID_INPUT", error_code: "INVALID_FIELD", error_message: "cursor is not valid" }, "/accounts/get")).toMatchObject({ code: "unknown" });
+    expect(mapPlaidError(400, { error_type: "INVALID_INPUT", error_code: "INVALID_FIELD", error_message: "count must be positive" }, "/transactions/sync")).toMatchObject({ code: "unknown" });
     expect(mapPlaidError(400, { error_type: "ITEM_ERROR", error_code: "ITEM_NOT_FOUND" }, "/x")).toMatchObject({ code: "unauthorized" });
     expect(mapPlaidError(502, null, "/x")).toMatchObject({ code: "provider_unavailable" });
     expect(mapPlaidError(200, null, "/x")).toMatchObject({ code: "invalid_response" });

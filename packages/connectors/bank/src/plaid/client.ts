@@ -218,6 +218,11 @@ export function mapPlaidError(status: number, body: PlaidErrorBody | null, endpo
   if (code === "ITEM_LOGIN_REQUIRED" || code === "INVALID_ACCESS_TOKEN" || code === "ITEM_NOT_FOUND") {
     return new ConnectorError("unauthorized", `${where} rejected the credential (${detail})`, false, { providerCode: code });
   }
+  // A cursor Plaid no longer accepts came out of our checkpoint: `checkpoint_invalid` makes the engine
+  // re-list from scratch once (and reconcile, ADR-017) instead of failing every run as `unknown`.
+  if (endpoint === "/transactions/sync" && type === "INVALID_INPUT" && code !== "INVALID_API_KEYS" && /cursor/i.test(body?.error_message ?? "")) {
+    return new ConnectorError("checkpoint_invalid", `${where} rejected the stored cursor (${detail})`, false, { providerCode: code });
+  }
   if (type === "RATE_LIMIT_EXCEEDED" || code === "RATE_LIMIT_EXCEEDED" || status === 429) {
     return new ConnectorError("rate_limited", `${where} rate limited (${detail})`, true);
   }
