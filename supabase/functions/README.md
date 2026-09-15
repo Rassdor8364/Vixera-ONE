@@ -19,8 +19,8 @@ with 400 / 401 / 403 / 404 / 409 / 413 / 500. CORS allows
 | --- | --- | --- |
 | `action-dispatch` | `ActionEnvelope` (`@vixera/domain`) | `ActionOutcome`; replay of a done/failed key ⇒ `replayed: true`, never re-executed; a transient failure answers `failed` + `retryable: true` and the same envelope runs again (up to 5 runs); still running ⇒ 409 `in_progress` |
 | `connector-link` | `{ provider: "google" \| "microsoft", step: "start" }` | `{ authorizationUrl, expiresAt }` — browser lands on `GET …/connector-link/callback?code&state` which renders "Connected — return to Vixera One" |
-| | `{ provider: "plaid", step: "start" }` | `{ linkToken, hostedLinkUrl \| null, expiration }` |
-| | `{ provider: "plaid", step: "complete", publicToken? \| linkToken? }` | `{ account: ConnectorAccount }` |
+| | `{ provider: "plaid", step: "start", connectorAccountId? }` | `{ linkToken, hostedLinkUrl \| null, expiration, connectorAccountId }` — with `connectorAccountId` (an account in `needs_reauth`): Link update mode on that Item; `409 relink_impossible` when Plaid no longer has it |
+| | `{ provider: "plaid", step: "complete", publicToken? \| linkToken?, connectorAccountId? }` | `{ account: ConnectorAccount }` — with `connectorAccountId`: the same row reactivated with its checkpoint; 409 while the hosted session is unfinished or the Item still errors, 400 when Link was left |
 | | `{ provider, step: "disconnect", connectorAccountId }` | `{ ok: true }` |
 | `connector-sync` | `{ connectorAccountId? }` | `{ report: SyncReport }`; with header `X-Vixera-Sync-Secret` (pg_cron) runs every user ⇒ `{ users, outcomes, errors, skippedForBudget }` |
 | `ingest-process` | `{ ingestItemId? }` | `{ processed, documentIds, failed, items }` |

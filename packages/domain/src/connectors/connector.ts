@@ -88,13 +88,22 @@ export type ConnectorErrorCode =
   | "unknown";
 
 export class ConnectorError extends Error {
+  /**
+   * The provider's own error code, when one names what happened (Plaid
+   * `ITEM_LOGIN_REQUIRED`, Google `invalid_grant`). The engine records it on
+   * an account it parks as needs_reauth, so a re-link flow can tell a
+   * repairable Item from one the provider no longer knows.
+   */
+  readonly providerCode: string | null;
+
   constructor(
     readonly code: ConnectorErrorCode,
     message: string,
     readonly retryable: boolean = code === "rate_limited" || code === "provider_unavailable",
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; providerCode?: string | null },
   ) {
-    super(message, options);
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = "ConnectorError";
+    this.providerCode = options?.providerCode ?? null;
   }
 }

@@ -314,12 +314,16 @@ describe("SyncEngine credentials", () => {
   it("marks the account needs_reauth on unauthorized and skips the remaining capabilities", async () => {
     const w = world();
     const account = await seedMockAccount(w.store, w.credentials);
-    w.connector.failOn("mail", new ConnectorError("unauthorized", "token revoked"));
+    w.connector.failOn("mail", new ConnectorError("unauthorized", "token revoked", false, { providerCode: "ITEM_LOGIN_REQUIRED" }));
     const report = await w.engine.runAll();
     expect(report.errors).toBe(1);
     expect(report.skipped).toBe(2);
     const row = (await w.store.getConnectorAccount(account.id))!;
     expect(row.status).toBe("needs_reauth");
+    // The provider's own code is kept on the row: connector-link decides from it
+    // whether Link update mode can repair the Item or a fresh link is needed.
+    expect(row.metadata.reauthCode).toBe("ITEM_LOGIN_REQUIRED");
+    expect(typeof row.metadata.reauthAt).toBe("string");
     expect((await w.store.getSyncState(account.id, "mail"))?.status).toBe("error");
     expect(report.outcomes.find((o) => o.capability === "mail")?.errorCode).toBe("unauthorized");
     // Once reauthorized nothing else needs to change.

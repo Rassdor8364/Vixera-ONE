@@ -6,9 +6,10 @@
  *              → { authorizationUrl, expiresAt }
  *   GET  /callback?code=&state=      (system browser, redirected by the provider)
  *              → HTML "Connected — return to Vixera One"
- *   POST /   { provider: "plaid", step: "start" }
- *              → { linkToken, hostedLinkUrl, expiration }
- *   POST /   { provider: "plaid", step: "complete", publicToken? | linkToken? }
+ *   POST /   { provider: "plaid", step: "start", connectorAccountId? }
+ *              → { linkToken, hostedLinkUrl, expiration, connectorAccountId }
+ *              (with connectorAccountId: Link update mode on that needs_reauth account)
+ *   POST /   { provider: "plaid", step: "complete", publicToken? | linkToken?, connectorAccountId? }
  *              → { account }
  *   POST /   { provider, step: "disconnect", connectorAccountId }
  *              → { ok: true }
@@ -72,11 +73,14 @@ Deno.serve(
             if (step !== "start") throw new HttpError(400, "bad_request", `step must be "start" or "disconnect" for ${provider}`);
             return json(req, await startOAuthLink(deps, userId, provider));
           }
-          if (step === "start") return json(req, await startPlaidLink(deps, userId));
+          const relinkId = body.connectorAccountId;
+          if (relinkId !== undefined && relinkId !== null && (typeof relinkId !== "string" || !isUuid(relinkId))) throw new HttpError(400, "bad_request", "connectorAccountId must be a uuid");
+          const connectorAccountId = typeof relinkId === "string" ? relinkId : null;
+          if (step === "start") return json(req, await startPlaidLink(deps, userId, { connectorAccountId }));
           if (step === "complete") {
             const publicToken = typeof body.publicToken === "string" && body.publicToken ? body.publicToken : null;
             const linkToken = typeof body.linkToken === "string" && body.linkToken ? body.linkToken : null;
-            return json(req, await completePlaidLink(deps, userId, { publicToken, linkToken }));
+            return json(req, await completePlaidLink(deps, userId, { publicToken, linkToken, connectorAccountId }));
           }
           throw new HttpError(400, "bad_request", 'step must be "start", "complete" or "disconnect" for plaid');
         },

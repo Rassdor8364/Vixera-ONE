@@ -285,7 +285,7 @@ export class SyncEngine {
         credential = refreshed;
         this.log("sync: credential refreshed", { connectorAccountId: account.id, capability });
       } catch (err) {
-        if (err instanceof ConnectorError && err.code === "unauthorized") await this.markNeedsReauth(account, err.message);
+        if (err instanceof ConnectorError && err.code === "unauthorized") await this.markNeedsReauth(account, err.message, err);
         return this.fail(account, capability, state, started, err, counts, pages, checkpointAdvanced, credential);
       }
     }
@@ -334,7 +334,7 @@ export class SyncEngine {
           this.log("sync: checkpoint invalid, retrying from scratch", { connectorAccountId: account.id, capability });
           continue;
         }
-        if (err instanceof ConnectorError && err.code === "unauthorized") await this.markNeedsReauth(account, err.message);
+        if (err instanceof ConnectorError && err.code === "unauthorized") await this.markNeedsReauth(account, err.message, err);
         return this.fail(account, capability, state, started, err, counts, pages, checkpointAdvanced, credential);
       }
     }
@@ -374,8 +374,15 @@ export class SyncEngine {
     }
   }
 
-  private async markNeedsReauth(account: ConnectorAccount, reason: string): Promise<void> {
-    await this.store.updateConnectorAccount(account.id, { status: "needs_reauth", lastError: reason.slice(0, 500) });
+  /**
+   * Parks the account. The provider's own code (when the error carried one)
+   * goes into metadata so connector-link can tell a repairable Item from one
+   * the provider no longer knows; a successful re-link clears it.
+   */
+  private async markNeedsReauth(account: ConnectorAccount, reason: string, err: unknown = null): Promise<void> {
+    const providerCode = err instanceof ConnectorError ? err.providerCode : null;
+    const metadata: JsonObject = { ...account.metadata, reauthCode: providerCode, reauthAt: this.now().toISOString() };
+    await this.store.updateConnectorAccount(account.id, { status: "needs_reauth", lastError: reason.slice(0, 500), metadata });
   }
 
   private async fail(

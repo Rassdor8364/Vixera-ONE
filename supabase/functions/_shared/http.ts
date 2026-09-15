@@ -28,6 +28,7 @@ export type ErrorCode =
   | "conflict"
   | "provider_not_configured"
   | "provider_error"
+  | "relink_impossible"
   | "invalid_state"
   | "payload_too_large"
   | "method_not_allowed"

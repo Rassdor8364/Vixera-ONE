@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { ConnectorError, ConnectorRegistry, DEV_USER_ID, InMemoryCredentialStore, type Connector, type ConnectorCredential, type UserId } from "@vixera/domain";
 import { InMemorySpineStore, MOCK_NOW, MockConnector, tickingClock } from "@vixera/sync";
+import { createPlaidBankConnector } from "@vixera/connector-bank";
+import plaidItem from "../../../packages/connectors/bank/src/__fixtures__/plaid-item.json" with { type: "json" };
 import type { FunctionEnv } from "./env.ts";
 import { HttpError } from "./http.ts";
-import { completeOAuthCallback, disconnectAccount, linkResultPage, persistLinkedAccount, startOAuthLink, type LinkDeps } from "./link.ts";
+import { completeOAuthCallback, completePlaidLink, disconnectAccount, linkResultPage, persistLinkedAccount, startOAuthLink, startPlaidLink, type LinkDeps } from "./link.ts";
 import { signLinkState } from "./state.ts";
 
 const env: FunctionEnv = {
@@ -39,7 +41,7 @@ function world() {
       assert.equal(userId, DEV_USER_ID);
       return store;
     },
-    credentialsFor: () => ({ putForAccount: (accountId, credential) => vault.put(`vault:${accountId}`, credential) }),
+    credentialsFor: () => ({ putForAccount: (accountId, credential, ref) => vault.put(ref ?? `vault:${accountId}`, credential), get: (ref) => vault.get(ref) }),
     disconnect: async (_userId, accountId) => {
       disconnected.push(accountId);
       await store.updateConnectorAccount(accountId, { status: "disconnected", credentialRef: null, credentialLocation: "none" });
@@ -142,4 +144,138 @@ Deno.test("result page: plain HTML, escaped, no secrets", () => {
   const bad = linkResultPage(false, '<script>alert("x")</script>');
   assert.ok(!bad.includes("<script>"));
   assert.ok(bad.includes("&lt;script&gt;"));
+});
+
+// ---------------------------------------------------------------------------
+// Plaid: repairing a parked Item through Link update mode
+// ---------------------------------------------------------------------------
+const PLAID_ENV = { clientId: "plaid-id", secret: "plaid-secret-value", environment: "sandbox" as const };
+const PLAID_ACCESS_TOKEN = "access-sandbox-fake-token-1";
+
+type Route = (body: Record<string, unknown>) => { status?: number; json: unknown };
+
+/** A Plaid the test controls: routes by pathname, every call recorded (never the secret in a log). */
+function fakePlaid(routes: Record<string, Route>) {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    calls.push({ path: url.pathname, body });
+    const route = routes[url.pathname];
+    if (!route) return new Response(JSON.stringify({ error_type: "INVALID_REQUEST", error_code: "INVALID_FIELD", error_message: `no fake route for ${url.pathname}` }), { status: 400, headers: { "content-type": "application/json" } });
+    const res = route(body);
+    return new Response(JSON.stringify(res.json), { status: res.status ?? 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls, callsTo: (path: string) => calls.filter((c) => c.path === path) };
+}
+
+const finishedSession = { link_sessions: [{ link_session_id: "s1", finished_at: "2026-09-10T12:05:00Z", on_success: { public_token: "public-sandbox-should-not-be-exchanged" }, on_exit: null, results: { item_add_results: [] } }] };
+const linkTokenRoute: Route = (body) => ({ json: { link_token: body.access_token ? "link-sandbox-update" : "link-sandbox-new", expiration: "2026-09-10T16:00:00Z", hosted_link_url: "https://hosted.plaid.com/link/fake" } });
+const healthyItem: Route = () => ({ json: plaidItem });
+
+async function plaidWorld(routes: Record<string, Route>, park: { code?: string | null; status?: "needs_reauth" | "active" } = {}) {
+  const base = world();
+  const plaid = fakePlaid(routes);
+  const deps: LinkDeps = { ...base.deps, env: { ...env, plaid: PLAID_ENV }, registry: new ConnectorRegistry().register(createPlaidBankConnector(PLAID_ENV)), fetch: plaid.fetchImpl };
+  const account = await base.store.createConnectorAccount({
+    provider: "plaid",
+    externalAccountId: plaidItem.item.item_id,
+    label: "Example Bank",
+    address: null,
+    capabilities: ["bank"],
+    status: park.status ?? "needs_reauth",
+    credentialLocation: "server_vault",
+    credentialRef: null,
+    lastError: "Plaid /transactions/sync rejected the credential (ITEM_LOGIN_REQUIRED)",
+    metadata: { institutionName: "Example Bank", reauthCode: park.code === undefined ? "ITEM_LOGIN_REQUIRED" : park.code, reauthAt: "2026-09-10T11:00:00Z" },
+  });
+  const credentialRef = await base.vault.put(`vault:${account.id}`, { kind: "access_token", accessToken: PLAID_ACCESS_TOKEN, expiresAt: null });
+  await base.store.updateConnectorAccount(account.id, { credentialRef });
+  await base.store.upsertSyncState(account.id, "bank", { enabled: true, status: "error", checkpoint: { cursor: "fake-cursor-page-3" }, consecutiveFailures: 3, lastError: "unauthorized" });
+  return { ...base, deps, plaid, account: (await base.store.getConnectorAccount(account.id))! };
+}
+
+Deno.test("plaid relink: start opens Link update mode on the stored credential; complete re-describes the same Item without an exchange and reactivates the row with its checkpoint", async () => {
+  const w = await plaidWorld({ "/link/token/create": linkTokenRoute, "/link/token/get": () => ({ json: finishedSession }), "/item/get": healthyItem });
+  const start = await startPlaidLink(w.deps, DEV_USER_ID, { connectorAccountId: w.account.id });
+  assert.equal(start.connectorAccountId, w.account.id);
+  assert.equal(start.linkToken, "link-sandbox-update");
+  assert.equal(start.hostedLinkUrl, "https://hosted.plaid.com/link/fake");
+  const create = w.plaid.callsTo("/link/token/create")[0]!;
+  assert.equal(create.body.access_token, PLAID_ACCESS_TOKEN);
+  assert.equal(create.body.products, undefined, "update mode sends no products");
+  assert.deepEqual(create.body.hosted_link, {});
+  assert.equal(create.body.user && (create.body.user as { client_user_id: string }).client_user_id, DEV_USER_ID);
+
+  const { account } = await completePlaidLink(w.deps, DEV_USER_ID, { publicToken: null, linkToken: start.linkToken, connectorAccountId: w.account.id });
+  assert.equal(account.id, w.account.id, "the same row, not a second Item");
+  assert.equal(account.status, "active");
+  assert.equal(account.lastError, null);
+  assert.equal(account.credentialRef, w.account.credentialRef, "the Vault secret was replaced in place");
+  assert.equal(account.metadata.reauthCode, undefined);
+  assert.equal(account.metadata.reauthAt, undefined);
+  assert.equal(account.metadata.institutionName, "Example Bank");
+  assert.equal(w.plaid.callsTo("/item/public_token/exchange").length, 0, "an update-mode public token is never exchanged");
+  assert.equal((await w.store.listConnectorAccounts()).length, 1);
+  const state = (await w.store.getSyncState(account.id, "bank"))!;
+  assert.deepEqual(state.checkpoint, { cursor: "fake-cursor-page-3" });
+  assert.equal(state.enabled, true);
+  assert.equal(state.consecutiveFailures, 0);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(await w.vault.get(account.credentialRef!), { kind: "access_token", accessToken: PLAID_ACCESS_TOKEN, expiresAt: null });
+});
+
+Deno.test("plaid relink: refused when Plaid no longer knows the Item, when the account is not parked, and for an unknown id", async () => {
+  const gone = await plaidWorld({ "/link/token/create": linkTokenRoute }, { code: "INVALID_ACCESS_TOKEN" });
+  const err = await startPlaidLink(gone.deps, DEV_USER_ID, { connectorAccountId: gone.account.id }).catch((e: unknown) => e as HttpError);
+  assert.ok(err instanceof HttpError);
+  assert.equal(err.status, 409);
+  assert.equal(err.code, "relink_impossible");
+  assert.match(err.message, /INVALID_ACCESS_TOKEN/);
+  assert.equal(gone.plaid.calls.length, 0, "nothing was asked of Plaid");
+
+  const active = await plaidWorld({ "/link/token/create": linkTokenRoute }, { status: "active", code: null });
+  const conflict = await startPlaidLink(active.deps, DEV_USER_ID, { connectorAccountId: active.account.id }).catch((e: unknown) => e as HttpError);
+  assert.ok(conflict instanceof HttpError && conflict.status === 409 && conflict.code === "conflict");
+
+  const missing = await startPlaidLink(active.deps, DEV_USER_ID, { connectorAccountId: crypto.randomUUID() }).catch((e: unknown) => e as HttpError);
+  assert.ok(missing instanceof HttpError && missing.status === 404);
+});
+
+Deno.test("plaid relink: an unfinished session is 409, a session the person left is 400, and an Item still in error stays parked", async () => {
+  const unfinished = await plaidWorld({ "/link/token/get": () => ({ json: { link_sessions: [{ link_session_id: "s1", finished_at: null }] } }), "/item/get": healthyItem });
+  const notYet = await completePlaidLink(unfinished.deps, DEV_USER_ID, { publicToken: null, linkToken: "link-sandbox-update", connectorAccountId: unfinished.account.id }).catch((e: unknown) => e as HttpError);
+  assert.ok(notYet instanceof HttpError && notYet.status === 409 && notYet.code === "conflict");
+  assert.equal(unfinished.plaid.callsTo("/item/get").length, 0);
+
+  const left = await plaidWorld({ "/link/token/get": () => ({ json: { link_sessions: [{ link_session_id: "s1", finished_at: "2026-09-10T12:05:00Z", on_exit: { error: { error_code: "INVALID_CREDENTIALS" } } }] } }), "/item/get": healthyItem });
+  const exited = await completePlaidLink(left.deps, DEV_USER_ID, { publicToken: null, linkToken: "link-sandbox-update", connectorAccountId: left.account.id }).catch((e: unknown) => e as HttpError);
+  assert.ok(exited instanceof HttpError && exited.status === 400);
+  assert.match(exited.message, /INVALID_CREDENTIALS/);
+
+  const broken = await plaidWorld({
+    "/link/token/get": () => ({ json: finishedSession }),
+    "/item/get": () => ({ json: { ...plaidItem, item: { ...plaidItem.item, error: { error_type: "ITEM_ERROR", error_code: "ITEM_LOGIN_REQUIRED", error_message: "the login details of this item have changed" } } } }),
+  });
+  const still = await completePlaidLink(broken.deps, DEV_USER_ID, { publicToken: null, linkToken: "link-sandbox-update", connectorAccountId: broken.account.id }).catch((e: unknown) => e as HttpError);
+  assert.ok(still instanceof HttpError && still.status === 409 && still.code === "conflict");
+  assert.match(still.message, /ITEM_LOGIN_REQUIRED/);
+  assert.equal((await broken.store.getConnectorAccount(broken.account.id))?.status, "needs_reauth");
+});
+
+Deno.test("plaid: a fresh link goes through the package client (hosted first, plain when Plaid refuses hosted) and never touches a parked row", async () => {
+  let hostedRefused = true;
+  const w = await plaidWorld({
+    "/link/token/create": (body) => (hostedRefused && body.hosted_link ? ((hostedRefused = false), { status: 400, json: { error_type: "INVALID_REQUEST", error_code: "INVALID_FIELD", error_message: "hosted_link not enabled" } }) : { json: { link_token: "link-sandbox-new", expiration: "2026-09-10T16:00:00Z" } }),
+  });
+  const start = await startPlaidLink(w.deps, DEV_USER_ID);
+  assert.equal(start.connectorAccountId, null);
+  assert.equal(start.linkToken, "link-sandbox-new");
+  assert.equal(start.hostedLinkUrl, null);
+  const creates = w.plaid.callsTo("/link/token/create");
+  assert.equal(creates.length, 2);
+  assert.deepEqual(creates[0]!.body.hosted_link, {});
+  assert.equal(creates[1]!.body.hosted_link, undefined);
+  assert.deepEqual(creates[1]!.body.products, ["transactions"]);
+  assert.equal(creates[1]!.body.access_token, undefined);
 });

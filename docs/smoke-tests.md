@@ -136,11 +136,19 @@ enabled for the client.
 3. Sandbox `/sandbox/item/fire_webhook` or `/sandbox/transactions/create`,
    then sync. Expect: the delta applied, a pending→posted transition leaving
    one row.
-4. `/sandbox/item/reset_login` → sync → `needs_reauth`. **Known gap:** the
-   Field offers "Connect bank", which creates a second Item; update-mode
-   relink exists in the package but is not wired into `connector-link`
-   (`docs/connectors.md` → Plaid). Do not "repair" a sandbox item this way and
-   expect one row.
+4. `/sandbox/item/reset_login` → sync → `needs_reauth`, with
+   `metadata.reauthCode = "ITEM_LOGIN_REQUIRED"` on the row. Quiet → Sources
+   shows "Reconnect" on that account: it opens Link in update mode (the
+   `/link/token/create` call carries `access_token` and no `products`); finish
+   with `user_good` / `pass_good`, press "I finished linking the bank". Expect:
+   the **same** row back to `active` with its checkpoint (the next sync is a
+   no-op, not a re-backfill), still one `connector_accounts` row, no
+   `/item/public_token/exchange` in the function log, `reauthCode` gone.
+   Pressing "I finished" before finishing Link must answer 409, and closing
+   Link with an error must answer 400 and leave the row parked.
+5. `/sandbox/item/remove` (the Item is gone), sync → `needs_reauth` with
+   `reauthCode = "ITEM_NOT_FOUND"`; "Reconnect" must be refused with
+   `relink_impossible` and the message to disconnect and connect again.
 
 ## 5. Android companion — Device-tested: no
 

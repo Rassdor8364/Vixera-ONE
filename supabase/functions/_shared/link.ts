@@ -9,6 +9,16 @@
  *                                  grants it); complete → exchange the public
  *                                  token (from Plaid Link) or fetch it from a
  *                                  finished hosted session (/link/token/get)
+ *   plaid (relink)       start   with `connectorAccountId` of an account in
+ *                                  needs_reauth → Link **update mode** token
+ *                                  on the account's own Vault credential;
+ *                                  complete → the finished hosted session is
+ *                                  checked, the Item re-described with the
+ *                                  same credential (no public token is ever
+ *                                  exchanged) and the SAME row reactivated
+ *                                  with its checkpoint. Refused (409
+ *                                  relink_impossible) when Plaid parked the
+ *                                  account for an Item it no longer knows.
  *   any                  disconnect → vx_connector_account_disconnect
  *
  * Persisting a linked account: find-or-create `connector_accounts` by
@@ -31,13 +41,16 @@ import {
 import type { SpineStore } from "@vixera/sync";
 import { GOOGLE_SCOPES, buildAuthorizationUrl as googleAuthUrl, exchangeAuthorizationCode as googleExchange } from "@vixera/connector-google";
 import { buildAuthorizationUrl as microsoftAuthUrl, exchangeAuthorizationCode as microsoftExchange } from "@vixera/connector-microsoft";
-import { BankConnector, PlaidClient, completeBankLink } from "@vixera/connector-bank";
+import { BankConnector, PlaidClient, beginBankLink, completeBankLink, completeBankRelink } from "@vixera/connector-bank";
 import { oauthRedirectUri, type FunctionEnv, type PlaidEnv } from "./env.ts";
 import { HttpError } from "./http.ts";
 import { LinkStateError, signLinkState, verifyLinkState, type LinkProvider } from "./state.ts";
 
 export interface LinkCredentialStore {
-  putForAccount(accountId: string, credential: ConnectorCredential): Promise<string>;
+  /** Creates or replaces the account's secret; with `ref`, replaces that secret in place. */
+  putForAccount(accountId: string, credential: ConnectorCredential, ref?: string | null): Promise<string>;
+  /** The stored credential, for a Link update-mode session on an existing Item. */
+  get(ref: string): Promise<ConnectorCredential | null>;
 }
 
 export interface LinkDeps {
@@ -64,7 +77,17 @@ export interface PlaidStart {
   readonly linkToken: string;
   readonly hostedLinkUrl: string | null;
   readonly expiration: string;
+  /** Set when this session repairs an existing account (Link update mode). */
+  readonly connectorAccountId: string | null;
 }
+
+export interface PlaidStartInput {
+  /** A Plaid account in needs_reauth to repair through Link update mode. */
+  readonly connectorAccountId?: string | null;
+}
+
+/** Plaid codes after which the Item no longer exists: update mode has nothing to repair. */
+const UNREPAIRABLE_PLAID_CODES = new Set(["INVALID_ACCESS_TOKEN", "ITEM_NOT_FOUND"]);
 
 // ---------------------------------------------------------------------------
 // OAuth (Google, Microsoft)
@@ -135,43 +158,72 @@ function defaultExchange(deps: LinkDeps): (provider: LinkProvider, code: string)
 // ---------------------------------------------------------------------------
 // Plaid
 // ---------------------------------------------------------------------------
-export async function startPlaidLink(deps: LinkDeps, userId: UserId): Promise<PlaidStart> {
+export async function startPlaidLink(deps: LinkDeps, userId: UserId, input: PlaidStartInput = {}): Promise<PlaidStart> {
   requireProvider(deps, "plaid");
   const cfg = deps.env.plaid as PlaidEnv;
-  const base: Record<string, unknown> = {
-    user: { client_user_id: userId },
-    client_name: "Vixera One",
-    products: ["transactions"],
-    country_codes: ["US"],
-    language: "en",
-  };
-  // Hosted Link lets the system browser run Plaid Link without a web app; not every
-  // Plaid client has it enabled, so fall back to a plain Link token.
-  let res = await plaidPost(deps.fetch, cfg, "/link/token/create", { ...base, hosted_link: {} });
-  if (!res.ok) {
-    deps.log?.("link: plaid hosted link unavailable, falling back", { errorCode: res.errorCode });
-    res = await plaidPost(deps.fetch, cfg, "/link/token/create", base);
+  const client = new PlaidClient(deps.fetch, { clientId: cfg.clientId, secret: cfg.secret, environment: cfg.environment });
+  if (input.connectorAccountId) {
+    // Update mode on the existing Item: the account's own access token opens
+    // Link for re-authentication, and no second Item is ever created.
+    const target = await relinkTarget(deps, userId, input.connectorAccountId);
+    const token = await linkTokenFor(deps, client, { userId, accessToken: target.credential.accessToken });
+    deps.log?.("link: plaid update mode started", { connectorAccountId: target.account.id, hosted: token.hostedLinkUrl !== null });
+    return { ...token, connectorAccountId: target.account.id };
   }
-  if (!res.ok) throw new HttpError(500, "provider_error", `Plaid could not create a link token (${res.errorCode ?? "unknown"})`);
-  const body = res.body;
-  const linkToken = typeof body.link_token === "string" ? body.link_token : null;
-  if (!linkToken) throw new HttpError(500, "provider_error", "Plaid returned no link token");
-  return {
-    linkToken,
-    hostedLinkUrl: typeof body.hosted_link_url === "string" ? body.hosted_link_url : null,
-    expiration: typeof body.expiration === "string" ? body.expiration : new Date(deps.now().getTime() + 4 * 3600_000).toISOString(),
-  };
+  return { ...(await linkTokenFor(deps, client, { userId })), connectorAccountId: null };
+}
+
+/**
+ * A Link token through the package's client (its endpoint allow-list applies).
+ * Hosted Link lets the system browser run Plaid Link without a web app; not
+ * every Plaid client has it enabled, so fall back to a plain Link token.
+ */
+async function linkTokenFor(deps: LinkDeps, client: PlaidClient, input: { userId: UserId; accessToken?: string }): Promise<Omit<PlaidStart, "connectorAccountId">> {
+  const begin = (hostedLink: boolean) => beginBankLink(client, { userId: input.userId, ...(input.accessToken ? { accessToken: input.accessToken } : {}), ...(hostedLink ? { hostedLink: true } : {}) });
+  let token;
+  try {
+    token = await begin(true);
+  } catch (err) {
+    if (!(err instanceof ConnectorError)) throw err;
+    deps.log?.("link: plaid hosted link unavailable, falling back", { code: err.code, providerCode: err.providerCode });
+    try {
+      token = await begin(false);
+    } catch (again) {
+      if (!(again instanceof ConnectorError)) throw again;
+      throw new HttpError(500, "provider_error", `Plaid could not create a link token (${again.providerCode ?? again.code})`);
+    }
+  }
+  return { linkToken: token.linkToken, hostedLinkUrl: token.hostedLinkUrl ?? null, expiration: token.expiration || new Date(deps.now().getTime() + 4 * 3600_000).toISOString() };
+}
+
+/** The account a relink repairs and the credential Link update mode runs on; every refusal names its reason. */
+async function relinkTarget(deps: LinkDeps, userId: UserId, connectorAccountId: string): Promise<{ account: ConnectorAccount; credential: Extract<ConnectorCredential, { kind: "access_token" }> }> {
+  const account = await deps.storeFor(userId).getConnectorAccount(connectorAccountId);
+  if (!account || account.provider !== "plaid") throw new HttpError(404, "not_found", "No bank connection with that id");
+  if (account.status !== "needs_reauth") throw new HttpError(409, "conflict", `This bank connection is ${account.status.replace("_", " ")}, not waiting for re-authentication`);
+  const parked = typeof account.metadata.reauthCode === "string" ? account.metadata.reauthCode : null;
+  if (parked && UNREPAIRABLE_PLAID_CODES.has(parked)) {
+    throw new HttpError(409, "relink_impossible", `Plaid no longer knows this connection (${parked}); disconnect it and connect the bank again`);
+  }
+  const credential = account.credentialRef ? await deps.credentialsFor(userId).get(account.credentialRef) : null;
+  if (!credential || credential.kind !== "access_token") {
+    throw new HttpError(409, "relink_impossible", "This bank connection has no stored credential to repair; disconnect it and connect the bank again");
+  }
+  return { account, credential };
 }
 
 export interface PlaidCompleteInput {
   readonly publicToken: string | null;
   readonly linkToken: string | null;
+  /** Completes a Link update-mode session started with the same account id. */
+  readonly connectorAccountId?: string | null;
 }
 
 export async function completePlaidLink(deps: LinkDeps, userId: UserId, input: PlaidCompleteInput): Promise<{ account: ConnectorAccount }> {
   const connector = requireProvider(deps, "plaid");
   if (!(connector instanceof BankConnector)) throw new HttpError(500, "internal", "The plaid connector is not a BankConnector");
   const cfg = deps.env.plaid as PlaidEnv;
+  if (input.connectorAccountId) return { account: await completePlaidRelink(deps, userId, connector, cfg, input.connectorAccountId, input.linkToken) };
   let publicToken = input.publicToken;
   if (!publicToken && input.linkToken) publicToken = await hostedSessionPublicToken(deps, cfg, input.linkToken);
   if (!publicToken) throw new HttpError(400, "bad_request", "publicToken or linkToken is required");
@@ -180,6 +232,52 @@ export async function completePlaidLink(deps: LinkDeps, userId: UserId, input: P
   const completed = await completeBankLink({ client, connector, fetch: deps.fetch, now: deps.now, ...(deps.log ? { log: deps.log } : {}) }, { publicToken });
   const account = await persistLinkedAccount(deps, userId, "plaid", completed.discovered, completed.credential);
   return { account };
+}
+
+/**
+ * Update mode: the hosted session must have finished, the Item is re-described
+ * with the credential it already has (a public token an update-mode session
+ * may deliver is never exchanged: the access_token is unchanged), and the same
+ * row comes back active with its checkpoint. An Item that still reports an
+ * error stays parked.
+ */
+async function completePlaidRelink(deps: LinkDeps, userId: UserId, connector: BankConnector, cfg: PlaidEnv, connectorAccountId: string, linkToken: string | null): Promise<ConnectorAccount> {
+  const target = await relinkTarget(deps, userId, connectorAccountId);
+  if (linkToken) await hostedSessionFinished(deps, cfg, linkToken);
+  const client = new PlaidClient(deps.fetch, { clientId: cfg.clientId, secret: cfg.secret, environment: cfg.environment });
+  let completed;
+  try {
+    completed = await completeBankRelink({ client, connector, fetch: deps.fetch, now: deps.now, ...(deps.log ? { log: deps.log } : {}) }, { credential: target.credential });
+  } catch (err) {
+    if (err instanceof ConnectorError && err.code === "unauthorized") {
+      throw new HttpError(409, "conflict", `Plaid still reports this connection needs re-authentication (${err.providerCode ?? "unauthorized"}); finish Link and try again`);
+    }
+    throw err;
+  }
+  if (completed.discovered.externalAccountId !== target.account.externalAccountId) {
+    // Persisting would create a second row — the duplicate update mode exists to avoid.
+    deps.log?.("link: plaid relink described another item", { connectorAccountId, expected: target.account.externalAccountId, described: completed.discovered.externalAccountId });
+    throw new HttpError(409, "conflict", "Plaid described a different Item than the one being repaired; disconnect this connection and connect the bank again");
+  }
+  const account = await persistLinkedAccount(deps, userId, "plaid", completed.discovered, completed.credential);
+  deps.log?.("link: plaid update mode completed", { connectorAccountId: account.id });
+  return account;
+}
+
+/** A Hosted Link session that finished: not yet → 409; left through Link's exit → 400. */
+async function hostedSessionFinished(deps: LinkDeps, cfg: PlaidEnv, linkToken: string): Promise<void> {
+  const res = await plaidPost(deps.fetch, cfg, "/link/token/get", { link_token: linkToken });
+  if (!res.ok) throw new HttpError(500, "provider_error", `Plaid could not read the link session (${res.errorCode ?? "unknown"})`);
+  const sessions = Array.isArray(res.body.link_sessions) ? (res.body.link_sessions as unknown[]) : [];
+  for (const session of sessions) {
+    if (typeof session !== "object" || session === null) continue;
+    const s = session as { finished_at?: unknown; on_exit?: { error?: { error_code?: unknown } | null } | null };
+    if (typeof s.finished_at !== "string" || !s.finished_at) continue;
+    const exitCode = s.on_exit?.error?.error_code;
+    if (typeof exitCode === "string" && exitCode) throw new HttpError(400, "bad_request", `Plaid Link was closed before the bank was re-authenticated (${exitCode})`);
+    return;
+  }
+  throw new HttpError(409, "conflict", "The Plaid Link session has not completed yet");
 }
 
 /** Reads the public token of a completed Hosted Link session. Null-safe: not finished → 409. */
@@ -204,8 +302,8 @@ interface PlaidResult {
   readonly errorCode: string | null;
 }
 
-/** Link-time Plaid calls not covered by the read-only `PlaidClient` allowlist. Secrets go in the body, never in logs. */
-async function plaidPost(fetchImpl: typeof fetch, cfg: PlaidEnv, endpoint: "/link/token/create" | "/link/token/get", body: Record<string, unknown>): Promise<PlaidResult> {
+/** The one link-time Plaid call the read-only `PlaidClient` does not cover (reading a hosted session). Secrets go in the body, never in logs. */
+async function plaidPost(fetchImpl: typeof fetch, cfg: PlaidEnv, endpoint: "/link/token/get", body: Record<string, unknown>): Promise<PlaidResult> {
   let response: Response;
   try {
     response = await fetchImpl(`https://${cfg.environment}.plaid.com${endpoint}`, {
@@ -227,7 +325,9 @@ async function plaidPost(fetchImpl: typeof fetch, cfg: PlaidEnv, endpoint: "/lin
 export async function persistLinkedAccount(deps: LinkDeps, userId: UserId, provider: ProviderId, discovered: DiscoveredAccount, credential: ConnectorCredential): Promise<ConnectorAccount> {
   const store = deps.storeFor(userId);
   const existing = await store.findConnectorAccount(provider, discovered.externalAccountId);
-  const metadata: JsonObject = { ...(existing?.metadata ?? {}), ...(discovered.metadata ?? {}), linkedAt: deps.now().toISOString() };
+  // A fresh credential clears what parked the account: the code and time the engine recorded.
+  const { reauthCode: _code, reauthAt: _at, ...kept } = existing?.metadata ?? {};
+  const metadata: JsonObject = { ...kept, ...(discovered.metadata ?? {}), linkedAt: deps.now().toISOString() };
   let account: ConnectorAccount;
   if (existing) {
     account = await store.updateConnectorAccount(existing.id, {
@@ -252,7 +352,8 @@ export async function persistLinkedAccount(deps: LinkDeps, userId: UserId, provi
       metadata,
     });
   }
-  const credentialRef = await deps.credentialsFor(userId).putForAccount(account.id, credential);
+  // With a ref, the secret is replaced in place (never a second Vault row for the same account).
+  const credentialRef = await deps.credentialsFor(userId).putForAccount(account.id, credential, existing?.credentialRef ?? null);
   // vx_credential_put already set these columns; writing them through the store keeps in-memory stores honest too.
   account = await store.updateConnectorAccount(account.id, { credentialRef, credentialLocation: "server_vault" });
   for (const capability of discovered.capabilities) {

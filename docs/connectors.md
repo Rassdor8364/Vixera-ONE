@@ -488,19 +488,28 @@ Linking happens **server-side** so provider tokens never reach a device
    re-describes the Item with the account's existing Vault credential
    (`/item/get`; still `item.error` → `unauthorized`, leave the account in
    `needs_reauth`) and returns the same `externalAccountId`, so
-   `persistLinkedAccount` can find the existing row by (provider, external id)
-   as it does for a re-link after disconnect (`link_test.ts`); the package
-   round-trip test performs that persistence step by hand. **Status: package
-   support only (fixture-tested).** Update mode repairs `ITEM_LOGIN_REQUIRED`;
-   an account parked for `INVALID_ACCESS_TOKEN` or `ITEM_NOT_FOUND` has no Item
-   left to repair and needs a fresh link with the old row disconnected — the
-   engine does not yet record which code parked the account, so the Field
-   cannot tell the two apart. Edge Function wiring (pending): `start` accepts
-   `connectorAccountId` for a Plaid account in `needs_reauth`, loads its
-   credential from Vault and calls `beginBankLink` with it; `complete` with
-   that `connectorAccountId` reads the finished hosted session as today, then
-   calls `completeBankRelink` instead of `completeBankLink`; the Field offers
-   "Reconnect" on such an account instead of "Connect bank".
+   `persistLinkedAccount` finds the existing row by (provider, external id)
+   and replaces the Vault secret in place (`vx_credential_put` with the
+   existing ref). **Status: wired end to end, fixture-tested
+   (`link_test.ts`), not run against Plaid.** `POST connector-link { provider:
+   "plaid", step: "start", connectorAccountId }` for an account in
+   `needs_reauth` loads its credential from Vault and opens update mode
+   (`access_token`, no `products`, Hosted Link when the client has it);
+   `complete` with the same `connectorAccountId` checks that the hosted
+   session finished (`finished_at` without an `on_exit` error — not finished
+   is 409, left through Link's exit is 400), re-describes the Item and
+   reactivates the same row; a different Item id or an Item still in error is
+   a 409 and the account stays parked. The engine records the Plaid code that
+   parked the account (`metadata.reauthCode`, from `ConnectorError.providerCode`)
+   and `start` refuses with `409 relink_impossible` for `INVALID_ACCESS_TOKEN`
+   / `ITEM_NOT_FOUND` — Plaid no longer has that Item, so the person is told
+   to disconnect it and connect the bank again; a successful re-link clears
+   the code. The Field shows "Reconnect" on every `needs_reauth` account:
+   Plaid through this update-mode flow, Google and Microsoft by consenting
+   again onto the same row; the outcome it waits for is that row turning
+   `active`, not a new row. A fresh link also goes through the package's
+   `beginBankLink` now (hosted first, plain when Plaid refuses hosted), so
+   only `/link/token/get` is still called outside `PlaidClient`'s allow-list.
 
 ### Disconnect
 

@@ -216,7 +216,7 @@ export function mapPlaidError(status: number, body: PlaidErrorBody | null, endpo
   // needs_reauth on the user's account. A bad server client_id/secret (INVALID_API_KEYS) is server
   // configuration, not something re-linking can fix, so it stays `unknown`.
   if (code === "ITEM_LOGIN_REQUIRED" || code === "INVALID_ACCESS_TOKEN" || code === "ITEM_NOT_FOUND") {
-    return new ConnectorError("unauthorized", `${where} rejected the credential (${detail})`, false);
+    return new ConnectorError("unauthorized", `${where} rejected the credential (${detail})`, false, { providerCode: code });
   }
   if (type === "RATE_LIMIT_EXCEEDED" || code === "RATE_LIMIT_EXCEEDED" || status === 429) {
     return new ConnectorError("rate_limited", `${where} rate limited (${detail})`, true);
