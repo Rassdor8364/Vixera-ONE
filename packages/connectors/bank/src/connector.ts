@@ -51,6 +51,8 @@ export function readBankCheckpoint(checkpoint: Checkpoint | null): string | null
 export class BankConnector implements Connector {
   readonly provider: ProviderId;
   readonly capabilities: readonly ConnectorCapability[] = BANK_CAPABILITIES;
+  /** /transactions/sync keeps only the cursor of a completed update: a pass cannot resume mid-way. */
+  readonly nonResumable: readonly ConnectorCapability[] = BANK_CAPABILITIES;
   readonly #bank: BankProvider;
   readonly #maxAttempts: number;
 

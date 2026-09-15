@@ -242,9 +242,9 @@ provider; Plaid requires Hosted Link; notification click-to-front is unwired. De
 
 Phase 2 hardened what Phase 1 built rather than adding surface. Verified on this branch in
 a Linux container, from a clean tree: `pnpm check` (secrets, migrations and version guards;
-typecheck; 698 vitest tests in 67 files; `cargo check --workspace` with `-D warnings`),
-`pnpm functions:check` (4 functions, 54 Deno tests), `pnpm db:verify` (12 migrations + seed,
-every `verify.sql` assertion), `pnpm test:live` (115 tests against real PostgREST 12.2.3),
+typecheck; 702 vitest tests in 67 files; `cargo check --workspace` with `-D warnings`),
+`pnpm functions:check` (4 functions, 55 Deno tests), `pnpm db:verify` (13 migrations + seed,
+every `verify.sql` assertion), `pnpm test:live` (119 tests against real PostgREST 12.2.3),
 `cargo test` (36 + 1), and both installers rebuilt and passed by `release:verify`.
 
 | Area | What changed | Status |
@@ -255,7 +255,7 @@ every `verify.sql` assertion), `pnpm test:live` (115 tests against real PostgRES
 | Connectors | Gmail label semantics, scope-derived capabilities, first-failure stop, honest 404s, per-page calendar checkpoints, series cancellation; Graph shared refresh, page-by-page backfill, `$select`-free calendarView, Windows zones, linear HTML; Plaid cursor contract, update-mode support, date-only `authorized_date` | Fixture-tested and adversarially reviewed; **not integration-tested** — `docs/smoke-tests.md` |
 | Graph / NOW | version comebacks re-open, ambiguous merchants link nobody, lost races merge; timezone-aware NOW windows, overdue never fades; every list read paged; `vx_neighbors` paged; conflicts on `(user_id, id)` | Fixture- and live-PostgREST-tested |
 | Sync / actions | real resume points, exponential backoff, running guard; transient failures defer ingest items and keep action keys unspent (bounded) | Fixture-tested (Deno) |
-| Database | Realtime DELETE events carry no row (migration 9); ingest attempts (10); a deleted focus clears its handoff and `status` is server-owned (11); a full resync in progress is remembered so it can reconcile (12) | Verified by `db:verify`; **migrations 9–12 not yet applied to the live project** |
+| Database | Realtime DELETE events carry no row (migration 9); ingest attempts (10); a deleted focus clears its handoff and `status` is server-owned (11); a full resync in progress is remembered so it can reconcile (12); the kind of the last failure, so a repeating one is held rather than probed (13) | Verified by `db:verify`; **migrations 9–13 not yet applied to the live project** |
 | Intelligence | provider seam, allow-listed and budgeted context selection, six typed tasks, capability checks, content-free audit | Fixture-tested with a scripted provider; no real provider adapter |
 | One Command | hybrid router seam (rules first, model only when unsure, wired `null`); open captures leave room for a model; `last week` means last week | Fixture-tested; no model has routed a real command |
 | Field | no new surface; Phase 2 Field work is a written design (`docs/field-phase-2-design.md`) | Design only |

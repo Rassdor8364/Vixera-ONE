@@ -83,6 +83,11 @@ Kinds: `relates_to`, `belongs_to`, `originated_from`, `has_person`, `has_time`,
 | `connector_sync_states.reconcile` | full resync in progress: `[{ since, scope }]`, one per listing unit (migration 12, ADR-017); `null` when none |
 | `handoffs.praxion_location` | `{ "page", "position", "selectionText" }` |
 
+`connector_sync_states.last_error_code` (text) and `last_error_retryable`
+(boolean), migration 13, describe the failure `last_error` holds; the engine
+holds a non-retryable one for the backoff cap at once. Both are null after a
+success.
+
 Numeric money columns (`numeric(20,4)`) are handled as decimal **strings** in
 TypeScript; never floats.
 

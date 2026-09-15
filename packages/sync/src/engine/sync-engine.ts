@@ -2,6 +2,7 @@ import {
   type IsoDateTime,
   type ResyncScope,
   type ReconcileState,
+  type SyncErrorCode,
   ConnectorError,
   isExpired,
   type BankSyncBatch,
@@ -11,7 +12,6 @@ import {
   type ConnectorAccount,
   type ConnectorCapability,
   type ConnectorCredential,
-  type ConnectorErrorCode,
   type ConnectorRegistry,
   type ConnectorSyncState,
   type CredentialStore,
@@ -45,14 +45,21 @@ import { addCounts, emptyCounts, type ContextLinker, type LinkCounts } from "../
  *      previous cursor on intermediate pages.
  *   6. ConnectorError unauthorized ⇒ account needs_reauth; checkpoint_invalid
  *      ⇒ clear the checkpoint and retry once from scratch; any error ⇒ state
- *      error + lastError (credentials redacted) + consecutiveFailures+1, and
- *      the run CONTINUES with the next capability / account
+ *      error + lastError (credentials redacted) + its code and retryability
+ *      + consecutiveFailures+1, and the run CONTINUES with the next
+ *      capability / account
  *   7. success ⇒ state idle, lastSuccessAt, consecutiveFailures 0
  *
  * Before 2: a capability in `error` is held back for an exponential backoff
- * (10 min doubling to 6 h) derived from consecutiveFailures, and one whose
- * state says `running` within the last 15 min is left alone — unless the run
- * is `force`d (a user's Sync now).
+ * (10 min doubling to 6 h) derived from consecutiveFailures — or, when the
+ * failure was marked non-retryable (it repeats until something changes), for
+ * the 6 h cap at once — and one whose state says `running` within the last
+ * 15 min is left alone; unless the run is `force`d (a user's Sync now).
+ *
+ * Scheduling: `scheduleCapabilities` puts capabilities whose pass cannot
+ * resume mid-way (`Connector.nonResumable`: Plaid) before every resumable
+ * one, so they see the whole budget; a budgeted runner (`runSync`) does not
+ * start one with less than MIN_NON_RESUMABLE_BUDGET_MS left.
  *
  * `runAll()` never throws because one connector failed; the SyncReport says
  * what happened where.
@@ -82,7 +89,9 @@ export interface SyncOutcome {
   readonly status: SyncOutcomeStatus;
   /** Why it was skipped, or the (redacted) error message. */
   readonly reason: string | null;
-  readonly errorCode: ConnectorErrorCode | "credential_missing" | "unknown" | null;
+  readonly errorCode: SyncErrorCode | null;
+  /** For an error: whether it is expected to pass on its own (the state backs off gently) or to repeat (held for the backoff cap). */
+  readonly errorRetryable: boolean | null;
   readonly pages: number;
   readonly counts: LinkCounts;
   readonly checkpointAdvanced: boolean;
@@ -115,10 +124,14 @@ const MAX_PAGES = 10_000;
 export const BACKOFF_BASE_MS = 10 * 60_000;
 export const BACKOFF_MAX_MS = 6 * 3600_000;
 export const RUNNING_STALE_MS = 15 * 60_000;
+/** A pass that cannot resume is not started with less budget than this: it would only be interrupted and restarted next run. */
+export const MIN_NON_RESUMABLE_BUDGET_MS = 30_000;
 
 /** 10 min after the first failure, doubling, capped at 6 h. 0 for no failures. */
-export function backoffMs(consecutiveFailures: number): number {
+export function backoffMs(consecutiveFailures: number, retryable = true): number {
   if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return 0;
+  // A failure that repeats until something changes is not probed every ten minutes.
+  if (!retryable) return BACKOFF_MAX_MS;
   return Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.min(consecutiveFailures - 1, 20));
 }
 
@@ -131,10 +144,41 @@ export function holdReason(state: ConnectorSyncState | null, now: number): strin
     return `already running since ${state.lastAttemptAt}`;
   }
   if (state.status === "error" && state.consecutiveFailures > 0) {
-    const until = attempted + backoffMs(state.consecutiveFailures);
-    if (now < until) return `backing off after ${state.consecutiveFailures} consecutive failure(s) until ${new Date(until).toISOString()}`;
+    const retryable = state.lastErrorRetryable ?? true;
+    const until = attempted + backoffMs(state.consecutiveFailures, retryable);
+    if (now < until) {
+      return retryable
+        ? `backing off after ${state.consecutiveFailures} consecutive failure(s) until ${new Date(until).toISOString()}`
+        : `held until ${new Date(until).toISOString()}: the last failure (${state.lastErrorCode ?? "unknown"}) repeats until something changes`;
+    }
   }
   return null;
+}
+
+export interface ScheduledCapability {
+  readonly account: ConnectorAccount;
+  readonly capability: ConnectorCapability;
+  /** False when the connector declares the capability `nonResumable`. */
+  readonly resumable: boolean;
+}
+
+/**
+ * The order a run visits (account, capability) pairs: every pass that cannot
+ * resume mid-way first, so it sees the whole budget; the rest in the order
+ * the store returned. Pure; a runner adds its own gates (status, hold, budget).
+ */
+export function scheduleCapabilities(accounts: readonly ConnectorAccount[], registry: ConnectorRegistry): ScheduledCapability[] {
+  const pairs: ScheduledCapability[] = [];
+  for (const account of accounts) {
+    for (const capability of account.capabilities) pairs.push({ account, capability, resumable: isResumable(registry, account.provider, capability) });
+  }
+  return [...pairs.filter((p) => !p.resumable), ...pairs.filter((p) => p.resumable)];
+}
+
+/** A provider without a connector counts as resumable: runCapability reports it as unsupported anyway. */
+export function isResumable(registry: ConnectorRegistry, provider: ConnectorAccount["provider"], capability: ConnectorCapability): boolean {
+  if (!registry.has(provider)) return true;
+  return !(registry.get(provider).nonResumable ?? []).includes(capability);
 }
 
 /** Key-order-independent, so `{a,b}` and `{b,a}` compare equal. */
@@ -173,16 +217,29 @@ export class SyncEngine {
     } catch (err) {
       this.log("sync: could not list connector accounts", { error: errorMessage(err) });
     }
-    for (const account of accounts) {
+    // Passes that cannot resume go first (see scheduleCapabilities); the account
+    // row is re-read after each run, so a needs_reauth from mail stops calendar.
+    const latest = new Map(accounts.map((a) => [a.id, a]));
+    for (const { account, capability } of scheduleCapabilities(accounts, this.registry)) {
+      const current = latest.get(account.id) ?? account;
       try {
-        outcomes.push(...(await this.runAccount(account, options)));
+        const outcome = await this.runScheduled(current, capability, undefined, options);
+        outcomes.push(outcome);
+        if (outcome.status !== "skipped") latest.set(account.id, (await this.store.getConnectorAccount(account.id)) ?? current);
       } catch (err) {
-        // runAccount isolates failures itself; this is the last line of defence.
-        this.log("sync: account run failed unexpectedly", { connectorAccountId: account.id, error: errorMessage(err) });
-        outcomes.push(this.outcome(account, account.capabilities[0] ?? "mail", "error", started, { reason: errorMessage(err), errorCode: "unknown" }));
+        // runCapability isolates failures itself; this is the last line of defence.
+        this.log("sync: capability run failed unexpectedly", { connectorAccountId: account.id, capability, error: errorMessage(err) });
+        outcomes.push(this.outcome(current, capability, "error", started, { reason: errorMessage(err), errorCode: "unknown" }));
       }
     }
     return this.report(started, accounts.length, outcomes);
+  }
+
+  /** The account-level gates, then the capability run. */
+  private async runScheduled(account: ConnectorAccount, capability: ConnectorCapability, deadlineAt: number | undefined, options: CapabilityRunOptions): Promise<SyncOutcome> {
+    if (account.status === "disconnected" || account.status === "paused") return this.outcome(account, capability, "skipped", this.now(), { reason: `account ${account.status}` });
+    if (account.status === "needs_reauth") return this.outcome(account, capability, "skipped", this.now(), { reason: "account needs_reauth" });
+    return this.runCapability(account, capability, deadlineAt, options);
   }
 
   /** Runs every capability of one account. Accepts an id or a loaded row. */
@@ -190,22 +247,12 @@ export class SyncEngine {
     const account = typeof accountOrId === "string" ? await this.store.getConnectorAccount(accountOrId) : accountOrId;
     if (!account) throw new Error(`connector account ${String(accountOrId)} not found`);
     const outcomes: SyncOutcome[] = [];
-    if (account.status === "disconnected" || account.status === "paused") {
-      const started = this.now();
-      for (const capability of account.capabilities) {
-        outcomes.push(this.outcome(account, capability, "skipped", started, { reason: `account ${account.status}` }));
-      }
-      return outcomes;
-    }
-    // Re-read the account between capabilities: a needs_reauth from mail must stop calendar.
     let current: ConnectorAccount = account;
-    for (const capability of account.capabilities) {
-      if (current.status === "needs_reauth") {
-        outcomes.push(this.outcome(current, capability, "skipped", this.now(), { reason: "account needs_reauth" }));
-        continue;
-      }
-      outcomes.push(await this.runCapability(current, capability, undefined, options));
-      current = (await this.store.getConnectorAccount(account.id)) ?? current;
+    for (const { capability } of scheduleCapabilities([account], this.registry)) {
+      const outcome = await this.runScheduled(current, capability, undefined, options);
+      outcomes.push(outcome);
+      // Re-read the account between capabilities: a needs_reauth from mail must stop calendar.
+      if (outcome.status !== "skipped") current = (await this.store.getConnectorAccount(account.id)) ?? current;
     }
     return outcomes;
   }
@@ -373,6 +420,8 @@ export class SyncEngine {
       // An interrupted pass is not a success: lastSuccessAt stays where it was.
       ...(interrupted ? {} : { lastSuccessAt: this.now().toISOString() }),
       lastError: null,
+      lastErrorCode: null,
+      lastErrorRetryable: null,
       consecutiveFailures: 0,
     });
     if (account.status === "error") await this.store.updateConnectorAccount(account.id, { status: "active", lastError: null });
@@ -427,17 +476,23 @@ export class SyncEngine {
   ): Promise<SyncOutcome> {
     const message = redactCredential(errorMessage(err), credential ?? null).slice(0, 1000);
     const errorCode: SyncOutcome["errorCode"] = err instanceof ConnectorError ? err.code : err instanceof MissingCredentialError ? "credential_missing" : "unknown";
+    // The connector says whether its failure passes on its own. A missing credential does
+    // not (the account is parked anyway); anything else — a store outage, a bug — is not
+    // assumed to repeat, so it keeps the gentle backoff.
+    const retryable = err instanceof ConnectorError ? err.retryable : err instanceof MissingCredentialError ? false : true;
     try {
       await this.store.upsertSyncState(account.id, capability, {
         status: "error",
         lastError: message,
+        lastErrorCode: errorCode,
+        lastErrorRetryable: retryable,
         consecutiveFailures: (state?.consecutiveFailures ?? 0) + 1,
       });
     } catch (stateErr) {
       this.log("sync: could not persist error state", { connectorAccountId: account.id, capability, error: errorMessage(stateErr) });
     }
-    this.log("sync: capability failed", { connectorAccountId: account.id, capability, errorCode, error: message });
-    return this.outcome(account, capability, "error", started, { reason: message, errorCode, pages, counts, checkpointAdvanced });
+    this.log("sync: capability failed", { connectorAccountId: account.id, capability, errorCode, retryable, error: message });
+    return this.outcome(account, capability, "error", started, { reason: message, errorCode, errorRetryable: retryable, pages, counts, checkpointAdvanced });
   }
 
   private outcome(
@@ -445,7 +500,7 @@ export class SyncEngine {
     capability: ConnectorCapability,
     status: SyncOutcomeStatus,
     started: Date,
-    extra: Partial<Pick<SyncOutcome, "reason" | "errorCode" | "pages" | "counts" | "checkpointAdvanced" | "interrupted">> = {},
+    extra: Partial<Pick<SyncOutcome, "reason" | "errorCode" | "errorRetryable" | "pages" | "counts" | "checkpointAdvanced" | "interrupted">> = {},
   ): SyncOutcome {
     const finished = this.now();
     return {
@@ -456,6 +511,7 @@ export class SyncEngine {
       status,
       reason: extra.reason ?? null,
       errorCode: extra.errorCode ?? null,
+      errorRetryable: extra.errorRetryable ?? null,
       pages: extra.pages ?? 0,
       counts: extra.counts ?? emptyCounts(),
       checkpointAdvanced: extra.checkpointAdvanced ?? false,

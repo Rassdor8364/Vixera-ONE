@@ -8,6 +8,7 @@ import {
   type Connector,
   type ConnectorAccount,
   type JsonObject,
+  type BankSyncBatch,
   type CalendarSyncBatch,
   type MailSyncBatch,
   type SyncContext,
@@ -16,7 +17,7 @@ import {
 import { InMemorySpineStore } from "../store/in-memory-spine-store.ts";
 import type { SpineStore } from "../store/spine-store.ts";
 import { ContextLinker } from "../linker/context-linker.ts";
-import { SyncEngine, backoffMs, declareResync, holdReason, redactCredential } from "./sync-engine.ts";
+import { BACKOFF_MAX_MS, SyncEngine, backoffMs, declareResync, holdReason, redactCredential, scheduleCapabilities } from "./sync-engine.ts";
 import { ERIC_INVOICE_MESSAGE_ID, MockConnector, PRIYA_AGENDA_MESSAGE_ID, briefWorldFixtures, NORTHWIND_KICKOFF_EVENT_ID } from "../testing/mock-connector.ts";
 import { expiredCredential, fakeCredential, fixedClock, MOCK_NOW, MOCK_SELF_ADDRESS, mockAccountInput, seedMockAccount, tickingClock } from "../testing/fixtures.ts";
 
@@ -592,6 +593,103 @@ describe("full resync reconciliation (ADR-017)", () => {
   });
 });
 
+describe("a failure the connector marks non-retryable", () => {
+  it("is held for the backoff cap at once, while a retryable one backs off from 10 minutes; an older state reads as retryable", () => {
+    expect(backoffMs(1, false)).toBe(BACKOFF_MAX_MS);
+    expect(backoffMs(3, false)).toBe(BACKOFF_MAX_MS);
+    expect(backoffMs(1, true)).toBe(10 * 60_000);
+    expect(backoffMs(0, false)).toBe(0);
+    const at = MOCK_NOW.getTime();
+    const base = { userId: DEV_USER_ID, connectorAccountId: "c" as never, capability: "mail" as const, enabled: true, status: "error" as const, checkpoint: null, lastAttemptAt: MOCK_NOW.toISOString(), lastSuccessAt: null, lastError: "the grant does not cover Gmail", consecutiveFailures: 1, reconcile: [], updatedAt: MOCK_NOW.toISOString() };
+    const repeating = { ...base, lastErrorCode: "unsupported" as const, lastErrorRetryable: false };
+    expect(holdReason(repeating, at + 5 * 3600_000)).toMatch(/held until .*: the last failure \(unsupported\) repeats until something changes/);
+    expect(holdReason(repeating, at + 6 * 3600_000)).toBeNull();
+    const transient = { ...base, lastErrorCode: "rate_limited" as const, lastErrorRetryable: true };
+    expect(holdReason(transient, at + 9 * 60_000)).toMatch(/backing off/);
+    expect(holdReason(transient, at + 10 * 60_000)).toBeNull();
+    // a state written before the column existed keeps the old behaviour
+    expect(holdReason({ ...base, lastErrorCode: null, lastErrorRetryable: null }, at + 10 * 60_000)).toBeNull();
+  });
+
+  it("records the failure's code and retryability on the state and the outcome, holds a repeating failure, and still runs when forced", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    let t = MOCK_NOW.getTime();
+    const engine = new SyncEngine({ store: w.store, registry: w.registry, credentials: w.credentials, linker: w.linker, now: () => new Date((t += 1000)) });
+
+    w.connector.failOn("mail", new ConnectorError("unsupported", "the grant does not cover Gmail", false));
+    const [failed] = await engine.runAccount(account.id);
+    expect(failed).toMatchObject({ status: "error", errorCode: "unsupported", errorRetryable: false });
+    expect(await w.store.getSyncState(account.id, "mail")).toMatchObject({ status: "error", lastErrorCode: "unsupported", lastErrorRetryable: false, consecutiveFailures: 1 });
+
+    // five hours later it is still held: probing would only repeat the failure …
+    t = MOCK_NOW.getTime() + 5 * 3600_000;
+    const [held] = await engine.runAccount(account.id);
+    expect(held?.status).toBe("skipped");
+    expect(held?.reason).toMatch(/repeats until something changes/);
+    // … but a person's Sync now runs it regardless
+    const [forced] = await engine.runAccount(account.id, { force: true });
+    expect(forced?.status).toBe("error");
+    expect((await w.store.getSyncState(account.id, "mail"))?.consecutiveFailures).toBe(2);
+
+    // past the cap a transient failure is recorded as such and backs off gently
+    t = MOCK_NOW.getTime() + 12 * 3600_000;
+    w.connector.failOn("mail", new ConnectorError("provider_unavailable", "Gmail is down", true));
+    const [transient] = await engine.runAccount(account.id);
+    expect(transient).toMatchObject({ status: "error", errorCode: "provider_unavailable", errorRetryable: true });
+    expect(await w.store.getSyncState(account.id, "mail")).toMatchObject({ lastErrorCode: "provider_unavailable", lastErrorRetryable: true, consecutiveFailures: 3 });
+
+    // a success clears both
+    w.connector.clearFailures();
+    t = MOCK_NOW.getTime() + 24 * 3600_000;
+    const [ok] = await engine.runAccount(account.id);
+    expect(ok).toMatchObject({ status: "ok", errorCode: null, errorRetryable: null });
+    expect(await w.store.getSyncState(account.id, "mail")).toMatchObject({ status: "idle", lastErrorCode: null, lastErrorRetryable: null, consecutiveFailures: 0 });
+  });
+});
+
+describe("scheduling passes that cannot resume", () => {
+  const bankConnector = (order: string[]) => ({
+    provider: "plaid" as const,
+    capabilities: ["bank"] as const,
+    nonResumable: ["bank"] as const,
+    discoverAccount: () => Promise.reject(new Error("unused")),
+    async *syncBank(): AsyncIterable<SyncPage<BankSyncBatch>> {
+      order.push("bank");
+      yield { batch: { accounts: [], transactions: [], deleted: [] }, checkpoint: { cursor: "c1" }, done: true };
+    },
+  });
+
+  it("scheduleCapabilities puts a connector's non-resumable capabilities first, across accounts, and keeps the rest in store order", () => {
+    const registry = new ConnectorRegistry().register(new MockConnector()).register(bankConnector([]) as never);
+    const google = { ...mockAccountInput({ capabilities: ["mail", "calendar"] }), id: "g" } as unknown as ConnectorAccount;
+    const plaid = { ...mockAccountInput({ provider: "plaid", capabilities: ["bank"] }), id: "p" } as unknown as ConnectorAccount;
+    expect(scheduleCapabilities([google, plaid], registry).map((s) => [s.account.id, s.capability, s.resumable])).toEqual([
+      ["p", "bank", false],
+      ["g", "mail", true],
+      ["g", "calendar", true],
+    ]);
+    // a provider without a connector counts as resumable: runCapability reports it as unsupported anyway
+    expect(scheduleCapabilities([{ ...plaid, provider: "microsoft" } as ConnectorAccount], new ConnectorRegistry()).map((s) => s.resumable)).toEqual([true]);
+  });
+
+  it("runAll runs the pass that cannot resume before the others, whatever the account order", async () => {
+    const w = world();
+    const order: string[] = [];
+    const registry = new ConnectorRegistry().register(w.connector).register(bankConnector(order) as never);
+    await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    await w.store.createConnectorAccount(mockAccountInput({ provider: "plaid", capabilities: ["bank"], externalAccountId: "item-1", address: null, credentialRef: "plaid-cred" }));
+    await w.credentials.put("plaid-cred", fakeCredential());
+    const engine = new SyncEngine({ store: w.store, registry, credentials: w.credentials, linker: w.linker, now: tickingClock() });
+    const report = await engine.runAll();
+    expect(report.outcomes.map((o) => [o.provider, o.capability, o.status])).toEqual([
+      ["plaid", "bank", "ok"],
+      ["mock", "mail", "ok"],
+    ]);
+    expect(order).toEqual(["bank"]);
+  });
+});
+
 describe("a capability the grant does not cover", () => {
   it("errors that capability only: the account stays active and the others keep syncing", async () => {
     const store = new InMemorySpineStore(DEV_USER_ID, { now: tickingClock() });
@@ -794,10 +892,10 @@ describe("backoff and the running guard", () => {
     expect(first.status).toBe("error");
     expect((await store.getSyncState(account.id, "mail"))?.consecutiveFailures).toBe(1);
 
-    // One second later (the clock ticks 1 s per read): inside the 10 min backoff.
+    // One second later (the clock ticks 1 s per read): held — and, the failure being non-retryable, for the cap, not a 10 min probe.
     const held = await engine.runCapability(account, "mail");
     expect(held.status).toBe("skipped");
-    expect(held.reason).toMatch(/backing off after 1 consecutive failure/);
+    expect(held.reason).toMatch(/held until .*: the last failure \(invalid_response\) repeats until something changes/);
     expect(connector.calls.filter((c) => c.capability === "mail")).toHaveLength(1);
 
     // The user's own Sync now goes through.
@@ -808,7 +906,7 @@ describe("backoff and the running guard", () => {
   });
 
   it("holdReason: recent running → held; stale running → free; errors respect backoff", () => {
-    const base = { userId: DEV_USER_ID, connectorAccountId: "c", capability: "mail" as const, enabled: true, checkpoint: null, lastSuccessAt: null, lastError: null, updatedAt: "2026-09-10T09:00:00.000Z" };
+    const base = { userId: DEV_USER_ID, connectorAccountId: "c", capability: "mail" as const, enabled: true, checkpoint: null, lastSuccessAt: null, lastError: null, lastErrorCode: null, lastErrorRetryable: null, reconcile: [], updatedAt: "2026-09-10T09:00:00.000Z" };
     const at = MOCK_NOW.getTime();
     const running = { ...base, status: "running" as const, consecutiveFailures: 0, lastAttemptAt: new Date(at - 5 * 60_000).toISOString() };
     expect(holdReason(running as never, at)).toMatch(/already running/);

@@ -1,4 +1,5 @@
 import type {
+  SyncErrorCode,
   ReconcileState,
   ActionRequest,
   Conclusion,
@@ -29,6 +30,7 @@ import type {
   TimeEvent,
   UserId,
 } from "@vixera/domain";
+import { SYNC_ERROR_CODES } from "@vixera/domain";
 import type { MailMessageWrite, MoneyTransactionWrite, TimeEventWrite } from "./spine-store.ts";
 import type { NormalizedMoneyAccount } from "@vixera/domain";
 
@@ -265,6 +267,8 @@ export interface ConnectorSyncStateRow {
   last_success_at: string | null;
   last_error: string | null;
   consecutive_failures: number;
+  last_error_code: string | null;
+  last_error_retryable: boolean | null;
   reconcile: JsonObject[] | null;
   updated_at: string;
 }
@@ -404,6 +408,12 @@ export function numberFromDb(value: string | number | null): number | null;
 export function numberFromDb(value: string | number | null): number | null {
   if (value === null || value === undefined) return null;
   return typeof value === "number" ? value : Number(value);
+}
+
+/** A stored error code outside the set this build knows reads as `unknown`, never as "no error". */
+export function syncErrorCodeFromDb(value: unknown): SyncErrorCode | null {
+  if (value === null || value === undefined) return null;
+  return (SYNC_ERROR_CODES as readonly string[]).includes(String(value)) ? (value as SyncErrorCode) : "unknown";
 }
 
 /**
@@ -1015,6 +1025,8 @@ export function syncStateFromRow(r: ConnectorSyncStateRow): ConnectorSyncState {
     lastSuccessAt: isoFromDb(r.last_success_at),
     lastError: r.last_error,
     consecutiveFailures: numberFromDb(r.consecutive_failures),
+    lastErrorCode: syncErrorCodeFromDb(r.last_error_code),
+    lastErrorRetryable: typeof r.last_error_retryable === "boolean" ? r.last_error_retryable : null,
     reconcile: reconcileFromDb(r.reconcile),
     updatedAt: isoFromDb(r.updated_at),
   };
@@ -1036,6 +1048,8 @@ export function syncStatePatchToRow(
   if (patch.lastSuccessAt !== undefined) out.last_success_at = patch.lastSuccessAt;
   if (patch.lastError !== undefined) out.last_error = patch.lastError;
   if (patch.consecutiveFailures !== undefined) out.consecutive_failures = patch.consecutiveFailures;
+  if (patch.lastErrorCode !== undefined) out.last_error_code = patch.lastErrorCode;
+  if (patch.lastErrorRetryable !== undefined) out.last_error_retryable = patch.lastErrorRetryable;
   if (patch.reconcile !== undefined) out.reconcile = patch.reconcile.length ? (patch.reconcile as unknown as JsonObject[]) : null;
   return out;
 }

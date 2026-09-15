@@ -51,7 +51,16 @@ pass ran until the Edge runtime killed the invocation, which left the state
 `running` forever and starved every later user. A pass that is *always*
 interrupted needs a connector that emits per-page checkpoints (Gmail does, via
 its page token); a longer budget does not fix it. Skipped pairs are reported as
-`skipped` with reason "time budget exhausted". `runSync` also computes `selfAddresses` from
+`skipped` with reason "time budget exhausted".
+
+Pairs run in `scheduleCapabilities` order: a capability its connector
+declares `nonResumable` (Plaid's bank sync, whose only durable cursor is the
+one a completed update ends with) runs before every resumable pair so it sees
+the whole budget, and is not started at all with less than
+`MIN_NON_RESUMABLE_BUDGET_MS` (30 s) left — `skipped` ("cannot resume")
+instead of interrupted and restarted from the same cursor every run.
+
+`runSync` also computes `selfAddresses` from
 every account's `address`, so the user never becomes a person in their own
 graph.
 
@@ -91,7 +100,7 @@ graph.
    old one's backoff.
 
 The report (`SyncReport` / `BudgetedSyncReport`) carries one `SyncOutcome`
-per pair: status `ok | error | skipped`, reason, `errorCode`, pages, link
+per pair: status `ok | error | skipped`, reason, `errorCode`, `errorRetryable`, pages, link
 counts, `checkpointAdvanced`, `interrupted`, timings, and an `interrupted`
 count at the top. `summarizeReport` is what the
 `connector.sync_now` action stores as its result.

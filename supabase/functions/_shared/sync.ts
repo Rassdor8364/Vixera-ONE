@@ -4,13 +4,16 @@
  * (account, capability) run is started and the remaining pairs are reported
  * as skipped ("time budget exhausted"). Each capability persists its own
  * checkpoint per page, so the next scheduled run resumes where this one
- * stopped; nothing is lost by skipping.
+ * stopped; nothing is lost by skipping. Pairs run in `scheduleCapabilities`
+ * order: a pass that cannot resume mid-way (Plaid) goes first, and is not
+ * started at all with less than MIN_NON_RESUMABLE_BUDGET_MS left — skipped,
+ * not interrupted and restarted from the same cursor every run.
  *
  * `selfAddresses` = the addresses of the user's own connector accounts, so
  * the user never becomes a person in their own graph.
  */
 import { type ConnectorAccount, type ConnectorRegistry, type CredentialStore, type JsonObject, type UserId } from "@vixera/domain";
-import { ContextLinker, SyncEngine, addCounts, emptyCounts, errorMessage, type SpineStore, type SyncOutcome, type SyncReport } from "@vixera/sync";
+import { ContextLinker, MIN_NON_RESUMABLE_BUDGET_MS, SyncEngine, addCounts, emptyCounts, errorMessage, scheduleCapabilities, type SpineStore, type SyncOutcome, type SyncReport } from "@vixera/sync";
 import { buildRegistry } from "./connectors.ts";
 import { VaultCredentialStore } from "./credentials.ts";
 import type { FunctionEnv } from "./env.ts";
@@ -75,31 +78,37 @@ export async function runSync(deps: SyncDeps, options: SyncRunOptions = {}): Pro
 
   const outcomes: SyncOutcome[] = [];
   let skippedForBudget = 0;
-  for (const account of accounts) {
-    if (account.status === "disconnected" || account.status === "paused") {
-      for (const capability of account.capabilities) outcomes.push(skipped(account, capability, `account ${account.status}`, now()));
+  // The account row is re-read after each run, so a needs_reauth from mail stops calendar.
+  const latest = new Map(accounts.map((a) => [a.id, a]));
+  for (const { account, capability, resumable } of scheduleCapabilities(accounts, deps.registry)) {
+    const current = latest.get(account.id) ?? account;
+    if (current.status === "disconnected" || current.status === "paused") {
+      outcomes.push(skipped(current, capability, `account ${current.status}`, now()));
       continue;
     }
-    let current: ConnectorAccount = account;
-    for (const capability of account.capabilities) {
-      if (now().getTime() >= deadline) {
-        skippedForBudget++;
-        outcomes.push(skipped(current, capability, "time budget exhausted", now()));
-        continue;
-      }
-      if (current.status === "needs_reauth") {
-        outcomes.push(skipped(current, capability, "account needs_reauth", now()));
-        continue;
-      }
-      try {
-        outcomes.push(await engine.runCapability(current, capability, deadline, options.force ? { force: true } : {}));
-      } catch (err) {
-        // runCapability isolates failures itself; this is the last line of defence.
-        log("sync: capability run failed unexpectedly", { connectorAccountId: current.id, capability, error: errorMessage(err) });
-        outcomes.push({ ...skipped(current, capability, errorMessage(err), now()), status: "error", errorCode: "unknown" });
-      }
-      current = (await deps.store.getConnectorAccount(account.id)) ?? current;
+    const left = deadline - now().getTime();
+    if (left <= 0) {
+      skippedForBudget++;
+      outcomes.push(skipped(current, capability, "time budget exhausted", now()));
+      continue;
     }
+    if (!resumable && left < MIN_NON_RESUMABLE_BUDGET_MS) {
+      skippedForBudget++;
+      outcomes.push(skipped(current, capability, `time budget too short for a pass that cannot resume (${Math.round(left / 1000)} s left, needs ${MIN_NON_RESUMABLE_BUDGET_MS / 1000} s)`, now()));
+      continue;
+    }
+    if (current.status === "needs_reauth") {
+      outcomes.push(skipped(current, capability, "account needs_reauth", now()));
+      continue;
+    }
+    try {
+      outcomes.push(await engine.runCapability(current, capability, deadline, options.force ? { force: true } : {}));
+    } catch (err) {
+      // runCapability isolates failures itself; this is the last line of defence.
+      log("sync: capability run failed unexpectedly", { connectorAccountId: current.id, capability, error: errorMessage(err) });
+      outcomes.push({ ...skipped(current, capability, errorMessage(err), now()), status: "error", errorCode: "unknown" });
+    }
+    latest.set(account.id, (await deps.store.getConnectorAccount(account.id)) ?? current);
   }
 
   const finished = now();
@@ -130,6 +139,7 @@ function skipped(account: ConnectorAccount, capability: ConnectorAccount["capabi
     status: "skipped",
     reason,
     errorCode: null,
+    errorRetryable: null,
     pages: 0,
     counts: emptyCounts(),
     checkpointAdvanced: false,
@@ -172,6 +182,7 @@ export function summarizeReport(report: BudgetedSyncReport): JsonObject {
       status: o.status,
       reason: o.reason,
       errorCode: o.errorCode,
+      errorRetryable: o.errorRetryable,
       pages: o.pages,
       checkpointAdvanced: o.checkpointAdvanced,
       interrupted: o.interrupted,

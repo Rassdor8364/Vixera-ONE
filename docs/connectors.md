@@ -30,6 +30,7 @@ interface Connector extends Partial<MailSyncSource>, Partial<CalendarSyncSource>
   readonly capabilities: readonly ConnectorCapability[]; // subset of "mail" | "calendar" | "bank" | "document"
   discoverAccount(ctx: Omit<SyncContext, "account">): Promise<DiscoveredAccount>;
   refreshCredential?(ctx: Omit<SyncContext, "account">): Promise<ConnectorCredential>;
+  readonly nonResumable?: readonly ConnectorCapability[]; // passes with no per-page resume point: scheduled first, not started with < 30 s of budget left
 }
 interface MailSyncSource     { syncMail(ctx, checkpoint): AsyncIterable<SyncPage<MailSyncBatch>> }
 interface CalendarSyncSource { syncCalendar(ctx, checkpoint): AsyncIterable<SyncPage<CalendarSyncBatch>> }
@@ -398,10 +399,12 @@ never as an error.
   update repeats or removes everything an aborted one added. A run the
   engine's time budget stops mid-update is reported `interrupted` and
   restarts the update next run rather than resuming from a cursor Plaid may
-  have discarded. Known limitation: because intermediate pages advance
-  nothing, an update that does not fit in the run's remaining budget restarts
-  from the same cursor on every run; the engine does not yet reserve budget
-  for a source that cannot resume mid-update (a task in the roadmap).
+  have discarded. Because intermediate pages advance nothing, the connector
+  declares `nonResumable: ["bank"]`: the engine schedules bank passes before
+  every resumable one, so they see the whole budget, and a budgeted run does
+  not start one with less than `MIN_NON_RESUMABLE_BUDGET_MS` (30 s) left —
+  it is reported `skipped` ("cannot resume") rather than interrupted and
+  restarted from the same cursor on every run.
 * `PlaidClient` allow-lists read endpoints (`PLAID_READ_ENDPOINTS`); any
   other endpoint throws `unsupported`. There is no method on `BankProvider`
   that can move money. Caveat: the `connector-link` Edge Function's link-time
@@ -429,7 +432,13 @@ returns one empty page unless a test hook changed the fixtures.
 ## Errors → engine behaviour
 
 `ConnectorError(code, message, retryable)`; `retryable` defaults to true for
-`rate_limited` and `provider_unavailable`.
+`rate_limited` and `provider_unavailable`. The engine persists both on the
+sync state (`last_error_code`, `last_error_retryable`, migration 13) and
+reports them on the outcome (`errorCode`, `errorRetryable`). A retryable
+failure backs off from 10 minutes; a non-retryable one — a declined scope, a
+body the normalizer cannot read, a checkpoint rejected twice — is held for
+the 6 h cap at once, since probing it every ten minutes only repeats it. A
+person's Sync now (`force`) ignores either hold, and a re-link clears both.
 
 | Code | Raised by | Engine (`SyncEngine.runCapability`) |
 | --- | --- | --- |
@@ -443,8 +452,9 @@ returns one empty page unless a test hook changed the fixtures.
 | *(missing credential)* | `credentialRef` null or Vault returns nothing | account `needs_reauth`, outcome `errorCode: "credential_missing"` |
 
 **Backoff.** A state in `error` is not retried until `lastAttemptAt +
-backoffMs(consecutiveFailures)`: 10 min after the first failure, doubling,
-capped at 6 h. A state marked `running` within the last 15 min is left alone.
+backoffMs(consecutiveFailures, lastErrorRetryable)`: 10 min after the first
+failure, doubling, capped at 6 h — the cap at once when the failure is
+non-retryable. A state marked `running` within the last 15 min is left alone.
 A user's Sync now (`connector.sync_now`, `POST connector-sync` with `force`)
 ignores both. Re-linking resets the count. The provider's `Retry-After` is not
 yet honoured precisely (the doubling stands in for it).

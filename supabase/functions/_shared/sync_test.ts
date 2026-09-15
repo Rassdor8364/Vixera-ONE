@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ConnectorRegistry, DEV_USER_ID, InMemoryCredentialStore } from "@vixera/domain";
+import { ConnectorRegistry, DEV_USER_ID, InMemoryCredentialStore, type ConnectorCapability } from "@vixera/domain";
 import { InMemorySpineStore, MOCK_NOW, MockConnector, seedMockAccount, tickingClock } from "@vixera/sync";
 import { runSync, summarizeReport } from "./sync.ts";
 
@@ -52,6 +52,29 @@ Deno.test("runSync: the wall-clock budget stops starting capabilities and report
   // A later run resumes the skipped capabilities.
   const next = await runSync({ ...w.deps, now: tickingClock(MOCK_NOW, 1) }, { budgetMs: 45_000 });
   assert.equal(next.ok, 3);
+});
+
+Deno.test("runSync: a pass that cannot resume runs before the others, and is skipped rather than started when the budget left is too short", async () => {
+  class BankFirst extends MockConnector {
+    readonly nonResumable: readonly ConnectorCapability[] = ["bank"];
+  }
+  const w = world();
+  const registry = new ConnectorRegistry().register(new BankFirst());
+  await seedMockAccount(w.store, w.credentials);
+  const report = await runSync({ ...w.deps, registry });
+  assert.deepEqual(report.outcomes.map((o) => o.capability), ["bank", "mail", "calendar"]);
+  assert.equal(report.ok, 3);
+
+  // 20 s of budget (each clock read costs 100 ms): too short for a pass that cannot resume, enough for the resumable ones.
+  const tight = world(100);
+  await seedMockAccount(tight.store, tight.credentials);
+  const short = await runSync({ ...tight.deps, registry: new ConnectorRegistry().register(new BankFirst()) }, { budgetMs: 20_000 });
+  const bank = short.outcomes.find((o) => o.capability === "bank")!;
+  assert.equal(bank.status, "skipped");
+  assert.match(bank.reason ?? "", /cannot resume/);
+  assert.equal(short.skippedForBudget, 1);
+  assert.equal(short.ok, 2);
+  assert.equal(summarizeReport(short).skippedForBudget, 1);
 });
 
 Deno.test("runSync: paused / disconnected accounts are skipped, failures do not stop the run", async () => {

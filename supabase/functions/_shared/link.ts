@@ -362,7 +362,7 @@ export async function persistLinkedAccount(deps: LinkDeps, userId: UserId, provi
     // A fresh credential is a fresh start: re-enable, and clear the failure
     // count so the engine's backoff does not hold a re-authenticated account
     // for up to six hours because of failures the old credential caused.
-    else await store.upsertSyncState(account.id, capability, { enabled: true, status: "idle", lastError: null, consecutiveFailures: 0 });
+    else await store.upsertSyncState(account.id, capability, { enabled: true, status: "idle", lastError: null, lastErrorCode: null, lastErrorRetryable: null, consecutiveFailures: 0 });
   }
   deps.log?.("link: account persisted", { provider, connectorAccountId: account.id, relinked: existing !== null });
   return account;

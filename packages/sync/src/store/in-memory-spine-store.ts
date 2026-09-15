@@ -806,6 +806,8 @@ export class InMemorySpineStore implements SpineStore {
       lastSuccessAt: null,
       lastError: null,
       consecutiveFailures: 0,
+      lastErrorCode: null,
+      lastErrorRetryable: null,
       reconcile: [],
       updatedAt: this.iso(),
     };

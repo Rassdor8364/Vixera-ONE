@@ -72,6 +72,14 @@ export interface Connector extends Partial<MailSyncSource>, Partial<CalendarSync
   discoverAccount(ctx: Omit<SyncContext, "account">): Promise<DiscoveredAccount>;
   /** Refresh an expiring credential if the provider supports it. */
   refreshCredential?(ctx: Omit<SyncContext, "account">): Promise<ConnectorCredential>;
+  /**
+   * Capabilities whose pass has no per-page resume point (Plaid's
+   * /transactions/sync: only the cursor of a completed update may be kept).
+   * The engine schedules them before resumable ones, and a budgeted run does
+   * not start one with less than MIN_NON_RESUMABLE_BUDGET_MS left, so a pass
+   * that needs the whole budget is not interrupted and restarted every run.
+   */
+  readonly nonResumable?: readonly ConnectorCapability[];
 }
 
 export function supports<K extends ConnectorCapability>(

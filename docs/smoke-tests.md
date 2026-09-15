@@ -20,15 +20,16 @@ running it holds them in the provider console and in `supabase secrets`.
 
 The live project (`uhdlacchajiblhmgasjg`) has migrations 1–8 applied.
 Migrations 9 (`realtime_replica_identity`), 10 (`ingest_attempts`), 11
-(`handoff_focus_and_status`) and 12 (`sync_state_reconcile`) are on this
-branch only. Until 9 is applied the Realtime DELETE exposure it closes is
-live; until 10 is applied `ingest.submit` fails on insert (the `attempts`
-column is missing); until 12 is applied a full resync fails writing its
-`reconcile` state and no reconciliation happens.
+(`handoff_focus_and_status`), 12 (`sync_state_reconcile`) and 13
+(`sync_state_error_code`) are on this branch only. Until 9 is applied the
+Realtime DELETE exposure it closes is live; until 10 is applied
+`ingest.submit` fails on insert (the `attempts` column is missing); until 12
+is applied a full resync fails writing its `reconcile` state; until 13 is
+applied every sync fails at its end, writing `last_error_code`.
 
 ```bash
 supabase link --project-ref uhdlacchajiblhmgasjg
-supabase db push                          # migrations 9–12
+supabase db push                          # migrations 9–13
 SUPABASE_ACCESS_TOKEN=sbp_… scripts/deploy-functions.sh uhdlacchajiblhmgasjg
 ```
 
@@ -186,9 +187,9 @@ no script can do.
 
 ## What the fixture suites already cover
 
-So this page is not read as "nothing is tested": 698 vitest tests across the
-packages, the live PostgREST suite (115, real PostgREST 12.2.3 over a real
-PostgreSQL), 54 Deno tests for the Edge Functions and 37 Rust tests cover every
+So this page is not read as "nothing is tested": 702 vitest tests across the
+packages, the live PostgREST suite (119, real PostgREST 12.2.3 over a real
+PostgreSQL), 55 Deno tests for the Edge Functions and 37 Rust tests cover every
 branch above against fakes built from recorded provider shapes. What they
 cannot do is disagree with the provider — that is what the steps above are
 for.

@@ -199,7 +199,7 @@ describe("row mappers round-trip the brief world", () => {
     const statePatch = syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "mail", { status: "error", lastError: "boom", consecutiveFailures: 2 });
     expect(statePatch).toEqual({ user_id: DEV_USER_ID, connector_account_id: ACCOUNT, capability: "mail", status: "error", last_error: "boom", consecutive_failures: 2 });
     expect("checkpoint" in statePatch).toBe(false);
-    const stateRow = { ...statePatch, enabled: true, status: "error" as const, checkpoint: { version: 1 }, last_attempt_at: TS.created_at, last_success_at: null, last_error: "boom", consecutive_failures: 2, reconcile: null, updated_at: TS.updated_at };
+    const stateRow = { ...statePatch, enabled: true, status: "error" as const, checkpoint: { version: 1 }, last_attempt_at: TS.created_at, last_success_at: null, last_error: "boom", consecutive_failures: 2, last_error_code: null, last_error_retryable: null, reconcile: null, updated_at: TS.updated_at };
     const state = syncStateFromRow(stateRow);
     expect(state).toMatchObject({ capability: "mail", checkpoint: { version: 1 }, lastAttemptAt: "2026-09-10T09:00:00.000Z", lastSuccessAt: null, reconcile: [] });
 
@@ -224,6 +224,12 @@ describe("row mappers round-trip the brief world", () => {
       expect(syncStateFromRow({ ...stateRow, reconcile: junk as never }).reconcile, JSON.stringify(junk)).toEqual([]);
       expect(syncStateFromRow({ ...stateRow, reconcile: [pass, junk] as never }).reconcile, JSON.stringify(junk)).toEqual([]); // one bad unit spoils the list
     }
+
+    // the failure's kind travels with its message; a code this build does not know reads as unknown, never as "no error"
+    expect(syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "mail", { lastErrorCode: "unsupported", lastErrorRetryable: false })).toMatchObject({ last_error_code: "unsupported", last_error_retryable: false });
+    expect(syncStateFromRow({ ...stateRow, last_error_code: "rate_limited", last_error_retryable: true })).toMatchObject({ lastErrorCode: "rate_limited", lastErrorRetryable: true });
+    expect(syncStateFromRow({ ...stateRow, last_error_code: "from_the_future", last_error_retryable: null })).toMatchObject({ lastErrorCode: "unknown", lastErrorRetryable: null });
+    expect(syncStateFromRow(stateRow)).toMatchObject({ lastErrorCode: null, lastErrorRetryable: null });
 
     const handoffInsert = handoffToRow(DEV_USER_ID, ID, {
       sourceDeviceId: PERSON as never,

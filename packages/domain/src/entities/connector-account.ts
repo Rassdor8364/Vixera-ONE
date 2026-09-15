@@ -42,6 +42,10 @@ export interface ConnectorAccount extends UserScoped, Timestamped {
 export const SYNC_STATUSES = ["idle", "running", "error"] as const;
 export type SyncStatus = (typeof SYNC_STATUSES)[number];
 
+/** Why the last run of a capability failed: a connector error code, or a credential the vault no longer has. */
+export const SYNC_ERROR_CODES = ["unauthorized", "rate_limited", "checkpoint_invalid", "provider_unavailable", "invalid_response", "unsupported", "unknown", "credential_missing"] as const;
+export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
+
 /**
  * The rows a from-scratch pass re-lists. A connector declares it on every
  * page of such a pass; when the pass is a full resync (the provider
@@ -85,6 +89,16 @@ export interface ConnectorSyncState extends UserScoped {
   readonly lastAttemptAt: IsoDateTime | null;
   readonly lastSuccessAt: IsoDateTime | null;
   readonly lastError: string | null;
+  /** The code of the failure `lastError` describes; null after a success. */
+  readonly lastErrorCode: SyncErrorCode | null;
+  /**
+   * Whether that failure is expected to pass on its own (a rate limit, an
+   * outage: the scheduler backs off from 10 minutes) or to repeat until
+   * something changes (a declined scope, a body the normalizer cannot read:
+   * held for the backoff cap at once). Null after a success, and on a state
+   * written before the column existed (treated as retryable).
+   */
+  readonly lastErrorRetryable: boolean | null;
   readonly consecutiveFailures: number;
   /** A full resync in progress, one entry per listing unit (see ReconcileState); empty otherwise. */
   readonly reconcile: readonly ReconcileState[];
