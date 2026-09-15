@@ -407,7 +407,7 @@ the table.
 | `thread.attach` | `entity belongs_to thread` plus the thread-side edge (`has_person` / `has_document` / `has_time` / `has_money` / `has_mail`), idempotent by natural key | fresh uuid |
 | `handoff.create` / `handoff.accept` | see §9 | fresh uuid / `handoff.accept:<handoffId>:<deviceId>` |
 | `ingest.submit` | see §8 | fresh uuid |
-| `connector.sync_now` | `runSync` for the user (60 s budget), result = `summarizeReport` | fresh uuid |
+| `connector.sync_now` | `runSync` for the user (60 s budget) with `force`, so a person's Sync now runs a held capability; result = `summarizeReport` | fresh uuid |
 | `person.merge` | moves every edge of the merged person to the survivor, copies missing `primaryEmail` / `organization` / `notes`, sets `mergedIntoId`; identities stay on the merged person (readers follow `mergedIntoId`) | fresh uuid |
 
 Handlers receive a store bound to the request's user and never see a user id.

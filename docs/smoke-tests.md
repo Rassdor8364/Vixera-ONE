@@ -193,7 +193,7 @@ no script can do.
 
 So this page is not read as "nothing is tested": 704 vitest tests across the
 packages, the live PostgREST suite (122, real PostgREST 12.2.3 over a real
-PostgreSQL), 55 Deno tests for the Edge Functions and 37 Rust tests cover every
+PostgreSQL), 67 Deno tests for the Edge Functions and 37 Rust tests cover every
 branch above against fakes built from recorded provider shapes. What they
 cannot do is disagree with the provider — that is what the steps above are
 for.

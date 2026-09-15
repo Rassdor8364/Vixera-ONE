@@ -243,7 +243,7 @@ provider; Plaid requires Hosted Link; notification click-to-front is unwired. De
 Phase 2 hardened what Phase 1 built rather than adding surface. Verified on this branch in
 a Linux container, from a clean tree: `pnpm check` (secrets, migrations and version guards;
 typecheck; 704 vitest tests in 67 files; `cargo check --workspace` with `-D warnings`),
-`pnpm functions:check` (4 functions, 55 Deno tests), `pnpm db:verify` (14 migrations + seed,
+`pnpm functions:check` (4 functions, 67 Deno tests), `pnpm db:verify` (14 migrations + seed,
 every `verify.sql` assertion), `pnpm test:live` (122 tests against real PostgREST 12.2.3),
 `cargo test` (36 + 1), and both installers rebuilt and passed by `release:verify`.
 

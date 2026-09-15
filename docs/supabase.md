@@ -56,6 +56,14 @@ on `PATH` or at `/tmp/vixera-live-stack/postgrest`.
 | `connector-sync` | `X-Vixera-Sync-Secret` (pg_cron, all users) or user JWT (`verify_jwt = false`, verified in code) | runs the `SyncEngine` for one account, one user, or all users |
 | `ingest-process` | user JWT (`verify_jwt = true`) | runs the ingestion pipeline for one item or every `received` item |
 
+Each function is `index.ts` — production wiring only: environment, clients,
+`Deno.serve` — over `handler.ts`, the handler built from injected
+dependencies, and `handler_test.ts` runs that handler under `deno test` with
+no network: the session and sync-secret paths, body validation, envelope
+replay, ingest processing, the OAuth callback page and the error envelope.
+The wiring is where the `force` of a Sync now was once lost; it is now a
+tested seam.
+
 Shared code is imported from `packages/*` through `supabase/functions/deno.json`.
 Check locally with `pnpm functions:check` (Deno 2: `deno check` per function +
 `deno test` for `_shared`). The HTTP contract shared with the Field, the CORS

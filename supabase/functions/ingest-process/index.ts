@@ -1,61 +1,17 @@
 /**
- * ingest-process — runs THE ingestion pipeline (ingest.ts) for the caller.
- *
- *   POST /  body { ingestItemId? }
- *           → { processed, deferred, failed, documentIds, items: [{ ingestItemId, status, attempts, documentId, error }] }
- *   One item (any status: re-processing is idempotent; an already processed
- *   item is returned as-is) or every "received" item of the user — which is
- *   also how an item a transient failure left `received` gets its next run.
+ * ingest-process — runs THE ingestion pipeline (ingest.ts) for the caller. The
+ * handler and its contract live in handler.ts; this file is the production wiring.
  */
-import { isUuid } from "@vixera/domain";
 import { readEnv } from "../_shared/env.ts";
-import { HttpError, json, logger, readJsonBody, route, serveWith } from "../_shared/http.ts";
-import { processIngestItem, type ProcessIngestResult } from "../_shared/ingest.ts";
+import { logger, serveWith } from "../_shared/http.ts";
 import { userRequest } from "../_shared/request.ts";
+import { FN, ingestProcessHandler } from "./handler.ts";
 
-const FN = "ingest-process";
 const log = logger(FN);
-const MAX_ITEMS_PER_RUN = 200;
 
-Deno.serve(
-  serveWith(
-    route(FN, [
-      {
-        method: "POST",
-        path: "/",
-        handler: async (req) => {
-          const env = readEnv();
-          const { store } = await userRequest(req, env);
-          const body = await readJsonBody(req);
-          const id = body.ingestItemId;
-          if (id !== undefined && id !== null && (typeof id !== "string" || !isUuid(id))) throw new HttpError(400, "bad_request", "ingestItemId must be a uuid");
+function production() {
+  const env = readEnv();
+  return ingestProcessHandler({ userRequest: (req) => userRequest(req, env), log });
+}
 
-          const results: ProcessIngestResult[] = [];
-          const now = () => new Date();
-          if (typeof id === "string" && id) {
-            const item = await store.getIngestItem(id);
-            if (!item) throw new HttpError(404, "not_found", `ingest item ${id} not found`);
-            if (item.status === "processed") {
-              results.push({ ingestItemId: item.id, status: "processed", attempts: item.attempts, documentId: item.documentId, documentReused: true, contextEventId: null, relationships: 0, error: null });
-            } else {
-              results.push(await processIngestItem(store, item, { now, log }));
-            }
-          } else {
-            for (const item of await store.listIngestItems({ status: "received", limit: MAX_ITEMS_PER_RUN })) {
-              results.push(await processIngestItem(store, item, { now, log }));
-            }
-          }
-          const processed = results.filter((r) => r.status === "processed");
-          return json(req, {
-            processed: processed.length,
-            deferred: results.filter((r) => r.status === "deferred").length,
-            failed: results.filter((r) => r.status === "failed").length,
-            documentIds: processed.map((r) => r.documentId).filter((d): d is string => d !== null),
-            items: results.map((r) => ({ ingestItemId: r.ingestItemId, status: r.status, attempts: r.attempts, documentId: r.documentId, error: r.error })),
-          });
-        },
-      },
-    ]),
-    log,
-  ),
-);
+Deno.serve(serveWith((req) => production()(req), log));
