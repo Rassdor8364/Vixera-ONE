@@ -8,6 +8,10 @@ import { createFakeFetch, type FakeRoute } from "../testing/fake-fetch.ts";
 import { GMAIL_API, parseGmailCheckpoint, planHistory, syncMail } from "./sync.ts";
 
 const options = { oauth: FAKE_OAUTH, backfillDays: 30, concurrency: 2 };
+/** The backfill window from the mock clock: 30 days back, as epoch seconds for `after:`. */
+const SINCE_SECONDS = Math.floor(Date.parse("2026-08-11T12:00:00.000Z") / 1000);
+/** What that backfill declares it covers (ADR-017): from the next full second on, whatever `after:` does at the boundary. */
+const MAIL_SCOPE = { kind: "mail", receivedSince: "2026-08-11T12:00:01.000Z" };
 
 /** A message fixture with a different id, so list pages can reference several messages. */
 function messageWithId(id: string) {
@@ -27,7 +31,7 @@ function messageRoute(ids: readonly string[]): FakeRoute {
 }
 
 describe("syncMail initial backfill", () => {
-  it("pages users/me/messages with newer_than, fetches with bounded concurrency, and yields a checkpoint per page", async () => {
+  it("pages users/me/messages with an absolute after: window, fetches with bounded concurrency, and yields a checkpoint per page", async () => {
     const ids = ["a1", "a2", "a3"];
     let inFlight = 0;
     let maxInFlight = 0;
@@ -61,6 +65,8 @@ describe("syncMail initial backfill", () => {
     expect(pages[0]?.checkpoint).toEqual({ historyId: "884000", backfill: { pageToken: "page-2", since: "2026-08-11T12:00:00.000Z" } });
     expect(pages[0]?.done).toBe(false);
     expect(pages[0]?.fullResync).toBeUndefined();
+    // a backfill declares its scope on every page so the engine can reconcile inside it
+    expect(pages.map((p) => p.resyncScope)).toEqual([MAIL_SCOPE, MAIL_SCOPE]);
     // a 404 on an individual message (deleted between list and get) is skipped, not fatal
     expect(pages[1]?.batch.messages.map((m) => m.externalId)).toEqual(["a3"]);
     expect(pages[1]?.checkpoint).toEqual({ historyId: "884000" });
@@ -68,7 +74,7 @@ describe("syncMail initial backfill", () => {
 
     const lists = fake.callsTo("/users/me/messages?");
     // drafts and chats never reach the spine; messages.list already excludes SPAM/TRASH by default
-    expect(lists[0]?.url.searchParams.get("q")).toBe("newer_than:30d -in:drafts -in:chats");
+    expect(lists[0]?.url.searchParams.get("q")).toBe(`after:${SINCE_SECONDS} -in:drafts -in:chats`);
     expect(lists[0]?.url.searchParams.get("maxResults")).toBe("100");
     expect(lists[1]?.url.searchParams.get("pageToken")).toBe("page-2");
     expect(fake.callsTo("format=full")).toHaveLength(4);
@@ -83,6 +89,9 @@ describe("syncMail initial backfill", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncMail(ctx, { historyId: "884000", backfill: { pageToken: "page-9", since: "2026-08-11T12:00:00.000Z" } }, options));
+    // a resumed backfill continues the very query of the pass it resumes (the stored since), and declares that pass's scope
+    expect(fake.callsTo("/messages")[0]?.url.searchParams.get("q")).toBe(`after:${SINCE_SECONDS} -in:drafts -in:chats`);
+    for (const p of pages) expect(p.resyncScope).toEqual(MAIL_SCOPE);
     expect(fake.callsTo("/profile")).toHaveLength(0);
     expect(fake.callsTo("/users/me/messages?")[0]?.url.searchParams.get("pageToken")).toBe("page-9");
     expect(pages).toHaveLength(1);
@@ -107,6 +116,7 @@ describe("syncMail incremental history", () => {
     expect(page.checkpoint).toEqual({ historyId: "884450" });
     expect(page.done).toBe(true);
     expect(page.fullResync).toBeUndefined();
+    expect(page.resyncScope).toBeUndefined(); // a history round never declares a scope: nothing to reconcile
 
     const history = fake.callsTo("/history")[0]!;
     expect(history.url.searchParams.get("startHistoryId")).toBe("884000");
@@ -150,6 +160,7 @@ describe("syncMail incremental history", () => {
     const pages = await collect(syncMail(ctx, { historyId: "1" }, options));
     expect(pages).toHaveLength(2);
     expect(pages.every((p) => p.fullResync === true)).toBe(true);
+    expect(pages.map((p) => p.resyncScope)).toEqual([MAIL_SCOPE, MAIL_SCOPE]);
     expect(pages[0]?.checkpoint).toEqual({ historyId: "990000", backfill: { pageToken: "p2", since: "2026-08-11T12:00:00.000Z", fullResync: true } });
     expect(pages[1]?.checkpoint).toEqual({ historyId: "990000" });
     expect(ctx.logs.some((l) => l.message === "gmail.history.expired")).toBe(true);
@@ -267,7 +278,7 @@ describe("syncMail incremental history", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncMail(ctx, { deltaLink: "not-gmail" }, options));
-    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { historyId: "884000" }, done: true, fullResync: true }]);
+    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { historyId: "884000" }, done: true, fullResync: true, resyncScope: MAIL_SCOPE }]);
     expect(ctx.logs[0]?.message).toBe("gmail.checkpoint.invalid");
   });
 });

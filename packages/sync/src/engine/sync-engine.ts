@@ -1,4 +1,7 @@
 import {
+  type IsoDateTime,
+  type ResyncScope,
+  type ReconcileState,
   ConnectorError,
   isExpired,
   type BankSyncBatch,
@@ -249,7 +252,9 @@ export class SyncEngine {
       return this.fail(account, capability, state, started, new ConnectorError("unsupported", `${account.provider} does not support ${capability}`), counts, pages, checkpointAdvanced);
     }
 
-    await this.store.upsertSyncState(account.id, capability, { status: "running", lastAttemptAt: started.toISOString() });
+    // The row's own updated_at (the store's clock) is the watermark a full
+    // resync reconciles against: every row this run touches is stamped later.
+    const running = await this.store.upsertSyncState(account.id, capability, { status: "running", lastAttemptAt: started.toISOString() });
 
     // --- credential -------------------------------------------------------
     const ref = account.credentialRef;
@@ -296,12 +301,24 @@ export class SyncEngine {
     let retriedCheckpoint = false;
     let outOfTime = false;
     let interrupted = false;
+    // A full resync in progress, one unit per listing, possibly begun in an earlier run (ADR-017).
+    let reconcile: readonly ReconcileState[] = state?.reconcile ?? [];
     for (;;) {
       const startedFrom = stableStringify(checkpoint);
       try {
         for await (const page of source(liveCtx, checkpoint)) {
           if (++pages > MAX_PAGES) throw new ConnectorError("invalid_response", `more than ${MAX_PAGES} pages`);
           if (page.fullResync) this.log("sync: full resync page", { connectorAccountId: account.id, capability });
+          // A from-scratch pass that is a real resync — the provider dropped the
+          // checkpoint, or we did after it was rejected — and says what it covers:
+          // remember when it began and its scope, so rows it never mentions can go.
+          if ((page.fullResync === true || retriedCheckpoint) && page.resyncScope) {
+            const next = declareResync(reconcile, page.resyncScope, running.updatedAt);
+            if (stableStringify(next) !== stableStringify(reconcile)) {
+              reconcile = next;
+              await this.store.upsertSyncState(account.id, capability, { reconcile: next });
+            }
+          }
           // Apply FIRST, then move the checkpoint: a crash in between replays an idempotent page.
           addCounts(counts, await this.applyPage(account, capability, page));
           // Progress is a checkpoint that differs from the one this pass started
@@ -313,7 +330,19 @@ export class SyncEngine {
             await this.store.upsertSyncState(account.id, capability, { checkpoint });
             checkpointAdvanced = true;
           }
-          if (page.done) break;
+          if (page.done) {
+            if (reconcile.length > 0) {
+              // The pass is complete: everything the provider still has inside each
+              // unit was touched after that unit's watermark; the rest is gone there.
+              let removed = 0;
+              for (const unit of reconcile) removed += await this.store.deleteUntouched(account.id, capability, unit);
+              counts.deleted += removed;
+              this.log("sync: full resync reconciled", { connectorAccountId: account.id, capability, removed, units: reconcile.length, scope: reconcile[0]!.scope.kind });
+              reconcile = [];
+              await this.store.upsertSyncState(account.id, capability, { reconcile: [] });
+            }
+            break;
+          }
           if (deadlineAt !== undefined && this.now().getTime() >= deadlineAt) {
             if (advanced) {
               outOfTime = true;
@@ -495,4 +524,33 @@ export function redactCredential(message: string, credential: ConnectorCredentia
   let out = message;
   for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("***");
   return out;
+}
+
+/**
+ * A page of a from-scratch pass declared what it covers. Split it into listing
+ * units — a mail window, each calendar inside its window, a whole Item — and
+ * fold them into the pending state. A unit already pending with the very same
+ * scope is the same listing continuing (a resumed page): it keeps the
+ * watermark it started with, so rows the earlier run listed count as touched.
+ * Any other declaration is a listing starting over (a fresh window after a
+ * rejected page token or link): it replaces the unit with a watermark at
+ * `since`, this run's start — never the union of the two windows, because the
+ * earlier, partial listing cannot vouch for rows the new window does not cover.
+ */
+export function declareResync(pending: readonly ReconcileState[], scope: ResyncScope, since: IsoDateTime): ReconcileState[] {
+  const units: ResyncScope[] = scope.kind === "calendar" ? scope.calendarIds.map((id) => ({ kind: "calendar", calendarIds: [id], from: scope.from, to: scope.to })) : [scope];
+  const out = [...pending];
+  for (const unit of units) {
+    const key = unitKey(unit);
+    const at = out.findIndex((p) => unitKey(p.scope) === key);
+    if (at >= 0 && stableStringify(out[at]!.scope) === stableStringify(unit)) continue;
+    const entry: ReconcileState = { since, scope: unit };
+    if (at >= 0) out[at] = entry;
+    else out.push(entry);
+  }
+  return out;
+}
+
+function unitKey(scope: ResyncScope): string {
+  return scope.kind === "calendar" ? `calendar:${scope.calendarIds[0] ?? ""}` : scope.kind;
 }

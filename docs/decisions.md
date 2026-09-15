@@ -102,17 +102,36 @@ selection. Every run is audited by reference and size, never by content. Task
 outputs are data; suggestions are notes, never actions. Provider adapters that
 hold keys are server-side only.
 
-## ADR-017 · A full resync does not reconcile deletions (known limitation, decided)
-When a provider invalidates a checkpoint (Gmail history too old, Graph 410,
-Calendar 410, a rejected Plaid cursor) the source re-lists from scratch with
-`fullResync: true` and the engine upserts by natural key. Rows the provider
-deleted during the gap are **not** removed: nothing in the re-list names them,
-and the engine keeps no "seen set" to subtract from. They persist with their
-context events until the provider mentions them again (it will not) or the user
-removes them. Decided against fixing now: the correct fix is a per-capability
-reconciliation pass — record the external ids a full resync touched, then delete
-the rows of that account and capability it did not touch — whose seen set must
-survive a pass that the run budget splits across runs, so it belongs in the
-checkpoint or a side table, not in memory. It is a roadmap task, and the
-engine, the sync docs and the connector docs say so rather than implying the
-gap is closed. Also noted as audit SYNC-4 / MS-4.
+## ADR-017 · A full resync reconciles by watermark, inside the scope the source declares
+When a provider invalidates a checkpoint (Gmail history too old, a Graph delta
+link rejected or expired, a Calendar sync token gone or its window stale, a
+rejected Plaid cursor) the source re-lists from scratch with `fullResync: true`
+and the engine upserts by natural key. Rows the provider deleted during the
+gap are never mentioned again, so upserting alone kept them forever — the
+state this ADR first recorded as a known limitation (audit SYNC-4 / MS-4).
+The engine now reconciles, without a seen set: every page of a from-scratch
+listing declares what it covers (`SyncPage.resyncScope` — mail received since
+a moment, a set of calendars inside a window, or `all` for a bank Item); on a
+real resync (`fullResync: true`, or a pass the engine restarted after the
+store rejected a checkpoint) the engine records `{ since, scope }` on the
+capability's sync state (`connector_sync_states.reconcile`, migration 12),
+with `since` the sync state's own `updated_at` stamp from the moment the pass
+began; when the pass reports `done` it deletes the rows of that account and
+capability inside the scope whose `updated_at` is older than `since`. Every
+row the pass touched carries a newer stamp — the `updated_at` triggers fire on
+every upsert, changed or not — and both stamps come from the database clock,
+so no device clock takes part. Chosen over a seen set of external ids because
+the watermark costs one column and no per-id bookkeeping, and over "delete
+whatever the last listing did not name" because the scope keeps a 30-day mail
+backfill from deleting older mail it never listed. The state is kept per listing unit (a mail window, one calendar inside its
+window, a whole Item) and persisted, so a pass the run budget splits across
+runs reconciles when it finally completes: a resumed page declares the very
+same scope and keeps its unit's watermark, while a listing that starts over
+(a fresh window after a rejected page token or link) replaces its unit with a
+watermark at the new start — never the union of the two windows, because the
+earlier, partial listing cannot vouch for rows the new window does not cover. Not reconciled, deliberately: a first-ever sync (not a resync, and
+nothing is older than it), a source that declares no scope (nothing is
+deleted, as before — every source in this repository declares one), rows
+outside the declared scope, and money accounts (a closed account keeps its
+history; transactions are reconciled). Deleted rows take their context
+events, conclusions and handoff focus with them like any other deletion.

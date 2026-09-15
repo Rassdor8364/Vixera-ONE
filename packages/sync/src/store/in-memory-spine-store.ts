@@ -1,4 +1,5 @@
 import {
+  type ReconcileState,
   ContextGraph,
   newId,
   refKey,
@@ -568,6 +569,39 @@ export class InMemorySpineStore implements SpineStore {
     return { rows, inserted, updated };
   }
 
+  async deleteUntouched(connectorAccountId: string, capability: ConnectorCapability, reconcile: ReconcileState): Promise<number> {
+    const { since, scope } = reconcile;
+    const before = Date.parse(since);
+    const untouched = (updatedAt: string) => Date.parse(updatedAt) < before;
+    let count = 0;
+    if (capability === "mail" && (scope.kind === "mail" || scope.kind === "all")) {
+      for (const m of [...this.mail.values()]) {
+        if (m.connectorAccountId !== connectorAccountId || !untouched(m.updatedAt)) continue;
+        if (scope.kind === "mail" && Date.parse(m.receivedAt) < Date.parse(scope.receivedSince)) continue;
+        this.mail.delete(m.id);
+        this.onEntityDeleted({ type: "mail_message", id: m.id });
+        count++;
+      }
+    } else if (capability === "calendar" && (scope.kind === "calendar" || scope.kind === "all")) {
+      for (const e of [...this.timeEvents.values()]) {
+        if (e.connectorAccountId !== connectorAccountId || !untouched(e.updatedAt)) continue;
+        // Edges exclusive, as the providers list them: an event ending exactly at `from` was never listed, so it is never reconciled away.
+        if (scope.kind === "calendar" && (!scope.calendarIds.includes(e.externalCalendarId) || Date.parse(e.endsAt) <= Date.parse(scope.from) || Date.parse(e.startsAt) >= Date.parse(scope.to))) continue;
+        this.timeEvents.delete(e.id);
+        this.onEntityDeleted({ type: "time_event", id: e.id });
+        count++;
+      }
+    } else if (capability === "bank" && scope.kind === "all") {
+      for (const t of [...this.moneyTransactions.values()]) {
+        if (t.connectorAccountId !== connectorAccountId || !untouched(t.updatedAt)) continue;
+        this.moneyTransactions.delete(t.id);
+        this.onEntityDeleted({ type: "money_transaction", id: t.id });
+        count++;
+      }
+    }
+    return count;
+  }
+
   async deleteTimeEvents(connectorAccountId: string, externalIds: readonly string[], externalCalendarId?: string): Promise<number> {
     const ids = new Set(externalIds);
     let count = 0;
@@ -772,6 +806,7 @@ export class InMemorySpineStore implements SpineStore {
       lastSuccessAt: null,
       lastError: null,
       consecutiveFailures: 0,
+      reconcile: [],
       updatedAt: this.iso(),
     };
     const next: ConnectorSyncState = { ...base, ...definedOnly(patch), updatedAt: this.iso() };

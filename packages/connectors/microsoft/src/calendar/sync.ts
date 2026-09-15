@@ -170,7 +170,8 @@ async function* run(
         ? { deltaLink: previous.deltaLink, window: { start: previous.window.start, end: previous.window.end } }
         : null;
     ctx.log?.("microsoft.calendar.delta.page", { entries: entries.length, events: events.length, deleted: deleted.length, hasMore: !done });
-    yield { batch: { events, deleted }, checkpoint, done, ...(fullResync ? { fullResync: true } : {}) };
+    // A window listing (no stored delta link) covers the primary calendar inside the window.
+    yield { batch: { events, deleted }, checkpoint, done, ...(fullResync ? { fullResync: true } : {}), ...(previous?.deltaLink ? {} : { resyncScope: { kind: "calendar" as const, calendarIds: ["primary"], from: window.start, to: window.end } }) };
     if (done) return;
     if (!isGraphUrl(nextLink as string)) throw new ConnectorError("invalid_response", "Microsoft Graph nextLink points outside Graph", false);
     next = nextLink as string;

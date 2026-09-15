@@ -91,6 +91,8 @@ describe("BankConnector", () => {
     const ff = plaidRoutes(happyPath);
     const ctx = makeContext(ff.fetch);
     const pages = await drain(plaidConnector().syncBank(ctx, null));
+    // a pass from no cursor is a complete listing: every page declares the whole account as its reconciliation scope
+    expect(pages.map((p) => p.resyncScope)).toEqual([{ kind: "all" }, { kind: "all" }]);
     expect(pages).toHaveLength(2);
 
     const [first, second] = pages as [SyncPage<BankSyncBatch>, SyncPage<BankSyncBatch>];
@@ -146,6 +148,7 @@ describe("BankConnector", () => {
     const resumed = plaidRoutes(threePages("c0"));
     const later = await drain(plaidConnector().syncBank(makeContext(resumed.fetch), { cursor: "c0" }));
     expect(later.map((p) => p.checkpoint)).toEqual([{ cursor: "c0" }, { cursor: "c0" }, { cursor: "c3" }]);
+    expect(later.every((p) => p.resyncScope === undefined)).toBe(true); // an update from a cursor is not a listing
     expect(sentCursors(resumed)).toEqual(["c0", "c1", "c2"]);
   });
 

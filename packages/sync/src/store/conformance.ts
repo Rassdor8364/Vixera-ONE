@@ -92,6 +92,24 @@ export function runSpineStoreConformance(label: string, create: ConformanceFacto
       expect(await store.findMailMessageByExternalId(account.id, "m-1")).not.toBeNull();
     });
 
+    it("deleteUntouched removes rows older than the pass inside its scope, keeps touched rows and rows outside it", async () => {
+      const { store, account } = await withAccount();
+      await store.upsertMailMessages(account.id, [MAIL("m-stale"), MAIL("m-touched"), MAIL("m-older", { receivedAt: "2010-01-01T00:00:00.000Z", sentAt: "2010-01-01T00:00:00.000Z" })]);
+      const ev = await store.upsertContextEvents([{ kind: "mail.received", subject: ref("mail_message", (await store.findMailMessageByExternalId(account.id, "m-stale"))!.id), title: "stale", summary: null, occurredAt: "2026-09-09T10:00:00.000Z", importance: 40, dueAt: null, attention: "needs_attention", connectorAccountId: account.id, dedupeKey: "ev:stale", metadata: {} }]);
+      expect(ev.rows).toHaveLength(1);
+      // The pass begins: the store's own clock stamps the watermark.
+      const running = await store.upsertSyncState(account.id, "mail", { status: "running" });
+      await store.upsertMailMessages(account.id, [MAIL("m-touched", { subject: "seen again" })]);
+      const removed = await store.deleteUntouched(account.id, "mail", { since: running.updatedAt, scope: { kind: "mail", receivedSince: "2020-01-01T00:00:00.000Z" } });
+      expect(removed).toBe(1);
+      expect(await store.findMailMessageByExternalId(account.id, "m-stale")).toBeNull();
+      expect(await store.findMailMessageByExternalId(account.id, "m-touched")).not.toBeNull();
+      expect(await store.findMailMessageByExternalId(account.id, "m-older")).not.toBeNull();
+      // The stale row's context event went with it; a scope of another kind deletes nothing.
+      expect((await store.listContextEvents()).find((e) => e.dedupeKey === "ev:stale")).toBeUndefined();
+      expect(await store.deleteUntouched(account.id, "mail", { since: "2999-01-01T00:00:00.000Z", scope: { kind: "calendar", calendarIds: ["primary"], from: "2000-01-01T00:00:00.000Z", to: "2999-01-01T00:00:00.000Z" } })).toBe(0);
+    });
+
     it("keeps two accounts of the same provider apart even with identical external ids", async () => {
       const { store, account } = await withAccount();
       const second = await store.createConnectorAccount({

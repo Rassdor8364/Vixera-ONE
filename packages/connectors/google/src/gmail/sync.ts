@@ -126,11 +126,18 @@ async function* backfill(
     pageToken = null;
   }
   ctx.log?.("gmail.backfill.start", { resumed: pageToken !== null, fullResync, backfillDays: options.backfillDays });
+  // The window is absolute (`after:` takes epoch seconds), so a resumed backfill continues the
+  // very same query and can say exactly what its pages cover; `newer_than:Nd` moves with the
+  // clock, and a pass split across runs could not. `after:` is second-granular: whichever way it
+  // reads at the boundary, everything from the next full second on is listed, so that is where
+  // the declared scope starts.
+  const sinceSeconds = Math.floor(Date.parse(since) / 1000);
+  const resyncScope = { kind: "mail" as const, receivedSince: new Date((sinceSeconds + 1) * 1000).toISOString() };
 
   for (;;) {
     const url = new URL(`${GMAIL_API}/messages`);
     // messages.list leaves out SPAM/TRASH unless asked; drafts and chats we leave out ourselves.
-    url.searchParams.set("q", `newer_than:${options.backfillDays}d -in:drafts -in:chats`);
+    url.searchParams.set("q", `after:${sinceSeconds} -in:drafts -in:chats`);
     url.searchParams.set("maxResults", String(LIST_PAGE_SIZE));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
     let list;
@@ -158,6 +165,9 @@ async function* backfill(
       checkpoint: toCheckpoint(next),
       done: nextToken === null,
       ...(fullResync ? { fullResync: true } : {}),
+      // What this listing covers: mail newer than the backfill window. On a full
+      // resync the engine deletes what the listing never mentioned inside it.
+      resyncScope,
     };
     if (!nextToken) return;
     pageToken = nextToken;

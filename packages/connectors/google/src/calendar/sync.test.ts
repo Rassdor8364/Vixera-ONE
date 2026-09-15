@@ -19,6 +19,9 @@ describe("selectCalendars", () => {
   });
 });
 
+/** The reconciliation scope a listing of one calendar declares (ADR-017): that calendar, inside the window. */
+const scopeFor = (calendarId: string, timeMin = "2026-08-11T12:00:00.000Z", timeMax = "2026-12-09T12:00:00.000Z") => ({ kind: "calendar", calendarIds: [calendarId], from: timeMin, to: timeMax });
+
 describe("syncCalendar initial", () => {
   it("lists each calendar inside the window, turns cancelled into deletions and stores sync tokens", async () => {
     const fake = createFakeFetch([
@@ -51,6 +54,8 @@ describe("syncCalendar initial", () => {
     expect(pages[2]?.checkpoint).toEqual({ calendars: { [PRIMARY]: primaryDone, [TEAM]: { syncToken: "fake-sync-token-team-1" } } });
     expect(pages[2]?.done).toBe(true);
     expect(pages.every((p) => p.fullResync === undefined)).toBe(true);
+    // every listing page names the calendar it covers, so a later delete-untouched pass touches only that calendar
+    expect(pages.map((p) => p.resyncScope)).toEqual([scopeFor(PRIMARY), scopeFor(PRIMARY), scopeFor(TEAM)]);
 
     const first = fake.callsTo(eventsUrl(PRIMARY))[0]!;
     expect(first.url.searchParams.get("singleEvents")).toBe("true");
@@ -88,6 +93,9 @@ describe("syncCalendar resuming an initial listing", () => {
     expect(pages[0]?.checkpoint).toEqual({ calendars: { [PRIMARY]: { syncToken: "fake-sync-token-primary-1" }, [TEAM]: { syncToken: "fake-sync-token-team-1" } } });
     expect(pages[0]?.fullResync).toBeUndefined();
     expect(pages[1]?.done).toBe(true);
+    // the resumed listing keeps the window it was issued with; the sync-token round declares nothing
+    expect(pages[0]?.resyncScope).toEqual(scopeFor(PRIMARY, storedWindow.timeMin, storedWindow.timeMax));
+    expect(pages[1]?.resyncScope).toBeUndefined();
   });
 
   it("a sync-token response that pages checkpoints its page token without a window, and the resume carries both", async () => {

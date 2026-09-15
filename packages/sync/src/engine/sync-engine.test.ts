@@ -8,6 +8,7 @@ import {
   type Connector,
   type ConnectorAccount,
   type JsonObject,
+  type CalendarSyncBatch,
   type MailSyncBatch,
   type SyncContext,
   type SyncPage,
@@ -15,8 +16,8 @@ import {
 import { InMemorySpineStore } from "../store/in-memory-spine-store.ts";
 import type { SpineStore } from "../store/spine-store.ts";
 import { ContextLinker } from "../linker/context-linker.ts";
-import { SyncEngine, backoffMs, holdReason, redactCredential } from "./sync-engine.ts";
-import { MockConnector, briefWorldFixtures, NORTHWIND_KICKOFF_EVENT_ID } from "../testing/mock-connector.ts";
+import { SyncEngine, backoffMs, declareResync, holdReason, redactCredential } from "./sync-engine.ts";
+import { ERIC_INVOICE_MESSAGE_ID, MockConnector, PRIYA_AGENDA_MESSAGE_ID, briefWorldFixtures, NORTHWIND_KICKOFF_EVENT_ID } from "../testing/mock-connector.ts";
 import { expiredCredential, fakeCredential, fixedClock, MOCK_NOW, MOCK_SELF_ADDRESS, mockAccountInput, seedMockAccount, tickingClock } from "../testing/fixtures.ts";
 
 interface World {
@@ -387,6 +388,207 @@ describe("SyncEngine report shape", () => {
     expect(Date.parse(report.finishedAt)).toBeGreaterThanOrEqual(Date.parse(report.startedAt));
     const fresh: ConnectorAccount | null = await w.store.getConnectorAccount(account.id);
     expect(fresh?.status).toBe("active");
+  });
+});
+
+describe("full resync reconciliation (ADR-017)", () => {
+  /** A connector that rejects the stored checkpoint once, then re-lists from scratch with a declared scope. */
+  function relisting(w: World, pages: (checkpoint: Checkpoint | null) => SyncPage<MailSyncBatch>[], rejects: (checkpoint: Checkpoint) => boolean) {
+    return {
+      provider: "mock" as const,
+      capabilities: ["mail"] as const,
+      discoverAccount: () => w.connector.discoverAccount(),
+      async *syncMail(_ctx: SyncContext, checkpoint: Checkpoint | null): AsyncIterable<SyncPage<MailSyncBatch>> {
+        if (checkpoint && rejects(checkpoint)) throw new ConnectorError("checkpoint_invalid", "history too old");
+        for (const page of pages(checkpoint)) yield page;
+      },
+    };
+  }
+  const SCOPE = { kind: "mail" as const, receivedSince: "2000-01-01T00:00:00.000Z" };
+
+  it("deletes what a from-scratch pass never mentioned inside its scope, with its context events, and nothing outside it", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    await w.engine.runAll(); // the brief world: Eric's invoice mail and Priya's agenda, both with context events
+    expect(await w.store.findMailMessageByExternalId(account.id, PRIYA_AGENDA_MESSAGE_ID)).not.toBeNull();
+    const eventsBefore = (await w.store.listContextEvents()).filter((e) => e.subject.type === "mail_message").length;
+    expect(eventsBefore).toBe(2);
+    // Priya's message was deleted at the provider while the history id went stale: the
+    // re-list mentions Eric's only. A message received before the scope is outside it.
+    const eric = briefWorldFixtures().mail.messages.find((m) => m.externalId === ERIC_INVOICE_MESSAGE_ID)!;
+    const ancient = { ...eric, externalId: "msg-ancient", externalThreadId: "thr-ancient", receivedAt: "1999-06-01T00:00:00.000Z", sentAt: "1999-06-01T00:00:00.000Z" };
+    await w.store.upsertMailMessages(account.id, [{ ...ancient, toPersonIds: [], ccPersonIds: [], fromPersonId: null }]);
+    const connector = relisting(w, () => [{ batch: { messages: [eric], deleted: [] }, checkpoint: { historyId: "fresh" }, done: true, resyncScope: SCOPE }], () => true);
+    const engine = new SyncEngine({ store: w.store, registry: new ConnectorRegistry().register(connector as never), credentials: w.credentials, linker: w.linker, now: tickingClock(), log: (m, d) => w.logs.push(d ? { message: m, data: d } : { message: m }) });
+
+    const outcome = await engine.runCapability((await w.store.getConnectorAccount(account.id))!, "mail");
+    expect(outcome.status).toBe("ok");
+    expect(outcome.counts.deleted).toBe(1);
+    expect(await w.store.findMailMessageByExternalId(account.id, PRIYA_AGENDA_MESSAGE_ID)).toBeNull();
+    expect(await w.store.findMailMessageByExternalId(account.id, ERIC_INVOICE_MESSAGE_ID)).not.toBeNull();
+    expect(await w.store.findMailMessageByExternalId(account.id, "msg-ancient")).not.toBeNull();
+    expect((await w.store.listContextEvents()).filter((e) => e.subject.type === "mail_message")).toHaveLength(1);
+    expect((await w.store.getSyncState(account.id, "mail"))?.reconcile).toEqual([]);
+    expect(w.logs.find((l) => l.message === "sync: full resync reconciled")?.data).toMatchObject({ removed: 1, units: 1, scope: "mail" });
+  });
+
+  it("a pass the budget splits across runs still reconciles once, when it completes", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    await w.engine.runAll();
+    const eric = briefWorldFixtures().mail.messages.find((m) => m.externalId === ERIC_INVOICE_MESSAGE_ID)!;
+    const pages = (checkpoint: Checkpoint | null): SyncPage<MailSyncBatch>[] => {
+      const all: SyncPage<MailSyncBatch>[] = [
+        { batch: { messages: [eric], deleted: [] }, checkpoint: { historyId: "p1" }, done: false, fullResync: true, resyncScope: SCOPE },
+        { batch: { messages: [], deleted: [] }, checkpoint: { historyId: "p2" }, done: true, fullResync: true, resyncScope: SCOPE },
+      ];
+      return checkpoint?.historyId === "p1" ? all.slice(1) : all;
+    };
+    const connector = relisting(w, pages, (cp) => cp.historyId !== "p1");
+    const clock = tickingClock(MOCK_NOW, 60_000);
+    const engine = new SyncEngine({ store: w.store, registry: new ConnectorRegistry().register(connector as never), credentials: w.credentials, linker: w.linker, now: clock });
+    const acct = (await w.store.getConnectorAccount(account.id))!;
+
+    // Run 1: the deadline is past after page 1 — a resume point, so the pass is parked, not undone.
+    const first = await engine.runCapability(acct, "mail", MOCK_NOW.getTime() + 1);
+    expect(first.status).toBe("ok");
+    expect(first.pages).toBe(1);
+    expect(first.counts.deleted).toBe(0);
+    expect(await w.store.findMailMessageByExternalId(account.id, PRIYA_AGENDA_MESSAGE_ID)).not.toBeNull();
+    const parked = (await w.store.getSyncState(account.id, "mail"))!;
+    expect(parked.checkpoint).toEqual({ historyId: "p1" });
+    expect(parked.reconcile).toMatchObject([{ scope: SCOPE }]);
+
+    // Run 2: the pass completes and Priya's message, untouched since before run 1, goes.
+    const second = await engine.runCapability(acct, "mail");
+    expect(second.counts.deleted).toBe(1);
+    expect(await w.store.findMailMessageByExternalId(account.id, PRIYA_AGENDA_MESSAGE_ID)).toBeNull();
+    expect(await w.store.findMailMessageByExternalId(account.id, ERIC_INVOICE_MESSAGE_ID)).not.toBeNull();
+    expect((await w.store.getSyncState(account.id, "mail"))?.reconcile).toEqual([]);
+  });
+
+  it("a first-ever sync from scratch reconciles nothing, and the store ignores a scope that does not fit the capability", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    await w.engine.runAll();
+    expect((await w.store.getSyncState(account.id, "mail"))?.reconcile).toEqual([]);
+    expect(w.logs.find((l) => l.message === "sync: full resync reconciled")).toBeUndefined();
+    expect(await w.store.deleteUntouched(account.id, "mail", { since: "2999-01-01T00:00:00.000Z", scope: { kind: "calendar", calendarIds: ["primary"], from: "2000-01-01T00:00:00.000Z", to: "2999-01-01T00:00:00.000Z" } })).toBe(0);
+  });
+
+  it("declareResync: the same declaration continues a listing; a different window starts its unit over; calendars are units of their own", () => {
+    const S1 = "2026-09-01T00:00:00.000Z";
+    const S2 = "2026-09-02T00:00:00.000Z";
+    const mail1 = { kind: "mail" as const, receivedSince: "2026-08-01T00:00:00.000Z" };
+    const mail2 = { kind: "mail" as const, receivedSince: "2026-08-02T00:00:00.000Z" };
+    expect(declareResync([], mail1, S1)).toEqual([{ since: S1, scope: mail1 }]);
+    // a resumed page declares the very same scope: the watermark stays where the listing began
+    expect(declareResync([{ since: S1, scope: mail1 }], mail1, S2)).toEqual([{ since: S1, scope: mail1 }]);
+    // a fresh window is a listing starting over: replaced, never widened to what the partial listing did not cover
+    expect(declareResync([{ since: S1, scope: mail1 }], mail2, S2)).toEqual([{ since: S2, scope: mail2 }]);
+    // each calendar is a unit: one starting over leaves the other's watermark alone
+    const cal = (id: string, from = "2026-08-01T00:00:00.000Z") => ({ kind: "calendar" as const, calendarIds: [id], from, to: "2026-12-01T00:00:00.000Z" });
+    const both = declareResync([], { ...cal("a"), calendarIds: ["a", "b"] }, S1);
+    expect(both).toEqual([{ since: S1, scope: cal("a") }, { since: S1, scope: cal("b") }]);
+    expect(declareResync(both, cal("b", "2026-08-02T00:00:00.000Z"), S2)).toEqual([{ since: S1, scope: cal("a") }, { since: S2, scope: cal("b", "2026-08-02T00:00:00.000Z") }]);
+    expect(declareResync(both, cal("a"), S2)).toEqual(both);
+    expect(declareResync([], { kind: "all" }, S1)).toEqual([{ since: S1, scope: { kind: "all" } }]);
+    expect(declareResync([{ since: S1, scope: { kind: "all" } }], { kind: "all" }, S2)).toEqual([{ since: S1, scope: { kind: "all" } }]);
+  });
+
+  it("a pass that starts over with a narrower window never deletes what the first, partial pass did not reach outside it", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["mail"] });
+    await w.engine.runAll(); // Eric's invoice and Priya's agenda, both older than any pass below
+    const fixtures = briefWorldFixtures().mail.messages;
+    const eric = fixtures.find((m) => m.externalId === ERIC_INVOICE_MESSAGE_ID)!;
+    const priya = fixtures.find((m) => m.externalId === PRIYA_AGENDA_MESSAGE_ID)!;
+    const latest = Math.max(Date.parse(eric.receivedAt), Date.parse(priya.receivedAt));
+    const narrowSince = new Date(latest + 1).toISOString();
+    const NARROW = { kind: "mail" as const, receivedSince: narrowSince };
+    // inside the narrow window and never listed by the pass that completes: gone at the provider
+    const recent = { ...eric, externalId: "msg-recent", externalThreadId: "thr-recent", receivedAt: new Date(latest + 3_600_000).toISOString(), sentAt: new Date(latest + 3_600_000).toISOString() };
+    await w.store.upsertMailMessages(account.id, [{ ...recent, toPersonIds: [], ccPersonIds: [], fromPersonId: null }]);
+
+    let passes = 0;
+    const pages = (): SyncPage<MailSyncBatch>[] =>
+      ++passes === 1
+        ? [
+            // pass 1 (wide window): lists Eric only, then the budget parks it
+            { batch: { messages: [eric], deleted: [] }, checkpoint: { historyId: "p1" }, done: false, fullResync: true, resyncScope: SCOPE },
+            { batch: { messages: [priya], deleted: [] }, checkpoint: { historyId: "p2" }, done: true, fullResync: true, resyncScope: SCOPE },
+          ]
+        : // pass 2: the parked resume point is rejected, the listing starts over with a window that covers neither message
+          [{ batch: { messages: [], deleted: [] }, checkpoint: { historyId: "fresh" }, done: true, fullResync: true, resyncScope: NARROW }];
+    const connector = relisting(w, pages, () => true);
+    const clock = tickingClock(MOCK_NOW, 60_000);
+    const engine = new SyncEngine({ store: w.store, registry: new ConnectorRegistry().register(connector as never), credentials: w.credentials, linker: w.linker, now: clock, log: (m, d) => w.logs.push(d ? { message: m, data: d } : { message: m }) });
+    const acct = (await w.store.getConnectorAccount(account.id))!;
+
+    const first = await engine.runCapability(acct, "mail", MOCK_NOW.getTime() + 1);
+    expect(first.pages).toBe(1);
+    const parked = (await w.store.getSyncState(account.id, "mail"))!;
+    expect(parked.reconcile).toMatchObject([{ scope: SCOPE }]);
+
+    const second = await engine.runCapability(acct, "mail");
+    expect(second.status).toBe("ok");
+    // Priya's message is outside the window that completed and was never listed by the pass that did not: it stays.
+    // With a union of the two windows it would have gone — the wide pass never reached it.
+    expect(await w.store.findMailMessageByExternalId(account.id, PRIYA_AGENDA_MESSAGE_ID)).not.toBeNull();
+    expect(await w.store.findMailMessageByExternalId(account.id, ERIC_INVOICE_MESSAGE_ID)).not.toBeNull();
+    // Inside the completed window, what the listing did not mention is gone.
+    expect(await w.store.findMailMessageByExternalId(account.id, "msg-recent")).toBeNull();
+    expect(second.counts.deleted).toBe(1);
+    expect((await w.store.getSyncState(account.id, "mail"))?.reconcile).toEqual([]);
+  });
+
+  it("each calendar keeps its own watermark: one listed in run 1 is reconciled against run 1, one listed in run 2 against run 2", async () => {
+    const w = world();
+    const account = await seedMockAccount(w.store, w.credentials, { capabilities: ["calendar"] });
+    await w.engine.runAll(); // the Northwind kickoff, on the mock calendar
+    const kickoff = briefWorldFixtures().calendar.events.find((e) => e.externalId === NORTHWIND_KICKOFF_EVENT_ID)!;
+    const primary = kickoff.externalCalendarId;
+    const window = { from: "2000-01-01T00:00:00.000Z", to: "2999-01-01T00:00:00.000Z" };
+    const scope = (id: string) => ({ kind: "calendar" as const, calendarIds: [id], ...window });
+    // two events the provider no longer has: one on each calendar, both older than any pass
+    await w.store.upsertTimeEvents(account.id, [
+      { ...kickoff, externalId: "evt-gone-primary", title: "Gone (primary)" },
+      { ...kickoff, externalId: "evt-gone-team", externalCalendarId: "team", title: "Gone (team)" },
+    ]);
+    const pages = (checkpoint: Checkpoint | null): SyncPage<CalendarSyncBatch>[] => {
+      const all: SyncPage<CalendarSyncBatch>[] = [
+        { batch: { events: [kickoff], deleted: [] }, checkpoint: { stage: "primary-done" }, done: false, fullResync: true, resyncScope: scope(primary) },
+        { batch: { events: [], deleted: [] }, checkpoint: { stage: "all-done" }, done: true, fullResync: true, resyncScope: scope("team") },
+      ];
+      return checkpoint?.stage === "primary-done" ? all.slice(1) : all;
+    };
+    const connector = {
+      provider: "mock" as const,
+      capabilities: ["calendar"] as const,
+      discoverAccount: () => w.connector.discoverAccount(),
+      async *syncCalendar(_ctx: SyncContext, checkpoint: Checkpoint | null): AsyncIterable<SyncPage<CalendarSyncBatch>> {
+        if (checkpoint && checkpoint.stage !== "primary-done") throw new ConnectorError("checkpoint_invalid", "token gone");
+        for (const page of pages(checkpoint)) yield page;
+      },
+    };
+    const clock = tickingClock(MOCK_NOW, 60_000);
+    const engine = new SyncEngine({ store: w.store, registry: new ConnectorRegistry().register(connector as never), credentials: w.credentials, linker: w.linker, now: clock });
+    const acct = (await w.store.getConnectorAccount(account.id))!;
+    const listed = async () => (await w.store.listTimeEvents({ ...window })).map((e) => e.externalId).sort();
+
+    // Run 1 lists the primary calendar completely (the kickoff is touched now) and is parked before the team calendar.
+    const first = await engine.runCapability(acct, "calendar", MOCK_NOW.getTime() + 1);
+    expect(first.pages).toBe(1);
+    expect((await w.store.getSyncState(account.id, "calendar"))?.reconcile).toMatchObject([{ scope: scope(primary) }]);
+    expect(await listed()).toEqual(["evt-gone-primary", "evt-gone-team", NORTHWIND_KICKOFF_EVENT_ID].sort());
+
+    // Run 2 lists the team calendar; its watermark is run 2, the primary calendar's stays run 1.
+    const second = await engine.runCapability(acct, "calendar");
+    expect(second.status).toBe("ok");
+    expect(second.counts.deleted).toBe(2);
+    // The kickoff was touched in run 1 — after the primary calendar's watermark — so it stays even though it is older than run 2.
+    expect(await listed()).toEqual([NORTHWIND_KICKOFF_EVENT_ID]);
+    expect((await w.store.getSyncState(account.id, "calendar"))?.reconcile).toEqual([]);
   });
 });
 

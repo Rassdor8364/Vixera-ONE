@@ -6,6 +6,8 @@ import { isWindowStale, parseCalendarCheckpoint, syncCalendar, type CalendarSync
 
 const OPTIONS: CalendarSyncOptions = { oauth: FAKE_OAUTH, window: { pastDays: 30, futureDays: 90 }, pageSize: 50 };
 const WINDOW = { start: "2026-08-11T12:00:00.000Z", end: "2026-12-09T12:00:00.000Z" };
+/** The reconciliation scope a window listing declares (ADR-017): the primary calendar inside the window. */
+const CAL_SCOPE = { kind: "calendar", calendarIds: ["primary"], from: WINDOW.start, to: WINDOW.end };
 const DELTA_0 = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=fake-cal-delta-0";
 const DELTA_1 = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=fake-cal-delta-1";
 const NEXT = "https://graph.microsoft.com/v1.0/me/calendarView/delta?$skiptoken=fake-cal-skip";
@@ -32,6 +34,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     const page = pages[0];
     expect(page?.done).toBe(true);
     expect(page?.fullResync).toBeUndefined();
+    expect(page?.resyncScope).toEqual(CAL_SCOPE);
     expect(page?.checkpoint).toEqual({ deltaLink: DELTA_1, window: WINDOW });
     expect(page?.batch.events.map((e) => e.externalId)).toEqual(["AAMkAGfake-evt-timed", "AAMkAGfake-evt-allday"]);
     expect(page?.batch.deleted).toEqual([{ externalId: "AAMkAGfake-evt-cancelled", externalCalendarId: "primary" }, { externalId: "AAMkAGfake-evt-removed", externalCalendarId: "primary" }]);
@@ -49,6 +52,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     expect(fake.calls[0]?.url.toString()).toBe(DELTA_0);
     expect(fake.calls[0]?.url.searchParams.has("startDateTime")).toBe(false);
     expect(pages.map((p) => p.done)).toEqual([false, true]);
+    expect(pages.every((p) => p.resyncScope === undefined)).toBe(true); // a delta round never declares a scope
     expect(pages[0]?.checkpoint).toEqual({ deltaLink: DELTA_0, window: WINDOW });
     expect(pages[1]?.checkpoint).toEqual({ deltaLink: DELTA_1, window: WINDOW });
   });
@@ -60,6 +64,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     const pages = await collect(syncCalendar(ctx, { deltaLink: DELTA_0, window: stale }, OPTIONS));
     expect(fake.calls[0]?.url.searchParams.get("startDateTime")).toBe(WINDOW.start);
     expect(pages[0]?.fullResync).toBe(true);
+    expect(pages[0]?.resyncScope).toEqual(CAL_SCOPE);
     expect(pages[0]?.checkpoint).toEqual({ deltaLink: DELTA_1, window: WINDOW });
     expect(ctx.logs.map((l) => l.message)).toContain("microsoft.calendar.window.stale");
   });
@@ -77,7 +82,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncCalendar(ctx, { deltaLink: DELTA_0, window: WINDOW }, OPTIONS));
-    expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true }]);
+    expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true, resyncScope: CAL_SCOPE }]);
   });
 
   it("treats a stored deltaLink that Graph rejects with 400 as a dead checkpoint and re-opens the window", async () => {
@@ -89,7 +94,7 @@ describe("syncCalendar (Microsoft Graph calendarView delta)", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncCalendar(ctx, { deltaLink: DELTA_0, window: WINDOW }, OPTIONS));
-    expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true }]);
+    expect(pages).toEqual([{ batch: { events: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1, window: WINDOW }, done: true, fullResync: true, resyncScope: CAL_SCOPE }]);
     expect(ctx.logs.find((l) => l.message === "microsoft.calendar.checkpoint.rejected")?.data).toMatchObject({ status: 400 });
 
     // A 400 on the fresh window request itself is a real error, never a restart loop.

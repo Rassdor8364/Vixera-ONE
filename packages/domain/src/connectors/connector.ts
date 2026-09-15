@@ -1,5 +1,5 @@
 import type { JsonObject } from "../entities/common.ts";
-import type { ConnectorAccount, ConnectorCapability, ProviderId } from "../entities/connector-account.ts";
+import type { ConnectorAccount, ConnectorCapability, ProviderId, ResyncScope } from "../entities/connector-account.ts";
 import type { ConnectorCredential } from "./credentials.ts";
 import type { BankSyncBatch, CalendarSyncBatch, MailSyncBatch } from "./normalized.ts";
 
@@ -22,13 +22,17 @@ export interface SyncContext {
  * One page of a sync. `checkpoint` is what to persist after this page is
  * durably stored; `done` tells the engine whether to ask for another page.
  * `fullResync` means the provider invalidated the previous checkpoint and the
- * engine must treat the batch as authoritative from scratch.
+ * engine must treat the batch as authoritative from scratch. `resyncScope`
+ * names the rows a from-scratch pass re-lists (declared on every page of such
+ * a pass); on a full resync the engine deletes what the pass did not touch
+ * inside it once the pass completes.
  */
 export interface SyncPage<TBatch> {
   readonly batch: TBatch;
   readonly checkpoint: Checkpoint | null;
   readonly done: boolean;
   readonly fullResync?: boolean;
+  readonly resyncScope?: ResyncScope;
 }
 
 export interface MailSyncSource {

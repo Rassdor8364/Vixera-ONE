@@ -1,4 +1,5 @@
 import type {
+  ReconcileState,
   ActionRequest,
   Conclusion,
   ConnectorAccount,
@@ -264,6 +265,7 @@ export interface ConnectorSyncStateRow {
   last_success_at: string | null;
   last_error: string | null;
   consecutive_failures: number;
+  reconcile: JsonObject[] | null;
   updated_at: string;
 }
 
@@ -402,6 +404,46 @@ export function numberFromDb(value: string | number | null): number | null;
 export function numberFromDb(value: string | number | null): number | null {
   if (value === null || value === undefined) return null;
   return typeof value === "number" ? value : Number(value);
+}
+
+/**
+ * A stored reconciliation state is trusted only in the shape the engine writes
+ * (a list of `{ since, scope }` units); anything else reads as "no pass in
+ * progress", so a damaged value can never widen what a completed pass deletes.
+ */
+export function reconcileFromDb(value: unknown): ReconcileState[] {
+  if (!Array.isArray(value)) return [];
+  const units: ReconcileState[] = [];
+  for (const entry of value) {
+    const unit = reconcileUnitFromDb(entry);
+    if (!unit) return [];
+    units.push(unit);
+  }
+  return units;
+}
+
+function reconcileUnitFromDb(value: unknown): ReconcileState | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { since, scope } = value as { since?: unknown; scope?: unknown };
+  if (typeof since !== "string" || Number.isNaN(Date.parse(since))) return null;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) return null;
+  const s = scope as Record<string, unknown>;
+  if (s.kind === "all") return { since, scope: { kind: "all" } };
+  if (s.kind === "mail" && typeof s.receivedSince === "string" && !Number.isNaN(Date.parse(s.receivedSince))) {
+    return { since, scope: { kind: "mail", receivedSince: s.receivedSince } };
+  }
+  if (
+    s.kind === "calendar" &&
+    Array.isArray(s.calendarIds) &&
+    s.calendarIds.every((c) => typeof c === "string") &&
+    typeof s.from === "string" &&
+    typeof s.to === "string" &&
+    !Number.isNaN(Date.parse(s.from)) &&
+    !Number.isNaN(Date.parse(s.to))
+  ) {
+    return { since, scope: { kind: "calendar", calendarIds: s.calendarIds as string[], from: s.from, to: s.to } };
+  }
+  return null;
 }
 
 function asJsonObject(value: unknown): JsonObject {
@@ -973,6 +1015,7 @@ export function syncStateFromRow(r: ConnectorSyncStateRow): ConnectorSyncState {
     lastSuccessAt: isoFromDb(r.last_success_at),
     lastError: r.last_error,
     consecutiveFailures: numberFromDb(r.consecutive_failures),
+    reconcile: reconcileFromDb(r.reconcile),
     updatedAt: isoFromDb(r.updated_at),
   };
 }
@@ -993,6 +1036,7 @@ export function syncStatePatchToRow(
   if (patch.lastSuccessAt !== undefined) out.last_success_at = patch.lastSuccessAt;
   if (patch.lastError !== undefined) out.last_error = patch.lastError;
   if (patch.consecutiveFailures !== undefined) out.consecutive_failures = patch.consecutiveFailures;
+  if (patch.reconcile !== undefined) out.reconcile = patch.reconcile.length ? (patch.reconcile as unknown as JsonObject[]) : null;
   return out;
 }
 

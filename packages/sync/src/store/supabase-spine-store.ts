@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  type ReconcileState,
   newId,
   type ActionRequest,
   type Attention,
@@ -901,6 +902,39 @@ export class SupabaseSpineStore implements SpineStore {
         id,
       ),
     );
+  }
+
+  /**
+   * Every upsert stamps updated_at (the vx_set_updated_at triggers), so "not
+   * touched since the pass began" is `updated_at < since`; the scope keeps a
+   * 30-day mail backfill from saying anything about older mail. Deleted in
+   * rounds: PostgREST returns at most db-max-rows of the affected rows, so the
+   * count is a floor when a round was capped, but the deletion is complete.
+   */
+  async deleteUntouched(connectorAccountId: string, capability: ConnectorCapability, reconcile: ReconcileState): Promise<number> {
+    const { since, scope } = reconcile;
+    const stale = (table: string) => this.from(table).delete().eq("user_id", this.userId).eq("connector_account_id", connectorAccountId).lt("updated_at", since);
+    const build = (): SelectBuilder | null => {
+      if (capability === "mail" && scope.kind === "mail") return stale("mail_messages").gte("received_at", scope.receivedSince);
+      if (capability === "mail" && scope.kind === "all") return stale("mail_messages");
+      if (capability === "calendar" && scope.kind === "calendar") {
+        if (!scope.calendarIds.length) return null;
+        // Both providers list events that END after the window start and START before its end (edges exclusive); delete only what such a listing covers.
+        return stale("time_events").in("external_calendar_id", [...scope.calendarIds]).gt("ends_at", scope.from).lt("starts_at", scope.to);
+      }
+      if (capability === "calendar" && scope.kind === "all") return stale("time_events");
+      if (capability === "bank" && scope.kind === "all") return stale("money_transactions");
+      return null;
+    };
+    let count = 0;
+    for (let round = 0; round < 1000; round++) {
+      const q = build();
+      if (!q) return count;
+      const gone = await this.rows<{ id: string }>(q.select("id"), `reconcile ${capability}`);
+      count += gone.length;
+      if (gone.length === 0) break;
+    }
+    return count;
   }
 
   // -------------------------------------------------------------------------

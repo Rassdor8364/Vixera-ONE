@@ -199,8 +199,31 @@ describe("row mappers round-trip the brief world", () => {
     const statePatch = syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "mail", { status: "error", lastError: "boom", consecutiveFailures: 2 });
     expect(statePatch).toEqual({ user_id: DEV_USER_ID, connector_account_id: ACCOUNT, capability: "mail", status: "error", last_error: "boom", consecutive_failures: 2 });
     expect("checkpoint" in statePatch).toBe(false);
-    const state = syncStateFromRow({ ...statePatch, enabled: true, status: "error", checkpoint: { version: 1 }, last_attempt_at: TS.created_at, last_success_at: null, last_error: "boom", consecutive_failures: 2, updated_at: TS.updated_at });
-    expect(state).toMatchObject({ capability: "mail", checkpoint: { version: 1 }, lastAttemptAt: "2026-09-10T09:00:00.000Z", lastSuccessAt: null });
+    const stateRow = { ...statePatch, enabled: true, status: "error" as const, checkpoint: { version: 1 }, last_attempt_at: TS.created_at, last_success_at: null, last_error: "boom", consecutive_failures: 2, reconcile: null, updated_at: TS.updated_at };
+    const state = syncStateFromRow(stateRow);
+    expect(state).toMatchObject({ capability: "mail", checkpoint: { version: 1 }, lastAttemptAt: "2026-09-10T09:00:00.000Z", lastSuccessAt: null, reconcile: [] });
+
+    // a full resync in progress round-trips as written (ADR-017) …
+    const pass = { since: "2026-09-10T09:00:00.000Z", scope: { kind: "calendar" as const, calendarIds: ["primary"], from: "2026-08-11T12:00:00.000Z", to: "2026-12-09T12:00:00.000Z" } };
+    expect(syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "calendar", { reconcile: [pass] }).reconcile).toEqual([pass]);
+    expect(syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "calendar", { reconcile: [] }).reconcile).toBeNull();
+    expect("reconcile" in syncStatePatchToRow(DEV_USER_ID, ACCOUNT, "calendar", { status: "idle" })).toBe(false);
+    expect(syncStateFromRow({ ...stateRow, reconcile: [pass] }).reconcile).toEqual([pass]);
+    expect(syncStateFromRow({ ...stateRow, reconcile: [pass, { since: pass.since, scope: { kind: "all" } }] }).reconcile).toEqual([pass, { since: pass.since, scope: { kind: "all" } }]);
+    // … and anything the engine would not have written reads as "no pass in progress", so it can never widen a deletion
+    expect(syncStateFromRow({ ...stateRow, reconcile: pass as never }).reconcile).toEqual([]); // a unit outside a list is not what the engine writes either
+    for (const junk of [
+      "junk",
+      { since: pass.since },
+      { since: 5, scope: { kind: "all" } },
+      { since: "yesterday", scope: { kind: "all" } },
+      { since: pass.since, scope: { kind: "mail" } },
+      { since: pass.since, scope: { kind: "calendar", calendarIds: "primary", from: pass.scope.from, to: pass.scope.to } },
+      { since: pass.since, scope: { kind: "everything" } },
+    ]) {
+      expect(syncStateFromRow({ ...stateRow, reconcile: junk as never }).reconcile, JSON.stringify(junk)).toEqual([]);
+      expect(syncStateFromRow({ ...stateRow, reconcile: [pass, junk] as never }).reconcile, JSON.stringify(junk)).toEqual([]); // one bad unit spoils the list
+    }
 
     const handoffInsert = handoffToRow(DEV_USER_ID, ID, {
       sourceDeviceId: PERSON as never,

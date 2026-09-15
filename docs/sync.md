@@ -214,13 +214,40 @@ The **Quiet** area does not use `deriveNow().quiet`; it lists context events
 with `attention = quiet` from the last 60 days directly (`useQuiet`). The
 NOW area shows `needsMe`, `changed`, `upcoming` and `canWait`.
 
-### Known limitation: a full resync keeps rows the provider deleted
+### Full resync reconciliation (ADR-017)
 
-`fullResync: true` re-lists and upserts; it never deletes. A message trashed,
-an event cancelled or a transaction removed while a checkpoint was dead stays
-in the spine with its context events (ADR-017). The fix — a reconciliation
-pass over the ids a full resync touched, with a seen set that survives the run
-budget — is on the roadmap, not in the engine.
+A from-scratch listing re-lists and upserts, and it declares what it covers:
+every page carries `resyncScope` (`{ kind: "mail", receivedSince }`,
+`{ kind: "calendar", calendarIds, from, to }` or `{ kind: "all" }`). When the
+pass is a real resync — `fullResync: true` from the source, or a pass the
+engine restarted after the store rejected a checkpoint — the engine records
+`[{ since, scope }]` on the capability's sync state
+(`connector_sync_states.reconcile`, migration 12), one entry per listing
+unit — a mail window, one calendar inside its window, a whole Item — with
+`since` the sync state's own `updated_at` stamp from the run in which that
+unit's listing began (`declareResync`): a page that declares a unit's very
+same scope is the listing continuing and keeps the watermark; any other
+declaration for the unit is a listing starting over and replaces it with a
+watermark at this run's start — never the union of two windows. When the
+pass reports `done`, `SpineStore.deleteUntouched(account, capability, unit)`
+runs for each unit and deletes the rows of that account and capability
+inside the unit's scope whose `updated_at` is older than its `since`:
+everything the pass touched was stamped later by the `updated_at` triggers,
+changed or not, and both stamps come from the database clock. Calendar edges
+are exclusive, as both providers list them. Deleted rows count in the run
+report's `deleted` and take their context events, conclusions and handoff
+focus with them like any deletion; the log line is `sync: full resync
+reconciled`. A stored `reconcile` that is not in the shape the engine writes
+reads as "no pass in progress" (`reconcileFromDb`), so a damaged value never
+widens a deletion.
+
+The state is persisted, so a pass the run budget splits across runs
+reconciles when it finally completes, and a run that dies mid-pass leaves the
+state for the next one. Deliberately not reconciled: a first-ever sync (not a
+resync, and nothing is older than it), a source that declares no scope
+(nothing is deleted, as before), rows outside the declared scope (a 30-day
+mail backfill never deletes older mail it did not list), and money accounts
+(a closed account keeps its history; transactions are reconciled).
 
 ## 7. Realtime refresh
 

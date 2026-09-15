@@ -95,6 +95,8 @@ export class BankConnector implements Connector {
             // Intermediate cursors are not resume points: echo the starting checkpoint until the update completes.
             checkpoint: !page.hasMore && page.nextCursor ? { cursor: page.nextCursor } : startCheckpoint,
             done: !page.hasMore,
+            // From a null cursor Plaid lists everything it has: the pass covers the whole account.
+            ...(startCursor === null ? { resyncScope: { kind: "all" as const } } : {}),
           };
           first = false;
           yield out;
@@ -102,7 +104,7 @@ export class BankConnector implements Connector {
         }
         if (first) {
           // Provider yielded nothing at all: still refresh accounts once.
-          yield { batch: { accounts, transactions: [], deleted: [] }, checkpoint: startCheckpoint, done: true };
+          yield { batch: { accounts, transactions: [], deleted: [] }, checkpoint: startCheckpoint, done: true, ...(startCursor === null ? { resyncScope: { kind: "all" as const } } : {}) };
         }
         return;
       } catch (err) {

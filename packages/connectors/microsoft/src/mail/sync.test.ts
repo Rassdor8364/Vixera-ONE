@@ -8,6 +8,8 @@ import { createFakeFetch, sequence, type FakeReply, type FakeRoute } from "../te
 import { parseMailCheckpoint, syncMail, type MailSyncOptions } from "./sync.ts";
 
 const OPTIONS: MailSyncOptions = { oauth: FAKE_OAUTH, backfillDays: 30, pageSize: 50 };
+/** What a backfill from the mock clock covers: 30 days back (ADR-017 reconciliation scope). */
+const MAIL_SCOPE = { kind: "mail", receivedSince: "2026-08-11T12:00:00.000Z" };
 const DELTA_1 = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-1";
 const DELTA_2 = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-2";
 const SKIP_1 = page1["@odata.nextLink"];
@@ -24,7 +26,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncMail(ctx, null, OPTIONS));
-    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1 }, done: true }]);
+    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_1 }, done: true, resyncScope: MAIL_SCOPE }]);
 
     const call = fake.calls[0];
     expect(call?.url.toString()).toMatch(/^https:\/\/graph\.microsoft\.com\/v1\.0\/me\/mailFolders\/inbox\/messages\/delta\?\$select=/);
@@ -49,7 +51,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
     const [first, second] = pages;
     expect(first?.done).toBe(false);
     // An intermediate backfill page is a resume point: the engine persists the nextLink and continues there next run.
-    expect(first?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1 } });
+    expect(first?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1, since: MAIL_SCOPE.receivedSince } });
     expect(first?.fullResync).toBeUndefined();
     expect(first?.batch.messages.map((m) => m.externalId)).toEqual(["AAMkAGfake-msg-html", "AAMkAGfake-msg-text"]);
     expect(first?.batch.messages[0]?.attachments).toEqual([{ attachmentId: "att-invoice", filename: "invoice-4711.pdf", mimeType: "application/pdf", sizeBytes: 48213 }]);
@@ -77,6 +79,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
     ]);
     const ctx = makeContext(fake.fetch);
     const pages = await collect(syncMail(ctx, { deltaLink: DELTA_1 }, OPTIONS));
+    expect(pages.every((p) => p.resyncScope === undefined)).toBe(true); // a delta round never declares a scope
     expect(fake.calls[0]?.url.toString()).toBe(DELTA_1);
     expect(fake.calls[0]?.url.searchParams.has("$filter")).toBe(false);
     expect(pages[0]?.checkpoint).toEqual({ deltaLink: DELTA_1 });
@@ -95,8 +98,9 @@ describe("syncMail (Microsoft Graph delta)", () => {
     const pages = await collect(syncMail(ctx, { deltaLink: DELTA_1 }, OPTIONS));
     expect(pages).toHaveLength(2);
     expect(pages.every((p) => p.fullResync === true)).toBe(true);
+    expect(pages.map((p) => p.resyncScope)).toEqual([MAIL_SCOPE, MAIL_SCOPE]); // the restarted backfill declares its scope
     // The resume point remembers that this backfill replaces an invalidated checkpoint.
-    expect(pages[0]?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1, fullResync: true } });
+    expect(pages[0]?.checkpoint).toEqual({ backfill: { nextLink: SKIP_1, since: MAIL_SCOPE.receivedSince, fullResync: true } });
     expect(pages[1]?.done).toBe(true);
     expect(pages[1]?.checkpoint).toEqual({ deltaLink: "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=fake-delta-2" });
     expect(fake.calls[1]?.url.searchParams.get("$filter")).toMatch(/^receivedDateTime ge /);
@@ -129,8 +133,14 @@ describe("syncMail (Microsoft Graph delta)", () => {
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]?.url.toString()).toBe(SKIP_1);
     expect(fake.calls[0]?.headers.prefer).toBe('odata.maxpagesize=50, outlook.body-content-type="text"');
+    // a resume point from before `since` existed cannot say what its pass covers: no scope, nothing reconciled
     expect(pages).toEqual([{ batch: { messages: [expect.objectContaining({ externalId: "AAMkAGfake-msg-3" })], deleted: [{ externalId: "AAMkAGfake-msg-gone" }] }, checkpoint: { deltaLink: DELTA_2 }, done: true }]);
     expect(ctx.logs.find((l) => l.message === "microsoft.mail.backfill.start")?.data).toMatchObject({ resumed: true, fullResync: false });
+
+    // a resumed backfill declares the window it was issued with, not this run's
+    const dated = createFakeFetch([{ match: "$skiptoken=fake-skip-1", reply: { json: page2 } }]);
+    const datedPages = await collect(syncMail(makeContext(dated.fetch), { backfill: { nextLink: SKIP_1, since: "2026-08-01T00:00:00.000Z" } }, OPTIONS));
+    expect(datedPages.map((p) => p.resyncScope)).toEqual([{ kind: "mail", receivedSince: "2026-08-01T00:00:00.000Z" }]);
 
     const resync = createFakeFetch([{ match: "$skiptoken=fake-skip-1", reply: { json: page2 } }]);
     const resumed = await collect(syncMail(makeContext(resync.fetch), { backfill: { nextLink: SKIP_1, fullResync: true } }, OPTIONS));
@@ -149,6 +159,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
       expect(fake.calls[0]?.url.toString()).toBe(SKIP_1);
       expect(fake.calls[1]?.url.searchParams.get("$filter")).toMatch(/^receivedDateTime ge /);
       expect(pages.map((p) => [p.done, p.fullResync])).toEqual([[false, true], [true, true]]);
+      expect(pages.map((p) => p.resyncScope)).toEqual([MAIL_SCOPE, MAIL_SCOPE]);
       expect(pages[1]?.checkpoint).toEqual({ deltaLink: DELTA_2 });
       expect(ctx.logs.find((l) => l.message === "microsoft.mail.checkpoint.rejected")?.data).toMatchObject({ status });
     }
@@ -158,7 +169,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
       { match: /messages\/delta\?\$select=/, reply: { json: { value: [], "@odata.deltaLink": DELTA_2 } } },
     ]);
     const pages = await collect(syncMail(makeContext(fake.fetch), { deltaLink: DELTA_1 }, OPTIONS));
-    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true }]);
+    expect(pages).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true, resyncScope: MAIL_SCOPE }]);
   });
 
   it("treats a sync-state error code on a stored link as a dead checkpoint whatever the status, and other 404s as errors", async () => {
@@ -169,7 +180,7 @@ describe("syncMail (Microsoft Graph delta)", () => {
         { match: /messages\/delta\?\$select=/, reply: { json: { value: [], "@odata.deltaLink": DELTA_2 } } },
       ]);
       const pages = await collect(syncMail(makeContext(fake.fetch), { deltaLink: DELTA_1 }, OPTIONS));
-      expect(pages, code).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true }]);
+      expect(pages, code).toEqual([{ batch: { messages: [], deleted: [] }, checkpoint: { deltaLink: DELTA_2 }, done: true, fullResync: true, resyncScope: MAIL_SCOPE }]);
     }
     // A 404 of another kind on a stored link is a real error, not a restart.
     const other = createFakeFetch([{ match: "$deltatoken=fake-delta-1", reply: { status: 404, json: { error: { code: "ErrorItemNotFound", message: "Folder gone." } } } }]);
@@ -251,6 +262,8 @@ describe("parseMailCheckpoint", () => {
     expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1 } })).toEqual({ backfill: { nextLink: SKIP_1 } });
     expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, fullResync: true } })).toEqual({ backfill: { nextLink: SKIP_1, fullResync: true } });
     expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, fullResync: "yes" } })).toEqual({ backfill: { nextLink: SKIP_1 } });
+    expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, since: "2026-08-01T00:00:00.000Z" } })).toEqual({ backfill: { nextLink: SKIP_1, since: "2026-08-01T00:00:00.000Z" } });
+    expect(parseMailCheckpoint({ backfill: { nextLink: SKIP_1, since: "soon" } })).toEqual({ backfill: { nextLink: SKIP_1 } });
     expect(parseMailCheckpoint({ backfill: { nextLink: "https://evil.example/steal?token" } })).toBeNull();
     expect(parseMailCheckpoint({ backfill: { nextLink: "" } })).toBeNull();
     expect(parseMailCheckpoint({ backfill: "nope" })).toBeNull();

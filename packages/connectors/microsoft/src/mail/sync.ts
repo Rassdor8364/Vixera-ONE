@@ -17,8 +17,14 @@
  *                means a full resync every run (logged, not hidden).
  *
  * Checkpoint (opaque to the engine, owned by this file), one of:
- *   { deltaLink: string }                                   a complete delta round
- *   { backfill: { nextLink: string, fullResync?: true } }   initial backfill in progress
+ *   { deltaLink: string }                                                  a complete delta round
+ *   { backfill: { nextLink: string, since?: IsoDateTime, fullResync?: true } }   initial backfill in progress
+ *
+ * `since` is the lower edge of the backfill's window (what the pass covers),
+ * declared as the page's `resyncScope` so the engine can reconcile a full
+ * resync (ADR-017); a resumed backfill declares the window it was issued with,
+ * never this run's. A resume point without it (written before the field
+ * existed) declares no scope.
  *
  * The initial backfill can be larger than one run's time budget, and the
  * engine stops at the deadline and restarts the pass next run unless a page
@@ -65,6 +71,8 @@ const ATTACHMENT_CONCURRENCY = 4;
 export interface MailBackfillState {
   /** The `@odata.nextLink` of the backfill page to fetch next. */
   readonly nextLink: string;
+  /** The lower edge of this backfill's window (`receivedDateTime ge since`). */
+  readonly since?: string;
   /** Set when this backfill replaces a checkpoint Graph invalidated. */
   readonly fullResync?: true;
 }
@@ -87,7 +95,8 @@ export function parseMailCheckpoint(checkpoint: Checkpoint | null): MailCheckpoi
     if (!backfill || typeof backfill !== "object" || Array.isArray(backfill)) return null;
     const nextLink = backfill.nextLink;
     if (typeof nextLink !== "string" || !nextLink || !isGraphUrl(nextLink)) return null;
-    return { backfill: { nextLink, ...(backfill.fullResync === true ? { fullResync: true as const } : {}) } };
+    const since = typeof backfill.since === "string" && !Number.isNaN(Date.parse(backfill.since)) ? { since: backfill.since } : {};
+    return { backfill: { nextLink, ...since, ...(backfill.fullResync === true ? { fullResync: true as const } : {}) } };
   }
   if (typeof deltaLink !== "string" || !deltaLink) return null;
   if (!isGraphUrl(deltaLink)) return null;
@@ -95,7 +104,7 @@ export function parseMailCheckpoint(checkpoint: Checkpoint | null): MailCheckpoi
 }
 
 function toCheckpoint(cp: MailCheckpoint): Checkpoint {
-  if (cp.backfill) return { backfill: { nextLink: cp.backfill.nextLink, ...(cp.backfill.fullResync ? { fullResync: true } : {}) } };
+  if (cp.backfill) return { backfill: { nextLink: cp.backfill.nextLink, ...(cp.backfill.since ? { since: cp.backfill.since } : {}), ...(cp.backfill.fullResync ? { fullResync: true } : {}) } };
   return { deltaLink: cp.deltaLink };
 }
 
@@ -109,8 +118,13 @@ function isGraphUrl(link: string): boolean {
   }
 }
 
+/** The lower edge of the backfill: what an initial listing covers. */
+export function backfillSince(now: Date, backfillDays: number): string {
+  return new Date(now.getTime() - backfillDays * 86_400_000).toISOString();
+}
+
 export function initialMailDeltaUrl(now: Date, backfillDays: number): string {
-  const since = new Date(now.getTime() - backfillDays * 86_400_000).toISOString();
+  const since = backfillSince(now, backfillDays);
   return graphUrl(`${GRAPH_API}/me/mailFolders/inbox/messages/delta`, { $select: MAIL_DELTA_SELECT, $filter: `receivedDateTime ge ${since}` });
 }
 
@@ -138,7 +152,11 @@ async function* run(
 ): AsyncIterable<SyncPage<MailSyncBatch>> {
   const prefer = `odata.maxpagesize=${options.pageSize}, outlook.body-content-type="text"`;
   const round = previous?.deltaLink ?? null;
-  let next: string = round ?? previous?.backfill?.nextLink ?? initialMailDeltaUrl(ctx.now(), options.backfillDays);
+  const startedAt = ctx.now();
+  let next: string = round ?? previous?.backfill?.nextLink ?? initialMailDeltaUrl(startedAt, options.backfillDays);
+  // What this pass covers: a fresh backfill's window, or the window a resumed one was issued with.
+  const since = round !== null ? null : previous?.backfill ? (previous.backfill.since ?? null) : backfillSince(startedAt, options.backfillDays);
+  const resyncScope = since ? { kind: "mail" as const, receivedSince: since } : null;
   // The first request of a run may carry a link out of our own checkpoint; only that one can be a dead checkpoint.
   let stored = previous !== null;
   ctx.log?.(round ? "microsoft.mail.delta.start" : "microsoft.mail.backfill.start", { fullResync, resumed: previous?.backfill !== undefined, backfillDays: options.backfillDays });
@@ -174,10 +192,10 @@ async function* run(
     const checkpoint: MailCheckpoint = done
       ? { deltaLink: deltaLink as string }
       : round === null
-        ? { backfill: { nextLink: nextLink as string, ...(fullResync ? { fullResync: true as const } : {}) } }
+        ? { backfill: { nextLink: nextLink as string, ...(since ? { since } : {}), ...(fullResync ? { fullResync: true as const } : {}) } }
         : { deltaLink: round };
     ctx.log?.("microsoft.mail.delta.page", { entries: entries.length, messages: messages.length, deleted: deleted.length, hasMore: !done });
-    yield { batch: { messages, deleted }, checkpoint: toCheckpoint(checkpoint), done, ...(fullResync ? { fullResync: true } : {}) };
+    yield { batch: { messages, deleted }, checkpoint: toCheckpoint(checkpoint), done, ...(fullResync ? { fullResync: true } : {}), ...(resyncScope ? { resyncScope } : {}) };
     if (done) return;
     next = nextLink as string;
   }

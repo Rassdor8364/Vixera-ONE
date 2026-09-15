@@ -80,6 +80,7 @@ Kinds: `relates_to`, `belongs_to`, `originated_from`, `has_person`, `has_time`,
 | `documents.location` | `{ "kind": "device_path" \| "storage" \| "provider" \| "url" \| "none", ... }` |
 | `documents.source_ref` | provider ids, e.g. `{ "connectorAccountId", "messageExternalId", "attachmentId" }` |
 | `connector_sync_states.checkpoint` | provider cursor (`{ historyId }`, `{ deltaLink }`, `{ cursor }`) |
+| `connector_sync_states.reconcile` | full resync in progress: `[{ since, scope }]`, one per listing unit (migration 12, ADR-017); `null` when none |
 | `handoffs.praxion_location` | `{ "page", "position", "selectionText" }` |
 
 Numeric money columns (`numeric(20,4)`) are handled as decimal **strings** in

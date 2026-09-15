@@ -46,14 +46,20 @@ interface BankSyncSource     { syncBank(ctx, checkpoint): AsyncIterable<SyncPage
   link flow turns this into a `connector_accounts` row. Google uses the OpenID
   `sub`, Microsoft the Graph user id, Plaid the item id.
 * **Pages.** A sync source is an async iterable of `SyncPage<TBatch>`:
-  `{ batch, checkpoint, done, fullResync? }`. The engine applies `batch`
-  through the `ContextLinker` first and only then persists `checkpoint`
-  (`null` = keep the previous one). `done: false` asks for another page.
-  `fullResync: true` says the provider invalidated the previous checkpoint and
-  this page starts from scratch (logged; the store still upserts by natural
-  key, so nothing is deleted on a full resync — which also means rows the
-  provider removed during the gap are **not** reconciled; see the Gmail and
-  Google Calendar notes below).
+  `{ batch, checkpoint, done, fullResync?, resyncScope? }`. The engine applies
+  `batch` through the `ContextLinker` first and only then persists
+  `checkpoint` (`null` = keep the previous one). `done: false` asks for
+  another page. `fullResync: true` says the provider invalidated the previous
+  checkpoint and this page starts from scratch (logged; the store upserts by
+  natural key). `resyncScope` is what a from-scratch listing covers —
+  `{ kind: "mail", receivedSince }`, `{ kind: "calendar", calendarIds, from,
+  to }` or `{ kind: "all" }` — declared on every page of the listing, a
+  resumed one included, and never on an incremental round. On a real resync
+  the engine records it with the moment the pass began and, once the pass is
+  `done`, deletes the rows of that account and capability inside the scope
+  that the pass did not touch (ADR-017, `docs/sync.md`). A source that
+  declares no scope keeps rows the provider removed during the gap; every
+  source in this repository declares one.
 * **Batches** contain only normalized domain objects from
   `packages/domain/src/connectors/normalized.ts`: `NormalizedMailMessage`,
   `NormalizedTimeEvent`, `NormalizedMoneyAccount`, `NormalizedMoneyTransaction`
@@ -181,7 +187,7 @@ never as an error.
 ```
 
 * First run: `users/me/profile` → `historyId` is captured **before** the
-  backfill lists `messages.list?q=newer_than:<backfillDays>d -in:drafts -in:chats`
+  backfill lists `messages.list?q=after:<since, epoch seconds> -in:drafts -in:chats`
   (default 30 days, 100 ids per page, message fetch concurrency 4;
   `messages.list` already leaves out Spam and Trash). While `backfill` is
   present each page carries the next `pageToken`, so a crash resumes the
@@ -212,10 +218,12 @@ never as an error.
   `invalid_response`: the run fails and retries from the same `historyId`,
   it never becomes a deletion.
 * `history.list` **404** (Gmail no longer holds history back to our id) →
-  the source yields a fresh backfill with `fullResync: true`. The re-list
-  only upserts: messages purged at Gmail during the gap stay in
-  `mail_messages` (known limitation; trashed ones are caught the next time
-  their labels change).
+  the source yields a fresh backfill with `fullResync: true`, every page
+  scoped to `{ kind: "mail", receivedSince: <the backfill's since> }` (a
+  resumed backfill keeps the `since` it was issued with). When it completes
+  the engine deletes the account's messages received since then that the
+  re-list did not mention — the ones purged, trashed or spammed at Gmail
+  during the gap (ADR-017).
 * Message ids are the natural key; unread is derived from the `UNREAD` label.
 
 ### Google Calendar — `packages/connectors/google/src/calendar/sync.ts`
@@ -251,9 +259,11 @@ never as an error.
   forgotten once they leave the past window, so the map stays bounded;
   undatable ids are kept.
 * **410** on a sync-token request → that calendar re-lists from scratch with
-  `fullResync: true`. A 410 without a token is a real error. The re-list
-  only upserts: events removed at Google during the gap stay in
-  `time_events` (known limitation).
+  `fullResync: true`, each page scoped to that one calendar inside its window
+  (`{ kind: "calendar", calendarIds: [id], from: timeMin, to: timeMax }`), so
+  the engine's reconciliation removes the events deleted at Google during the
+  gap from that calendar only, never from a calendar still on its sync token
+  (ADR-017). A 410 without a token is a real error.
 
 ### Microsoft Graph mail — `packages/connectors/microsoft/src/mail/sync.ts`
 
@@ -287,6 +297,13 @@ never as an error.
   same restart, so a rejected link self-heals instead of failing every run
   as `unknown`; a 400 on a fresh query or on a link Graph issued during the
   run stays an `unknown` error.
+* An initial or restarted backfill scopes every page to
+  `{ kind: "mail", receivedSince: now − backfillDays }` and stores that
+  `since` in its resume point, which a resumed backfill declares verbatim (a
+  resume point without one, written before the field existed, declares no
+  scope); a delta round declares none. A restarted backfill therefore ends
+  with the engine deleting the inbox rows the re-list never mentioned
+  (ADR-017).
 * `parseMailCheckpoint` refuses a `deltaLink` or `backfill.nextLink` that is
   not a `graph.microsoft.com` URL, and a checkpoint carrying both shapes, so
   a corrupted checkpoint can never send a bearer token elsewhere.
@@ -318,6 +335,11 @@ never as an error.
 * Intermediate pages keep the previous checkpoint: the window is small
   enough that a round fits one run, so the mail-style per-page resume point
   is not needed here.
+* A window listing (no stored delta link: first sync, a re-opened window or
+  a dead checkpoint) scopes every page to the primary calendar inside the
+  window (`{ kind: "calendar", calendarIds: ["primary"], from, to }`); a
+  delta round declares none. Reconciliation after a restart removes the
+  events the fresh window never listed (ADR-017).
 * **Time zones.** Timed events arrive in UTC and are stamped as such. If
   Graph answers in another zone, the name is resolved through `Intl` for
   IANA zones and through a CLDR Windows → IANA table
@@ -354,6 +376,14 @@ never as an error.
   linker's `occurredAt` falls back to `postedOn` at UTC midnight when
   `authorizedAt` is null; that is a date rendered as an instant by
   convention, not a claim about the time of day.
+* A pass from no cursor — the first sync, or after a stored cursor Plaid
+  rejected — is a complete listing of the Item and scopes every page to
+  `{ kind: "all" }`; an update from a stored cursor declares no scope. A
+  `/transactions/sync` answer of `INVALID_INPUT` whose message names the
+  cursor is mapped to `checkpoint_invalid`, so the engine re-lists from
+  scratch once (and reconciles: the transactions the fresh listing never
+  mentioned are deleted, `money_accounts` never are — ADR-017) instead of
+  failing every run as `unknown`.
 * Plaid's `/transactions/sync` contract: the pages up to `has_more: false`
   are one update; only that final `next_cursor` is guaranteed (for a year),
   and a failure mid-update means the whole update is requested again from
@@ -537,7 +567,9 @@ already synced from that account stay in the spine. The provider-side grant is
    glob does not already cover it.
 3. **Page discipline**: yield a checkpoint only for a page that is safe to
    resume from; keep the previous checkpoint on intermediate pages; mark
-   `fullResync` when the provider forced a restart; never throw for
+   `fullResync` when the provider forced a restart and declare `resyncScope`
+   on every page of a from-scratch listing (what it covers, not what it
+   found) so the engine can reconcile; never throw for
    conditions you can repair (re-list); throw `ConnectorError` with the right
    code for the rest.
 4. **Server**: register it in `buildRegistry` (`_shared/connectors.ts`) behind

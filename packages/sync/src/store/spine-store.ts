@@ -1,4 +1,5 @@
 import type {
+  ReconcileState,
   ActionRequest,
   ActionRequestStatus,
   Attention,
@@ -266,6 +267,14 @@ export interface SpineWriter {
   createConnectorAccount(input: ConnectorAccountInput): Promise<ConnectorAccount>;
   updateConnectorAccount(id: string, patch: ConnectorAccountPatch): Promise<ConnectorAccount>;
   upsertSyncState(connectorAccountId: string, capability: ConnectorCapability, patch: SyncStatePatch): Promise<ConnectorSyncState>;
+  /**
+   * Full-resync reconciliation: deletes the rows of `capability` for the
+   * account that lie inside `reconcile.scope` and were last written before
+   * `reconcile.since` — the ones a from-scratch pass did not touch. Their
+   * edges and context events go with them. A scope that does not fit the
+   * capability deletes nothing. Returns how many rows went.
+   */
+  deleteUntouched(connectorAccountId: string, capability: ConnectorCapability, reconcile: ReconcileState): Promise<number>;
 
   upsertDevice(input: DeviceInput): Promise<Device>;
   updateDevice(id: string, patch: DevicePatch): Promise<Device>;

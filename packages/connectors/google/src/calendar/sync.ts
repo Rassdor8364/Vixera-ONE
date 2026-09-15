@@ -270,6 +270,9 @@ export async function* syncCalendar(
         continue;
       }
 
+      // Whether this request listed the window (as opposed to a sync-token round) is decided
+      // before the final page swaps the listing for its new sync token.
+      const listing = state.syncToken === null;
       const { events, deleted } = fold(ctx, calendar.id, res.body?.items ?? [], state.series);
       const nextPage = res.body?.nextPageToken ?? null;
       const nextSync = res.body?.nextSyncToken ?? null;
@@ -290,6 +293,8 @@ export async function* syncCalendar(
         checkpoint: toCheckpoint(states),
         done: isLastCalendar && nextPage === null,
         ...(fullResync ? { fullResync: true } : {}),
+        // A listing (not a sync-token round) covers this calendar inside its window.
+        ...(listing ? { resyncScope: { kind: "calendar" as const, calendarIds: [calendar.id], from: window.timeMin, to: window.timeMax } } : {}),
       };
       if (!nextPage) break;
       pageToken = nextPage;

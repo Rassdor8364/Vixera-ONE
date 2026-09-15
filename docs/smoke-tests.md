@@ -19,14 +19,16 @@ running it holds them in the provider console and in `supabase secrets`.
 ## 0. Bring the live project up to date — Production-verified: no
 
 The live project (`uhdlacchajiblhmgasjg`) has migrations 1–8 applied.
-Migrations 9 (`realtime_replica_identity`), 10 (`ingest_attempts`) and 11
-(`handoff_focus_and_status`) are on this branch only. Until 9 is applied the
-Realtime DELETE exposure it closes is live; until 10 is applied `ingest.submit`
-fails on insert (the `attempts` column is missing).
+Migrations 9 (`realtime_replica_identity`), 10 (`ingest_attempts`), 11
+(`handoff_focus_and_status`) and 12 (`sync_state_reconcile`) are on this
+branch only. Until 9 is applied the Realtime DELETE exposure it closes is
+live; until 10 is applied `ingest.submit` fails on insert (the `attempts`
+column is missing); until 12 is applied a full resync fails writing its
+`reconcile` state and no reconciliation happens.
 
 ```bash
 supabase link --project-ref uhdlacchajiblhmgasjg
-supabase db push                          # migrations 9, 10, 11
+supabase db push                          # migrations 9–12
 SUPABASE_ACCESS_TOKEN=sbp_… scripts/deploy-functions.sh uhdlacchajiblhmgasjg
 ```
 
@@ -87,6 +89,12 @@ Google account whose mailbox and calendar you can edit.
    secrets`. Sync. Expect: the account stays `active`; the sync state is
    `error` with a message naming the OAuth client configuration; fix the
    secret; the next sync recovers without a re-link.
+8. Delete one synced message for good (Trash → Delete forever), then kill the
+   checkpoint: `update connector_sync_states set checkpoint = '{"historyId":"1"}'`
+   on the mail row. Sync. Expect: `gmail.history.expired`, a backfill with
+   `fullResync`, then `sync: full resync reconciled` with `removed: 1`, the
+   purged row gone with its context events, and nothing older than 30 days
+   touched (ADR-017).
 
 Cannot prove offline: Gmail's exact history record shapes for label moves,
 and whether Google reports a cancelled recurring master under
@@ -116,6 +124,11 @@ Needs an Entra app registration (Web, same redirect URI), `MICROSOFT_CLIENT_ID`
 5. Revoke consent at myaccount.microsoft.com → the account goes
    `needs_reauth` after exactly one token call (`microsoft.credential.refresh`
    once in the log).
+6. Delete one synced inbox message for good, then point the mail checkpoint at
+   a dead link (`{"deltaLink":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=dead"}`).
+   Sync. Expect: `microsoft.mail.delta.expired` or
+   `microsoft.mail.checkpoint.rejected`, a restarted backfill, then `sync: full
+   resync reconciled` with `removed: 1` (ADR-017).
 
 Cannot prove offline: whether a stored `$skiptoken` is still honoured hours
 later (the connector assumes it and falls back to a restart), and the
@@ -173,9 +186,9 @@ no script can do.
 
 ## What the fixture suites already cover
 
-So this page is not read as "nothing is tested": 688 vitest tests across the
-packages, the live PostgREST suite (107, real PostgREST 12.2.3 over a real
-PostgreSQL), 50 Deno tests for the Edge Functions and 37 Rust tests cover every
+So this page is not read as "nothing is tested": 698 vitest tests across the
+packages, the live PostgREST suite (115, real PostgREST 12.2.3 over a real
+PostgreSQL), 54 Deno tests for the Edge Functions and 37 Rust tests cover every
 branch above against fakes built from recorded provider shapes. What they
 cannot do is disagree with the provider — that is what the steps above are
 for.

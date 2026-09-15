@@ -43,6 +43,34 @@ export const SYNC_STATUSES = ["idle", "running", "error"] as const;
 export type SyncStatus = (typeof SYNC_STATUSES)[number];
 
 /**
+ * The rows a from-scratch pass re-lists. A connector declares it on every
+ * page of such a pass; when the pass is a full resync (the provider
+ * invalidated the checkpoint, or the engine restarted after one it rejected)
+ * the engine deletes, once the pass completes, the rows inside this scope the
+ * pass did not touch — what the provider removed while the checkpoint was
+ * dead. Nothing outside the scope is touched: a 30-day mail backfill says
+ * nothing about older mail.
+ */
+export type ResyncScope =
+  | { readonly kind: "all" }
+  | { readonly kind: "mail"; readonly receivedSince: IsoDateTime }
+  | { readonly kind: "calendar"; readonly calendarIds: readonly string[]; readonly from: IsoDateTime; readonly to: IsoDateTime };
+
+/**
+ * One listing unit of a full resync in progress: rows of the capability inside
+ * `scope` with `updated_at` before `since` are gone at the provider once the
+ * pass completes. A unit is a mail window, one calendar inside its window, or
+ * a whole bank Item. A resumed page declares the very same scope and keeps the
+ * unit's watermark; a listing that starts a unit over (a fresh window)
+ * replaces it. Persisted with the sync state so a pass the run budget splits
+ * across runs still reconciles.
+ */
+export interface ReconcileState {
+  readonly since: IsoDateTime;
+  readonly scope: ResyncScope;
+}
+
+/**
  * Independent sync state per (account, capability). A failed mail sync does
  * not block the calendar sync of the same account, nor any other account.
  */
@@ -58,5 +86,7 @@ export interface ConnectorSyncState extends UserScoped {
   readonly lastSuccessAt: IsoDateTime | null;
   readonly lastError: string | null;
   readonly consecutiveFailures: number;
+  /** A full resync in progress, one entry per listing unit (see ReconcileState); empty otherwise. */
+  readonly reconcile: readonly ReconcileState[];
   readonly updatedAt: IsoDateTime;
 }
