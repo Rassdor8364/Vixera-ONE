@@ -97,13 +97,13 @@ For scheduled sync also create the two Vault secrets described in
 | Ref | `uhdlacchajiblhmgasjg` |
 | API | `https://uhdlacchajiblhmgasjg.supabase.co` |
 
-**Schema: deployed through migration 8.** Migrations 9
-(`20260914000100_realtime_replica_identity`) and 10
-(`20260914000200_ingest_attempts`) were added on 2026-09-14 and are **not yet
-applied** to the live project — `supabase db push` is due; until it runs, the
-Realtime DELETE exposure migration 9 closes (`docs/sync.md` → Realtime) is
-live, and the ingest pipeline's `attempts` column is missing (an
-`ingest.submit` against the live project would fail on insert). Verified on
+**Schema: deployed through migration 8.** Migrations 9–14
+(`20260914000100_realtime_replica_identity`, `…000200_ingest_attempts`,
+`…000300_handoff_focus_and_status`, `20260915000100_sync_state_reconcile`,
+`…000200_sync_state_error_code`, `…000300_mail_direction`) were added on
+2026-09-14/15 and are **not yet applied** to the live project —
+`supabase db push` is due (`docs/smoke-tests.md` → 0 says what fails until
+each one runs; until 9, the Realtime DELETE exposure it closes is live). Verified on
 the live database after migration 8: 18 tables, none without `user_id`, none without RLS, 19 policies, 20
 enums, 15 `vx_*` functions, 33 triggers, the private `artifacts` bucket, seven
 tables in the realtime publication, and the `vixera-connector-sync` cron job.
