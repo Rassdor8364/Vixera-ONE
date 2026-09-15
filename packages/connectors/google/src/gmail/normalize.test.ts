@@ -40,7 +40,8 @@ describe("normalizeGmailMessage (multipart with PDF)", () => {
   it("maps UNREAD to isUnread and keeps labels", () => {
     expect(m.isUnread).toBe(true);
     expect(m.labels).toEqual(["INBOX", "UNREAD", "IMPORTANT"]);
-    expect(m.metadata).toEqual({ gmailHistoryId: "884211", sizeEstimate: 48211, rfcMessageId: "<invoice-4800@mail.example.com>", direction: "received" });
+    expect(m.direction).toBe("received");
+    expect(m.metadata).toEqual({ gmailHistoryId: "884211", sizeEstimate: 48211, rfcMessageId: "<invoice-4800@mail.example.com>" });
   });
 
   it("does not carry provider-only structure or a user id", () => {
@@ -85,9 +86,11 @@ describe("normalizeGmailMessage (sent by the user)", () => {
     },
   });
 
-  it("is the user's own context, not mail received from the user: no sender, direction sent, recipients kept", () => {
-    expect(sent.from).toBeNull();
-    expect(sent.metadata?.direction).toBe("sent");
+  it("is the user's own context, not mail received from the user: direction sent, the sender header kept, recipients kept", () => {
+    expect(sent.direction).toBe("sent");
+    // the sender is the user's own address; the linker never turns it into a person, so it can stay what the header says
+    expect(sent.from).toEqual({ email: "me@example.com", name: "Me" });
+    expect(sent.metadata?.direction).toBeUndefined();
     expect(sent.to).toEqual([{ email: "eric.lindqvist@example.com", name: "Eric Lindqvist" }]);
     expect(sent.labels).toEqual(["SENT"]);
     expect(sent.isUnread).toBe(false);

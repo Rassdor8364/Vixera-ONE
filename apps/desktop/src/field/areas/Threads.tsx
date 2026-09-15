@@ -106,7 +106,7 @@ function ThreadDetail({ data }: { data: NonNullable<ReturnType<typeof useThread>
       </Section>
       <Section title="Mail" aside={n.mail.length || "none"}>
         {n.mail.map((m) => (
-          <Row key={m.id} title={m.subject ?? "(no subject)"} side={relativeTime(m.receivedAt)} meta={`${m.from?.name ?? m.from?.email ?? "unknown"}${m.snippet ? ` — ${m.snippet}` : ""}`} />
+          <Row key={m.id} title={m.subject ?? "(no subject)"} side={relativeTime(m.receivedAt)} meta={`${m.direction === "sent" ? `to ${m.to[0]?.name ?? m.to[0]?.email ?? "…"}` : (m.from?.name ?? m.from?.email ?? "unknown")}${m.snippet ? ` — ${m.snippet}` : ""}`} />
         ))}
       </Section>
       <Section title="Time" aside={n.timeEvents.length || "none"}>

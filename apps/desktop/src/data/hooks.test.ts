@@ -37,6 +37,7 @@ async function seed() {
     to: [],
     cc: [],
     sentAt: null,
+    direction: "received" as const,
     isUnread: true,
     attachments: [],
     labels: [],
@@ -50,7 +51,7 @@ async function seed() {
       receivedAt: "2026-09-08T10:00:00Z",
       fromPersonId: eric.id,
     },
-    { ...base, externalId: "m-2", subject: "No sender", from: null, receivedAt: "2026-09-08T11:00:00Z", isUnread: false },
+    { ...base, externalId: "m-2", subject: "No sender", from: null, receivedAt: "2026-09-08T11:00:00Z", direction: "received" as const, isUnread: false },
   ]);
   const linked = await store.findMailMessageByExternalId(account.id, "m-1");
   const orphan = await store.findMailMessageByExternalId(account.id, "m-2");

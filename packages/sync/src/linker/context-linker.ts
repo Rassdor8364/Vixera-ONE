@@ -21,6 +21,7 @@ import type { ContextEventInput, MailMessageWrite, MoneyTransactionWrite, SpineS
 import { hashParts } from "./hash.ts";
 import {
   KIND_MAIL_RECEIVED,
+  KIND_MAIL_SENT,
   KIND_MONEY_TRANSACTION_POSTED,
   mailAttention,
   mailImportance,
@@ -168,7 +169,7 @@ export class ContextLinker {
         }
 
         events.push({
-          kind: KIND_MAIL_RECEIVED,
+          kind: m.direction === "sent" ? KIND_MAIL_SENT : KIND_MAIL_RECEIVED,
           subject: mailRef,
           title: m.subject?.trim() || "(no subject)",
           summary: m.snippet,
@@ -179,8 +180,10 @@ export class ContextLinker {
           connectorAccountId: account.id,
           dedupeKey: mailDedupeKey(account.id, m.externalId),
           metadata: {
+            direction: m.direction,
             from: m.from?.email ?? null,
             fromName: m.from?.name ?? null,
+            to: m.to.map((a) => a.email),
             fromPersonId: link.fromResolved?.person.id ?? null,
             attachmentCount: m.attachments.length,
             externalThreadId: m.externalThreadId,

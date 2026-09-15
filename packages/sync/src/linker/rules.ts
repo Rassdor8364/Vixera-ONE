@@ -17,6 +17,8 @@ export const MAIL_UNREAD_KNOWN_WITH_ATTACHMENT = 60;
 export const MAIL_UNREAD = 45;
 /** Mail the user has already read: context, not attention. */
 export const MAIL_READ = 25;
+/** Mail the user sent: their own context, never something that arrived needing them. */
+export const MAIL_SENT = 15;
 /** Mail older than this many days at first sight is filed as quiet, never as "needs me". */
 export const MAIL_QUIET_AFTER_DAYS = 14;
 
@@ -36,6 +38,7 @@ export const MONEY_TRANSACTION_SMALL = 30;
 
 // --- Context event kinds ---------------------------------------------------
 export const KIND_MAIL_RECEIVED = "mail.received";
+export const KIND_MAIL_SENT = "mail.sent";
 export const KIND_TIME_EVENT_CREATED = "time.event.created";
 export const KIND_TIME_EVENT_CHANGED = "time.event.changed";
 export const KIND_TIME_EVENT_CANCELLED = "time.event.cancelled";
@@ -51,12 +54,15 @@ export interface MailRuleInput {
 }
 
 export function mailImportance({ message, senderKnown }: MailRuleInput): number {
+  if (message.direction === "sent") return MAIL_SENT;
   if (!message.isUnread) return MAIL_READ;
   if (senderKnown && message.attachments.length > 0) return MAIL_UNREAD_KNOWN_WITH_ATTACHMENT;
   return MAIL_UNREAD;
 }
 
 export function mailAttention(message: NormalizedMailMessage, now: Date): Attention {
+  // What the user wrote is context, not attention: it never competes in NOW.
+  if (message.direction === "sent") return "quiet";
   const age = now.getTime() - Date.parse(message.receivedAt);
   return age > MAIL_QUIET_AFTER_DAYS * DAY ? "quiet" : "needs_attention";
 }

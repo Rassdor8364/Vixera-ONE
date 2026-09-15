@@ -121,6 +121,8 @@ Praxion that does not offer the action answers so in one line. Vixera implements
 no part of comparing or annotating.
 
 **Quiet** (`areas/Quiet.tsx`) — context events with `attention = quiet`
+(except `mail.sent`: what the person wrote is context on its people and
+threads, not something that arrived)
 (60 days), each with "Needs attention" (`context_event.attend`, which also
 clears a snooze) and Dismiss (`context_event.dismiss`), followed by Sources:
 connected accounts with sync

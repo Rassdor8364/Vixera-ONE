@@ -8,6 +8,7 @@ import {
   KIND_TIME_EVENT_CREATED,
   MAIL_QUIET_AFTER_DAYS,
   MAIL_READ,
+  MAIL_SENT,
   MAIL_UNREAD,
   MAIL_UNREAD_KNOWN_WITH_ATTACHMENT,
   MONEY_TRANSACTION_LARGE,
@@ -135,6 +136,40 @@ describe("ContextLinker mail", () => {
     await linker.applyMailBatch(account, { messages: [old], deleted: [] });
     const oldEvent = (await store.listContextEvents()).find((e) => e.dedupeKey === mailDedupeKey(account.id, "msg-old"))!;
     expect(oldEvent.attention).toBe("quiet");
+  });
+
+  it("mail the user sent is their own context, never received-mail attention: mail.sent, quiet, recipients linked, no person for the user", async () => {
+    const { store, account, linker, fixtures } = await setup();
+    const invoice = fixtures.mail.messages[0]!;
+    const reply = {
+      ...invoice,
+      externalId: "msg-reply",
+      subject: "Re: Invoice #0231",
+      direction: "sent" as const,
+      isUnread: false,
+      receivedAt: MOCK_NOW.toISOString(),
+      sentAt: MOCK_NOW.toISOString(),
+      from: { email: MOCK_SELF_ADDRESS, name: "Me" },
+      to: [invoice.from!],
+      cc: [],
+    };
+    await linker.applyMailBatch(account, { messages: [reply], deleted: [] });
+
+    const event = (await store.listContextEvents()).find((e) => e.dedupeKey === mailDedupeKey(account.id, "msg-reply"))!;
+    expect(event.kind).toBe("mail.sent");
+    expect(event.attention).toBe("quiet");
+    expect(event.importance).toBe(MAIL_SENT);
+    expect(event.metadata).toMatchObject({ direction: "sent", from: MOCK_SELF_ADDRESS, to: [invoice.from!.email] });
+    const row = (await store.findMailMessageByExternalId(account.id, "msg-reply"))!;
+    expect(row.direction).toBe("sent");
+    // the recipient is a person and linked; the user's own address never becomes one
+    const eric = (await store.findPersonByIdentity("email", ERIC_EMAIL))!;
+    expect(row.to[0]?.personId).toBe(eric.id);
+    expect(row.from?.personId).toBeNull();
+    expect(await store.findPersonByIdentity("email", MOCK_SELF_ADDRESS)).toBeNull();
+    expect((await store.neighbors(ref("mail_message", row.id), { direction: "out" })).map((n) => `${n.kind}:${n.ref.id}`)).toEqual([`has_person:${eric.id}`]);
+    // the same message received (a colleague's reply) would have been attention
+    expect((await store.listContextEvents({ kindPrefix: "mail.received" })).length).toBe(0);
   });
 
   it("deletions remove rows (and their edges/events) without emitting events", async () => {

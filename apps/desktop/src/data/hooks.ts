@@ -238,7 +238,9 @@ export function useFiles(search: string): QueryState<FilesData> {
 }
 
 export function useQuiet(): QueryState<ContextEvent[]> {
-  return useSpineQuery((reader) => reader.listContextEvents({ attention: "quiet", occurredSince: iso(Date.now() - 60 * DAY), limit: 300 }), []);
+  // Quiet is what arrived and did not need the person. What they sent (`mail.sent`)
+  // is context on the people and threads it touched, not an entry here.
+  return useSpineQuery(async (reader) => (await reader.listContextEvents({ attention: "quiet", occurredSince: iso(Date.now() - 60 * DAY), limit: 300 })).filter((e) => e.kind !== "mail.sent"), []);
 }
 
 export interface ConnectorsData {

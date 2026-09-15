@@ -21,6 +21,7 @@ const mail = (externalId: string, subject = "hello") => ({
   cc: [],
   sentAt: null,
   receivedAt: "2026-09-09T10:00:00.000Z",
+  direction: "received" as const,
   isUnread: true,
   attachments: [],
   labels: [],

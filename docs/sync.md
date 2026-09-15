@@ -159,6 +159,7 @@ ingestion).
 | Kind | `dedupe_key` | Emitted |
 | --- | --- | --- |
 | `mail.received` | `mail:<accountId>:<externalId>` | once per message |
+| `mail.sent` | `mail:<accountId>:<externalId>` | once per message the user sent (`direction = sent`) |
 | `time.event.created` / `time.event.changed` / `time.event.cancelled` | `time:<accountId>:<calendarId>:<externalId>:<version>` with `version = FNV-1a(title, startsAt, endsAt, status)` | `created` at first sight, `changed` when the version differs, nothing for an unchanged re-sync. Every prior version's event is retired (`dismissed`, `supersededBy = <current key>`) whether or not the current key was seen before, so a meeting moved to 16:00 and back to 15:00 leaves exactly one live event, at 15:00: the 15:00 event that a later version retired is re-opened. A dismissal the user made (no `supersededBy`) is never re-opened |
 | `money.transaction.posted` | `money:<accountId>:<externalId>` | once per transaction |
 | `ingest.received` | `ingest:<ingestItemId>` | once per ingest item (ingestion pipeline) |
@@ -171,6 +172,7 @@ constant is exported so tests and the Field name the rule instead of a number.
 
 | Event | Importance | Attention |
 | --- | --- | --- |
+| Mail the user sent (`direction = sent`) | 15 (`MAIL_SENT`) | `quiet` — the person's own context, never attention; the Field's Quiet does not list it |
 | Unread mail from a person known before this batch, with attachments | 60 (`MAIL_UNREAD_KNOWN_WITH_ATTACHMENT`) | `needs_attention`, or `quiet` when received more than 14 days ago (`MAIL_QUIET_AFTER_DAYS`) |
 | Other unread mail | 45 | same |
 | Read mail | 25 | same |

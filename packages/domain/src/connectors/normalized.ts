@@ -1,5 +1,5 @@
 import type { IsoDate, IsoDateTime, JsonObject } from "../entities/common.ts";
-import type { MailAttachmentMeta } from "../entities/mail.ts";
+import type { MailAttachmentMeta, MailDirection } from "../entities/mail.ts";
 import type { MoneyAccountType } from "../entities/money.ts";
 import type { EventParticipant, TimeEventStatus } from "../entities/time.ts";
 
@@ -20,6 +20,8 @@ export interface NormalizedMailMessage {
   readonly subject: string | null;
   readonly snippet: string | null;
   readonly bodyText: string | null;
+  /** `sent` when the user wrote it (Gmail SENT label); `received` otherwise. */
+  readonly direction: MailDirection;
   readonly from: NormalizedAddress | null;
   readonly to: readonly NormalizedAddress[];
   readonly cc: readonly NormalizedAddress[];

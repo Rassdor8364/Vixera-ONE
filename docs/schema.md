@@ -86,7 +86,8 @@ Kinds: `relates_to`, `belongs_to`, `originated_from`, `has_person`, `has_time`,
 `connector_sync_states.last_error_code` (text) and `last_error_retryable`
 (boolean), migration 13, describe the failure `last_error` holds; the engine
 holds a non-retryable one for the backoff cap at once. Both are null after a
-success.
+success. `mail_messages.direction` (text, `received` | `sent`, migration 14)
+says whether a message arrived for the user or the user wrote it.
 
 Numeric money columns (`numeric(20,4)`) are handled as decimal **strings** in
 TypeScript; never floats.

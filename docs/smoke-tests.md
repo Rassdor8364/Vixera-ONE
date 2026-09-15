@@ -20,16 +20,18 @@ running it holds them in the provider console and in `supabase secrets`.
 
 The live project (`uhdlacchajiblhmgasjg`) has migrations 1–8 applied.
 Migrations 9 (`realtime_replica_identity`), 10 (`ingest_attempts`), 11
-(`handoff_focus_and_status`), 12 (`sync_state_reconcile`) and 13
-(`sync_state_error_code`) are on this branch only. Until 9 is applied the
-Realtime DELETE exposure it closes is live; until 10 is applied
-`ingest.submit` fails on insert (the `attempts` column is missing); until 12
-is applied a full resync fails writing its `reconcile` state; until 13 is
-applied every sync fails at its end, writing `last_error_code`.
+(`handoff_focus_and_status`), 12 (`sync_state_reconcile`), 13
+(`sync_state_error_code`) and 14 (`mail_direction`) are on this branch only.
+Until 9 is applied the Realtime DELETE exposure it closes is live; until 10
+is applied `ingest.submit` fails on insert (the `attempts` column is
+missing); until 12 is applied a full resync fails writing its `reconcile`
+state; until 13 is applied every sync fails at its end, writing
+`last_error_code`; until 14 is applied every mail upsert fails (the
+`direction` column is missing).
 
 ```bash
 supabase link --project-ref uhdlacchajiblhmgasjg
-supabase db push                          # migrations 9–13
+supabase db push                          # migrations 9–14
 SUPABASE_ACCESS_TOKEN=sbp_… scripts/deploy-functions.sh uhdlacchajiblhmgasjg
 ```
 
@@ -73,7 +75,9 @@ Google account whose mailbox and calendar you can edit.
 3. `POST connector-sync` with the user JWT. Expect: `report.outcomes` with
    `mail: ok` and `calendar: ok`, `mail_messages` rows for the last 30 days
    **without** anything in Trash, Spam, Drafts or Chats, sent mail present
-   with `from = null`. Check `context_events` for `mail.received` per message.
+   with `direction = sent`. Check `context_events`: `mail.received` per
+   received message, `mail.sent` (attention `quiet`) per sent one, and the
+   Field's Quiet lists none of the sent ones.
 4. In Gmail: trash one message, star nothing, move one to Spam, send one, and
    restore one from Trash. Sync again. Expect: the trashed and spammed rows
    gone (with their context events), the sent one present, the restored one
@@ -187,8 +191,8 @@ no script can do.
 
 ## What the fixture suites already cover
 
-So this page is not read as "nothing is tested": 702 vitest tests across the
-packages, the live PostgREST suite (119, real PostgREST 12.2.3 over a real
+So this page is not read as "nothing is tested": 704 vitest tests across the
+packages, the live PostgREST suite (122, real PostgREST 12.2.3 over a real
 PostgreSQL), 55 Deno tests for the Edge Functions and 37 Rust tests cover every
 branch above against fakes built from recorded provider shapes. What they
 cannot do is disagree with the provider — that is what the steps above are

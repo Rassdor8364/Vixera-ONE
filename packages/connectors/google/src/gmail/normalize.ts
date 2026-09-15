@@ -41,8 +41,9 @@ export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage 
   const body = extractBody(raw.payload);
   const attachments = collectAttachments(raw.payload);
   // Mail the user sent is their own context (who they wrote to, about what),
-  // but it was not received FROM anyone: no sender means the linker never
-  // creates a person for the user's own address or marks them as the sender.
+  // not something that arrived needing them: `direction` says so, and the
+  // linker scores it as quiet context. The sender header stays — it is the
+  // user's own address, which the linker never turns into a person.
   const sent = labels.includes(GMAIL_SENT_LABEL);
 
   const metadata: JsonObject = {};
@@ -50,7 +51,6 @@ export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage 
   if (typeof raw.sizeEstimate === "number") metadata.sizeEstimate = raw.sizeEstimate;
   const messageId = header(headers, "Message-ID")?.trim();
   if (messageId) metadata.rfcMessageId = messageId;
-  metadata.direction = sent ? "sent" : "received";
 
   return {
     externalId: raw.id,
@@ -58,7 +58,8 @@ export function normalizeGmailMessage(raw: GmailMessage): NormalizedMailMessage 
     subject,
     snippet: raw.snippet ? decodeEntities(raw.snippet).trim() || null : null,
     bodyText: body,
-    from: sent ? null : from,
+    direction: sent ? "sent" : "received",
+    from,
     to,
     cc,
     sentAt,

@@ -94,6 +94,7 @@ export function briefWorldFixtures(): MockFixtures {
           receivedAt: iso(-17),
           isUnread: true,
           attachments: [{ attachmentId: ERIC_INVOICE_ATTACHMENT_ID, filename: "Lindqvist-Invoice-0231.pdf", mimeType: "application/pdf", sizeBytes: 184_233 }],
+          direction: "received",
           labels: ["INBOX"],
         },
         {
@@ -109,6 +110,7 @@ export function briefWorldFixtures(): MockFixtures {
           receivedAt: iso(-47),
           isUnread: false,
           attachments: [],
+          direction: "received",
           labels: ["INBOX"],
         },
       ],

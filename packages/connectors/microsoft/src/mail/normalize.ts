@@ -48,6 +48,8 @@ export function normalizeGraphMessage(raw: GraphMessage, attachments: readonly G
     from: toAddress(raw.from),
     to: toAddresses(raw.toRecipients),
     cc: toAddresses(raw.ccRecipients),
+    // The source lists the inbox only, so everything here arrived for the user.
+    direction: "received",
     sentAt: toIsoOrNull(raw.sentDateTime),
     receivedAt,
     isUnread: raw.isRead !== true,

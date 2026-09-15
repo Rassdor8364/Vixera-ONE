@@ -93,6 +93,7 @@ export function mail(n: number, from: Person, subject: string, receivedAt: strin
     cc: [],
     sentAt: receivedAt,
     receivedAt,
+    direction: "received" as const,
     isUnread: true,
     attachments: [],
     labels: [],

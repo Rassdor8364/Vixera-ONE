@@ -349,6 +349,7 @@ export class InMemorySpineStore implements SpineStore {
         subject: w.subject,
         snippet: w.snippet,
         bodyText: w.bodyText,
+        direction: w.direction,
         from: w.from ? { email: w.from.email, name: w.from.name, personId: (w.fromPersonId ?? null) as PersonId | null } : null,
         to: toAddresses(w.to, w.toPersonIds),
         cc: toAddresses(w.cc, w.ccPersonIds),

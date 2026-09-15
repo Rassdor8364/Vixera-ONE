@@ -59,6 +59,7 @@ describe("row mappers round-trip the brief world", () => {
   it("mail: snake_case row with jsonb addresses ⇄ MailMessage with person ids", () => {
     const write = { ...fx.mail.messages[0]!, fromPersonId: PERSON, toPersonIds: [null] };
     const insert = mailMessageToRow(DEV_USER_ID, ACCOUNT, write);
+    expect(insert.direction).toBe(write.direction);
     expect(insert).toMatchObject({
       user_id: DEV_USER_ID,
       connector_account_id: ACCOUNT,
@@ -73,6 +74,7 @@ describe("row mappers round-trip the brief world", () => {
     expect(insert.attachments[0]).toEqual({ attachmentId: "att-0231", filename: "Lindqvist-Invoice-0231.pdf", mimeType: "application/pdf", sizeBytes: 184233 });
     const row: MailMessageRow = { ...insert, id: ID, ...TS, received_at: "2026-09-09T16:00:00+00:00" };
     const domain = mailMessageFromRow(row);
+    expect(domain.direction).toBe(write.direction);
     expect(domain.id).toBe(ID);
     expect(domain.userId).toBe(DEV_USER_ID);
     expect(domain.from).toEqual({ email: "eric@lindqvist.example", name: "Eric Lindqvist", personId: PERSON });

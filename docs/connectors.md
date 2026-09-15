@@ -106,9 +106,10 @@ existed (a `syncToken` and no `series`) does not fan out a cancelled
 recurring master to its stored instances until that calendar re-lists (a
 `410`, or a rejected page token). No production account has synced yet, so
 no such checkpoint exists; if one ever does, clearing the calendar's token
-once re-lists it idempotently. Gmail's `metadata.direction` (`sent` /
-`received`) is recorded on every message and read by nothing yet; the linker
-still scores sent mail as received-mail attention (roadmap).
+once re-lists it idempotently. Every message carries `direction`
+(`received` / `sent`, migration 14): the linker files sent mail as
+`mail.sent` — quiet, low-importance context on the people and threads it
+touched — never as received-mail attention.
 
 ## Multi-account model
 
@@ -209,11 +210,13 @@ never as an error.
   wins within a page and a purge always wins. Any fetched message that turns
   out hidden is emitted as a deletion. `UNREAD` changes re-fetch; other label
   changes are ignored.
-* **Sent mail** (`SENT` label) is kept as the user's own context — recipients
-  still resolve to people — but with `from: null` and
-  `metadata.direction = "sent"`, so it is never "received from" the user and
-  never creates a person for the user's own address. Everything else carries
-  `metadata.direction = "received"`.
+* **Sent mail** (`SENT` label) is `direction: "sent"`: the user's own context
+  — recipients resolve to people, attachments become documents — with the
+  sender header kept: the account's own address, which the linker never
+  turns into a person (a send-as alias is not known to it and would become
+  one, as it already would as a recipient of received mail). The linker
+  files it as `mail.sent`, quiet, never as received-mail attention.
+  Everything else is `direction: "received"`.
 * A `messages.get` that answers 404 is a deletion (gone between list and
   get). A 2xx whose body is empty or not JSON is a retryable
   `invalid_response`: the run fails and retries from the same `historyId`,

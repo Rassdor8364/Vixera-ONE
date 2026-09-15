@@ -32,6 +32,7 @@ const MAIL = (externalId: string, overrides: Record<string, unknown> = {}) => ({
   sentAt: "2026-09-08T10:00:00Z",
   receivedAt: "2026-09-08T10:00:05Z",
   isUnread: true,
+  direction: "received" as const,
   attachments: [{ attachmentId: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", sizeBytes: 1200 }],
   labels: ["INBOX"],
   ...overrides,
@@ -90,6 +91,18 @@ export function runSpineStoreConformance(label: string, create: ConformanceFacto
       expect(one?.attachments[0]?.sizeBytes).toBe(1200);
       expect(one?.isUnread).toBe(true);
       expect(await store.findMailMessageByExternalId(account.id, "m-1")).not.toBeNull();
+    });
+
+    it("keeps which way a message went, and lets the provider change it", async () => {
+      const { store, account } = await withAccount();
+      await store.upsertMailMessages(account.id, [
+        MAIL("m-in"),
+        MAIL("m-out", { direction: "sent", from: { email: "dev@vixera.example", name: null }, to: [{ email: "eric@lindqvist.example", name: "Eric Lindqvist" }] }),
+      ]);
+      expect((await store.findMailMessageByExternalId(account.id, "m-in"))?.direction).toBe("received");
+      expect((await store.findMailMessageByExternalId(account.id, "m-out"))?.direction).toBe("sent");
+      await store.upsertMailMessages(account.id, [MAIL("m-out")]);
+      expect((await store.findMailMessageByExternalId(account.id, "m-out"))?.direction).toBe("received");
     });
 
     it("deleteUntouched removes rows older than the pass inside its scope, keeps touched rows and rows outside it", async () => {

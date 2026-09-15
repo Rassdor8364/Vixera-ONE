@@ -124,6 +124,7 @@ export interface MailMessageRow {
   subject: string | null;
   snippet: string | null;
   body_text: string | null;
+  direction: string;
   from_address: string | null;
   from_name: string | null;
   from_person_id: string | null;
@@ -662,6 +663,7 @@ export function mailMessageFromRow(r: MailMessageRow): MailMessage {
     subject: r.subject,
     snippet: r.snippet,
     bodyText: r.body_text,
+    direction: r.direction === "sent" ? "sent" : "received",
     from: r.from_address ? { email: r.from_address, name: r.from_name, personId: (r.from_person_id ?? null) as PersonId | null } : null,
     to: asArray<MailAddressJson>(r.to_addresses).map(mailAddressFromJson),
     cc: asArray<MailAddressJson>(r.cc_addresses).map(mailAddressFromJson),
@@ -692,6 +694,7 @@ export function mailMessageToRow(userId: UserId, connectorAccountId: string, w: 
     subject: w.subject,
     snippet: w.snippet,
     body_text: w.bodyText,
+    direction: w.direction,
     from_address: w.from?.email ?? null,
     from_name: w.from?.name ?? null,
     from_person_id: w.from ? (w.fromPersonId ?? null) : null,
